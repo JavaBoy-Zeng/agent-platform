@@ -10,7 +10,9 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/** 使用 BM25、向量余弦相似度和 RRF 完成 L1 混合召回。 */
+/**
+ * 使用 BM25、向量余弦相似度和 RRF 完成 L1 混合召回。
+ */
 public final class HybridMemoryRetriever {
 
     private static final double BM25_K1 = 1.5;

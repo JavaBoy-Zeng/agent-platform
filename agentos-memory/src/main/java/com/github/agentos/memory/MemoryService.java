@@ -10,7 +10,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-/** Agent 访问 Java 原生 L0-L3 记忆的统一门面。 */
+/**
+ * Agent 访问 Java 原生 L0-L3 记忆的统一门面。
+ */
 public final class MemoryService implements AutoCloseable {
 
     private final MemoryStore store;
@@ -48,7 +50,9 @@ public final class MemoryService implements AutoCloseable {
                 MemoryRecallPolicy.defaults());
     }
 
-    /** 规划前按当前输入召回以前的 L1/L2/L3 记忆，超时或失败时降级为空上下文。 */
+    /**
+     * 规划前按当前输入召回以前的 L1/L2/L3 记忆，超时或失败时降级为空上下文。
+     */
     public MemoryContext recall(MemoryScope scope, String currentInput) {
         CompletableFuture<MemoryContext> task = CompletableFuture.supplyAsync(
                 () -> recallNow(scope, currentInput), recallExecutor);
@@ -60,12 +64,16 @@ public final class MemoryService implements AutoCloseable {
         }
     }
 
-    /** 成功后先保存完整 L0，再异步启动 L1-L3 管线。 */
+    /**
+     * 成功后先保存完整 L0，再异步启动 L1-L3 管线。
+     */
     public void capture(CompletedTurn turn) {
         pipeline.capture(Objects.requireNonNull(turn, "turn must not be null"));
     }
 
-    /** 手工写入一条 L1 事实，主要用于迁移和管理接口。 */
+    /**
+     * 手工写入一条 L1 事实，主要用于迁移和管理接口。
+     */
     public void rememberFact(MemoryScope scope, String content) {
         store.upsertAtomic(AtomicMemory.create(
                 scope, MemoryType.FACT, content, 1.0, 8, "manual:" + Instant.now().toEpochMilli()));
