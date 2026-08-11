@@ -187,6 +187,16 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
 
         20. 如果上一份 EXECUTION 计划已经成功完成，默认优先返回 COMPLETE；只有能够明确
             指出仍缺少什么信息，以及哪个工具步骤可以补齐它时，才生成后续计划。
+
+        21. file_read 的分页结果包含 hasMore、nextPage、nextOffset 和 truncated 元数据。
+            当用户要求完整读取、提取全部信息或生成完整名单时：
+            - hasMore=true 会产生一个待续读位置；必须使用该结果的 nextPage 和 nextOffset
+              成功续读后，才算消费了这个待续读位置；
+            - truncated=true 表示当前物理页仍有未返回正文，下一次必须从同一页的
+              nextOffset 继续读取；
+            - 禁止根据未读取的区间推测、补写或声称已经得到完整结果；
+            - 只有续读链已经到达 hasMore=false 且不存在未消费的待续读位置，才可以
+              基于完整内容返回 COMPLETE。
         """;
 
 

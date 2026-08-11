@@ -72,6 +72,36 @@ export function useAgentConsole() {
     return session
   }
 
+  function renameSession(id, title) {
+    const session = sessions.value.find((item) => item.id === id)
+    const normalizedTitle = String(title || '').trim()
+    if (!session || !normalizedTitle) return
+    session.title = normalizedTitle
+    session.updatedAt = nowIso()
+    persist()
+  }
+
+  function deleteSession(id) {
+    const index = sessions.value.findIndex((item) => item.id === id)
+    if (index < 0 || (busy.value && id === currentSessionId.value)) return
+
+    const deletingCurrentSession = id === currentSessionId.value
+    sessions.value.splice(index, 1)
+
+    if (deletingCurrentSession) {
+      const nextSession = sessions.value[Math.min(index, sessions.value.length - 1)]
+      if (nextSession) {
+        activateSession(nextSession)
+        prompt.value = ''
+      } else {
+        createSession()
+        return
+      }
+    }
+
+    persist()
+  }
+
   async function selectSession(id) {
     const session = sessions.value.find((item) => item.id === id)
     if (!session) return
@@ -253,6 +283,8 @@ export function useAgentConsole() {
     messages,
     runtimeState,
     createSession,
+    renameSession,
+    deleteSession,
     selectSession,
     execute,
     clearTranscript

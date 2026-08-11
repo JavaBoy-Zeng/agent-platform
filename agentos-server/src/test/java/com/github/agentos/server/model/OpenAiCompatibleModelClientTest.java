@@ -77,6 +77,10 @@ class OpenAiCompatibleModelClientTest {
         assertThat(authorization.get()).isEqualTo("Bearer test-key");
 
         JsonNode sent = objectMapper.readTree(requestBody.get());
+        assertThat(sent.path("messages").path(0).path("content").stringValue())
+                .contains(
+                        "hasMore=true", "nextPage", "nextOffset",
+                        "不存在未消费的待续读位置");
         JsonNode schema = sent.path("response_format").path("json_schema").path("schema");
         JsonNode continueSchema = schema.path("oneOf").path(0);
         JsonNode completeSchema = schema.path("oneOf").path(1);

@@ -13,6 +13,7 @@
 | `ToolRegistry` | 线程安全地注册、查找和枚举工具。 |
 | `ToolExecutor` | 捕获未处理异常并转换为 `TOOL_INTERNAL_ERROR`。 |
 | `FileAccessPolicy` | 所有文件工具共用的路径授权抽象。 |
+| `PagedFileReader / PagedReadResult` | 按物理页和页内偏移读取文件，并显式返回续读位置。 |
 
 当前服务端装配 `AllowAllReadableFileAccessPolicy`，允许读取本机任意可读路径，不限制 workspace。
 未来可以替换为 sandbox 策略而不修改工具实现。
@@ -23,12 +24,16 @@
 | --- | --- |
 | `directory_list` | 有界列出目录；深度默认 2、最大 5，条目默认 200、最大 500，不跟随符号链接。 |
 | `file_search` | `NAME` glob 或 `CONTENT` 字面量搜索；深度默认 8、最大 12，结果默认 100、最大 500。 |
-| `file_read` | 在路径已确认后读取文本文件。 |
+| `file_read` | 在路径已确认后读取文件；PDF 按物理页和页内偏移分页，并返回续读元数据。 |
 | `echo` | 仅用于调用链测试，不承担最终回答。 |
 | `weather` | 查询外部天气接口。 |
 
 `file_search` 最多扫描 20,000 个文件。内容搜索会跳过符号链接、二进制、不可读和大于 1 MiB 的
 文件，并返回带行号的匹配结果。
+
+PDF 首次调用 `file_read` 时可省略 `page` 和 `offset`，默认从第 1 页、页内偏移 0 开始。
+每次正文最多返回 3000 字符，并同时返回 `totalPages`、`hasMore`、`nextPage`、
+`nextOffset` 和 `truncated`。完整读取任务必须持续使用下一位置，直至 `hasMore=false`。
 
 ## 失败分类约定
 

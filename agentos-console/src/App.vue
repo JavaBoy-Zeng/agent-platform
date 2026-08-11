@@ -18,6 +18,8 @@ const {
   messages,
   runtimeState,
   createSession,
+  renameSession,
+  deleteSession,
   selectSession,
   execute,
   clearTranscript
@@ -34,8 +36,11 @@ const {
       <SessionRail
         :sessions="sessions"
         :current-session-id="currentSessionId"
+        :busy="busy"
         @select="selectSession"
         @create="createSession"
+        @rename="renameSession($event.id, $event.title)"
+        @delete="deleteSession"
       />
 
       <section class="mission-workspace reveal reveal-2" aria-labelledby="consoleTitle">

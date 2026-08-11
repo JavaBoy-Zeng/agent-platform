@@ -1,4 +1,6 @@
 <script setup>
+import { renderMarkdown } from '../utils/markdown.js'
+
 defineProps({
   messages: { type: Array, required: true },
   busy: { type: Boolean, default: false }
@@ -51,7 +53,12 @@ function roleLabel(role) {
           <strong>{{ roleLabel(message.role) }}</strong>
           <time>{{ timeLabel(message.createdAt) }}</time>
         </header>
-        <p>{{ message.content }}</p>
+        <div
+          v-if="message.role === 'assistant'"
+          class="message-content markdown-body"
+          v-html="renderMarkdown(message.content)"
+        ></div>
+        <p v-else>{{ message.content }}</p>
       </article>
 
       <article v-if="busy" class="message message-agent message-pending">

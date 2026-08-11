@@ -5,12 +5,18 @@ import com.github.agentos.tool.ToolFailureType;
 import com.github.agentos.tool.ToolResult;
 import com.github.agentos.tool.FileReaderFactory;
 import com.github.agentos.tool.file.AllowAllReadableFileAccessPolicy;
+import com.github.agentos.tool.reader.PdfFileReader;
 import com.github.agentos.tool.reader.TextFileReader;
 import com.github.agentos.tool.tools.DirectoryListTool;
 import com.github.agentos.tool.tools.FileReadTool;
 import com.github.agentos.tool.tools.FileSearchTool;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -38,7 +44,8 @@ class FileExplorationToolsTest {
                 "maxEntries", 10)));
 
         assertThat(result.success()).isTrue();
-        assertThat(result.output()).contains("pom.xml", "module/", "module\\src/");
+        assertThat(result.output()).contains(
+                "pom.xml", "module/", Path.of("module", "src") + "/");
     }
 
     @Test
@@ -87,14 +94,102 @@ class FileExplorationToolsTest {
                 new AllowAllReadableFileAccessPolicy(),
                 new FileReaderFactory(List.of(new TextFileReader())));
 
-        assertThat(tool.parameters()).singleElement().satisfies(parameter -> {
-            assertThat(parameter.name()).isEqualTo("path");
-            assertThat(parameter.required()).isTrue();
-        });
+        assertThat(tool.parameters()).extracting(parameter -> parameter.name())
+                .containsExactly("path", "page", "offset");
+        assertThat(tool.parameters().get(0).required()).isTrue();
+        assertThat(tool.parameters().get(1).required()).isFalse();
+        assertThat(tool.parameters().get(2).required()).isFalse();
         ToolResult result = tool.execute(new ToolCall(
                 "file_read", Map.of("path", file.toString())));
 
         assertThat(result.success()).isTrue();
         assertThat(result.output()).isEqualTo("report body");
+    }
+
+    @Test
+    void readsPdfByPageAndReturnsExplicitContinuationMetadata() throws Exception {
+        Path file = directory.resolve("resume.pdf");
+        try (PDDocument document = new PDDocument()) {
+            addPdfPage(document, "first company");
+            addPdfPage(document, "second company");
+            document.save(file.toFile());
+        }
+        FileReadTool tool = new FileReadTool(
+                new AllowAllReadableFileAccessPolicy(),
+                new FileReaderFactory(List.of(new PdfFileReader())));
+
+        ToolResult first = tool.execute(new ToolCall(
+                "file_read", Map.of("path", file.toString())));
+        ToolResult second = tool.execute(new ToolCall(
+                "file_read", Map.of("path", file.toString(), "page", 2, "offset", 0)));
+
+        assertThat(first.success()).isTrue();
+        assertThat(first.output()).hasSizeLessThan(4_000);
+        assertThat(first.output())
+                .contains("page=1", "totalPages=2", "hasMore=true", "nextPage=2")
+                .contains("truncated=false", "first company")
+                .doesNotContain("second company");
+        assertThat(second.success()).isTrue();
+        assertThat(second.output())
+                .contains("page=2", "totalPages=2", "hasMore=false", "nextPage=0")
+                .contains("truncated=false", "second company");
+    }
+
+    @Test
+    void rejectsPdfPageOutsideDocumentBounds() throws Exception {
+        Path file = directory.resolve("one-page.pdf");
+        try (PDDocument document = new PDDocument()) {
+            addPdfPage(document, "only page");
+            document.save(file.toFile());
+        }
+        FileReadTool tool = new FileReadTool(
+                new AllowAllReadableFileAccessPolicy(),
+                new FileReaderFactory(List.of(new PdfFileReader())));
+
+        ToolResult result = tool.execute(new ToolCall(
+                "file_read", Map.of("path", file.toString(), "page", 2)));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);
+        assertThat(result.error()).contains("exceeds totalPages 1");
+    }
+
+    @Test
+    void continuesWithinAnOversizedPdfPageUsingReturnedOffset() throws Exception {
+        Path file = directory.resolve("long-page.pdf");
+        String pageText = "A".repeat(3_100);
+        try (PDDocument document = new PDDocument()) {
+            addPdfPage(document, pageText);
+            document.save(file.toFile());
+        }
+        FileReadTool tool = new FileReadTool(
+                new AllowAllReadableFileAccessPolicy(),
+                new FileReaderFactory(List.of(new PdfFileReader())));
+
+        ToolResult first = tool.execute(new ToolCall(
+                "file_read", Map.of("path", file.toString())));
+        ToolResult remainder = tool.execute(new ToolCall(
+                "file_read", Map.of("path", file.toString(), "page", 1, "offset", 3_000)));
+
+        assertThat(first.success()).isTrue();
+        assertThat(first.output())
+                .contains("returnedChars=3000", "hasMore=true", "nextPage=1")
+                .contains("nextOffset=3000", "truncated=true");
+        assertThat(remainder.success()).isTrue();
+        assertThat(remainder.output())
+                .contains("offset=3000", "returnedChars=100", "hasMore=false")
+                .contains("nextPage=0", "nextOffset=0", "truncated=false");
+    }
+
+    private static void addPdfPage(PDDocument document, String text) throws Exception {
+        PDPage page = new PDPage();
+        document.addPage(page);
+        try (PDPageContentStream content = new PDPageContentStream(document, page)) {
+            content.beginText();
+            content.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+            content.newLineAtOffset(72, 720);
+            content.showText(text);
+            content.endText();
+        }
     }
 }
