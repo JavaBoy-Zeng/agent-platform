@@ -1,43 +1,33 @@
 # agentos-agent
 
-`agentos-agent` 是 AgentOS 的业务编排层。它把内核、规划器和记忆服务连接起来，形成一次完整的 Agent 循环。
+`agentos-agent` 是 AgentOS 的业务编排层，负责在运行预算内循环执行“规划 → 工具 → 重新规划”，
+并只在得到明确最终回答后完成会话。
 
-## 主要职责
-
-- 接收 `AgentRuntime` 传入的上下文和运行状态。
-- 在执行前记录用户消息。
-- 调用 `TaskPlanner` 创建任务计划。
-- 调用 `PlanExecutor` 执行计划中的步骤。
-- 根据执行结果把状态转换为 `COMPLETED` 或 `FAILED`。
-- 在成功后保存 Agent 回复。
-
-## 核心类型
-
-### `MainAgent`
-
-当前模块的默认 Agent，实现了内核中的 `AgentLoop`：
+## `MainAgent` 流程
 
 ```text
-AgentRuntime
-    │
-    ▼
-MainAgent
-    ├── MemoryService.rememberUserMessage(...)
-    ├── TaskPlanner.createPlan(...)
-    ├── PlanExecutor.execute(...)
-    └── MemoryService.rememberAssistantMessage(...)
+AgentRuntime.run(AgentRequest, AgentContext)
+    └── MainAgent
+        ├── AgentPlanner.createPlan(...)
+        ├── PlanExecutor.execute(...)
+        ├── AgentPlanner.replan(..., PlanExecutionSnapshot)
+        │       └── 可重复，受累计预算限制
+        ├── AgentFinalizer.finish(EXECUTION / COMPLETE)
+        └── MemoryService.capture(CompletedTurn.success)
 ```
 
-`MainAgent` 本身不关心计划由规则还是 LLM 生成，也不直接执行工具或处理审批，这些能力分别由 planner、tool 和 hitl 模块负责。
+`AgentRequest` 保存 `sessionId`、用户目标和扩展属性；`AgentContext` 只保存团队、用户、Agent 和
+任务身份。两者在内核、规划器和 Agent 循环中始终分开传递。
 
-## 模块依赖
+`MainAgent` 在以下情况请求重规划：
 
-- `agentos-kernel`：实现 `AgentLoop`，使用上下文和状态模型。
-- `agentos-planner`：生成并执行计划。
-- `agentos-memory`：记录用户输入和 Agent 输出。
+- `DISCOVERY_COMPLETED`：探索计划成功并获得新环境信息。
+- `RECOVERABLE_FAILURE`：工具失败但任务仍可恢复。
+- `INVALID_ASSUMPTION`：例如原计划猜测的文件不存在。
+- `EXECUTION_COMPLETED`：工具执行完成，需要模型综合真实结果。
 
-## 扩展方式
+只有 `EXECUTION / COMPLETE` 会进入 `AgentFinalizer`。Finalizer 是 Runtime 内部控制动作，
+不会出现在工具注册表中，也不会额外调用模型。
 
-- 替换 `TaskPlanner` 可以接入 LLM、工作流引擎或规则系统。
-- 替换 `MemoryService` 后端可以接入数据库或向量存储。
-- 可以新增其他 `AgentLoop` 实现，例如研究 Agent、代码 Agent 或多 Agent 调度器，而不必修改 `AgentRuntime`。
+记忆采用 fail-open：只有最终成功的运行会写入 `CompletedTurn`；记忆存储失败不会把成功运行改成
+失败。工具观察写入记忆前按单条 20,000 字符、总计 100,000 字符限制，并优先保留最新结果。

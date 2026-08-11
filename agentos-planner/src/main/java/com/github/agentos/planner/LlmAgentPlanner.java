@@ -1,0 +1,209 @@
+package com.github.agentos.planner;
+
+import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.AgentExecutionLimits;
+import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.memory.MemoryContext;
+import com.github.agentos.memory.MemoryScope;
+import com.github.agentos.memory.MemoryService;
+import com.github.agentos.tool.ToolCall;
+import com.github.agentos.tool.ToolRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+/** 使用大语言模型生成初始计划和基于执行快照的重规划计划。 */
+public final class LlmAgentPlanner implements AgentPlanner {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(LlmAgentPlanner.class);
+
+    private final ModelClient modelClient;
+    private final ToolRegistry toolRegistry;
+    private final MemoryService memoryService;
+    private final PlanValidator planValidator;
+    private final AgentExecutionLimits limits;
+
+    /** 创建迭代式大语言模型规划器。 */
+    public LlmAgentPlanner(
+            ModelClient modelClient,
+            ToolRegistry toolRegistry,
+            MemoryService memoryService,
+            PlanValidator planValidator,
+            AgentExecutionLimits limits) {
+        this.modelClient = Objects.requireNonNull(modelClient, "modelClient must not be null");
+        this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
+        this.memoryService = Objects.requireNonNull(memoryService, "memoryService must not be null");
+        this.planValidator = Objects.requireNonNull(planValidator, "planValidator must not be null");
+        this.limits = Objects.requireNonNull(limits, "limits must not be null");
+    }
+
+    @Override
+    public AgentPlan createPlan(AgentRequest request, AgentContext context) {
+        return generate(request, context, null, null, PlanOrigin.INITIAL);
+    }
+
+    @Override
+    public AgentPlan replan(
+            AgentRequest request,
+            AgentContext context,
+            AgentPlan previousPlan,
+            PlanExecutionSnapshot snapshot) {
+        Objects.requireNonNull(previousPlan, "previousPlan must not be null");
+        Objects.requireNonNull(snapshot, "snapshot must not be null");
+        return decide(request, context, previousPlan, snapshot).plan();
+    }
+
+    @Override
+    public AgentDecision decide(
+            AgentRequest request,
+            AgentContext context,
+            AgentPlan previousPlan,
+            PlanExecutionSnapshot snapshot) {
+        Objects.requireNonNull(previousPlan, "previousPlan must not be null");
+        Objects.requireNonNull(snapshot, "snapshot must not be null");
+        return AgentDecision.from(
+                generate(request, context, previousPlan, snapshot, PlanOrigin.REPLANNED));
+    }
+
+    private AgentPlan generate(
+            AgentRequest request,
+            AgentContext context,
+            AgentPlan previousPlan,
+            PlanExecutionSnapshot snapshot,
+            PlanOrigin origin) {
+        Objects.requireNonNull(request, "request must not be null");
+        Objects.requireNonNull(context, "context must not be null");
+        MemoryScope scope = new MemoryScope(
+                context.teamId(),
+                context.userId(),
+                context.agentId(),
+                request.sessionId(),
+                context.taskId());
+        long recallStarted = System.nanoTime();
+        MemoryContext memoryContext = memoryService.recall(scope, request.objective());
+        LOGGER.info(
+                "[agent-memory] recalled sessionId={} teamId={} userId={} agentId={} taskId={} "
+                        + "l0Count={} l1Count={} l2Count={} l3Count={} degraded={} durationMs={}",
+                request.sessionId(),
+                context.teamId(),
+                context.userId(),
+                context.agentId(),
+                context.taskId(),
+                memoryContext.recentTurns().size(),
+                memoryContext.atomicMemories().size(),
+                memoryContext.scenarios().size(),
+                memoryContext.profile() == null ? 0 : 1,
+                memoryContext.degraded(),
+                elapsedMillis(recallStarted));
+
+        int completedStepCount = snapshot == null ? 0 : snapshot.stepResults().size();
+        int remainingSteps = limits.maxStepCount() - completedStepCount;
+        PlanningRequest planningRequest = new PlanningRequest(
+                request,
+                context,
+                memoryContext,
+                previousPlan,
+                snapshot,
+                toolRegistry.definitions(),
+                Math.min(planValidator.maxSteps(), Math.max(0, remainingSteps)));
+
+        ModelPlan modelPlan = Objects.requireNonNull(
+                modelClient.generatePlan(planningRequest),
+                "modelClient response must not be null");
+        AgentPlan plan = toAgentPlan(modelPlan, origin);
+        if (plan.steps().size() > planningRequest.maxSteps()) {
+            throw new PlanValidationException(List.of(
+                    "step count " + plan.steps().size()
+                            + " exceeds remaining runtime limit " + planningRequest.maxSteps()));
+        }
+        planValidator.validate(plan);
+        return plan;
+    }
+
+    private AgentPlan toAgentPlan(ModelPlan modelPlan, PlanOrigin origin) {
+        List<String> violations = validateModelStructure(modelPlan);
+        if (!violations.isEmpty()) {
+            throw new PlanValidationException(violations);
+        }
+        List<PlanStep> steps = modelPlan.steps() == null
+                ? List.of()
+                : modelPlan.steps().stream()
+                        .map(step -> new PlanStep(
+                                step.id(),
+                                step.description(),
+                                Boolean.TRUE.equals(step.optional()),
+                                new ToolCall(step.toolName(), step.arguments())))
+                        .toList();
+        return AgentPlan.create(
+                modelPlan.type(),
+                origin,
+                modelPlan.outcome(),
+                modelPlan.objective(),
+                steps,
+                modelPlan.finalAnswer());
+    }
+
+    private List<String> validateModelStructure(ModelPlan modelPlan) {
+        List<String> violations = new ArrayList<>();
+        if (modelPlan.type() == null) violations.add("type must not be null");
+        if (modelPlan.outcome() == null) violations.add("outcome must not be null");
+        if (modelPlan.objective() == null || modelPlan.objective().isBlank()) {
+            violations.add("objective must not be blank");
+        }
+        if (modelPlan.outcome() == PlanOutcome.COMPLETE) {
+            if (modelPlan.type() != PlanType.EXECUTION) {
+                violations.add("COMPLETE plan must have type EXECUTION");
+            }
+            if (modelPlan.steps() != null && !modelPlan.steps().isEmpty()) {
+                violations.add("COMPLETE plan must not contain steps");
+            }
+            if (modelPlan.finalAnswer() == null || modelPlan.finalAnswer().isBlank()) {
+                violations.add("COMPLETE plan must contain finalAnswer");
+            }
+            return violations;
+        }
+        if (modelPlan.outcome() == PlanOutcome.CONTINUE
+                && (modelPlan.steps() == null || modelPlan.steps().isEmpty())) {
+            violations.add("CONTINUE plan must contain at least one step");
+            return violations;
+        }
+        if (modelPlan.outcome() == PlanOutcome.CONTINUE
+                && modelPlan.finalAnswer() != null
+                && !modelPlan.finalAnswer().isBlank()) {
+            violations.add("CONTINUE plan must not contain finalAnswer");
+        }
+
+        Set<String> stepIds = new HashSet<>();
+        for (int index = 0; modelPlan.steps() != null && index < modelPlan.steps().size(); index++) {
+            ModelPlan.Step step = modelPlan.steps().get(index);
+            String path = "steps[" + index + "]";
+            if (step == null) {
+                violations.add(path + " must not be null");
+                continue;
+            }
+            if (step.id() == null || step.id().isBlank()) {
+                violations.add(path + ".id must not be blank");
+            } else if (!stepIds.add(step.id())) {
+                violations.add(path + ".id duplicates " + step.id());
+            }
+            if (step.description() == null || step.description().isBlank()) {
+                violations.add(path + ".description must not be blank");
+            }
+            if (step.optional() == null) violations.add(path + ".optional must not be null");
+            if (step.toolName() == null || step.toolName().isBlank()) {
+                violations.add(path + ".toolName must not be blank");
+            }
+            if (step.arguments() == null) violations.add(path + ".arguments must not be null");
+        }
+        return violations;
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000;
+    }
+}

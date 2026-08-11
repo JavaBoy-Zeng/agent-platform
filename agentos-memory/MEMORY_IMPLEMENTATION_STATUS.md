@@ -39,13 +39,13 @@ MemoryKnowledge 能力说明。由于本次没有记录上游提交号，本文�
 - **已接入**：已经进入 AgentOS 调用链，但仍受底层实现完整度限制。
 - **未实现**：当前仓库没有发现能够提供该能力的实现类或服务。
 
-由于当前全项目测试并非全绿，表格中的“已实现”表示代码级实现状态，不表示整个
-记忆系统已经通过发布验收。
+当前全项目测试已经通过；表格中的“已实现”仍只表示代码和自动化测试覆盖，
+不表示记忆系统已经达到生产发布标准。
 
 ## 3. 当前主链路
 
 ```text
-LlmTaskPlanner
+LlmAgentPlanner
     │
     ├── 规划前调用 MemoryService.recall()
     │       ├── 查询 L0 最近对话
@@ -93,6 +93,7 @@ MainAgent
 | 中英文基础分词 | 已实现基础版 | [`TextAnalyzer`](src/main/java/com/github/agentos/memory/TextAnalyzer.java) | 英文按词、中文按单字和二元组进行无依赖分词。 |
 | 检索请求和结果模型 | 已实现 | [`MemoryQuery`](src/main/java/com/github/agentos/memory/MemoryQuery.java)、[`MemorySearchHit`](src/main/java/com/github/agentos/memory/MemorySearchHit.java) | 支持作用域、记忆类型、数量限制、评分和来源。 |
 | 记忆作用域隔离 | 已实现基础版 | [`MemoryScope`](src/main/java/com/github/agentos/memory/MemoryScope.java) | 使用 team、user、agent、session、task 标识控制查询范围，但不等于 ACL。 |
+| Memory HTTP 只读查询 | 已实现基础版 | [`MemoryController`](../agentos-server/src/main/java/com/github/agentos/server/MemoryController.java) | 提供按作用域查看 L0-L3 数量及实际数据的 GET 接口，尚未接入鉴权和写操作。 |
 | 召回预算与超时 | 已实现 | [`MemoryRecallPolicy`](src/main/java/com/github/agentos/memory/MemoryRecallPolicy.java) | 限制最近对话数、原子记忆数、场景数、字符数和超时时间。 |
 | 记忆上下文模型 | 已实现 | [`MemoryContext`](src/main/java/com/github/agentos/memory/MemoryContext.java) | 统一封装 L0-L3 召回结果、格式化文本及降级状态。 |
 | 上下文边界及截断 | 已实现 | [`MemoryContextFormatter`](src/main/java/com/github/agentos/memory/MemoryContextFormatter.java) | 添加不可信历史数据边界，并根据字符预算截断。 |
@@ -102,7 +103,7 @@ MainAgent
 | 统一存储接口 | 已实现 | [`MemoryStore`](src/main/java/com/github/agentos/memory/MemoryStore.java) | 定义 L0-L3 和 Pipeline Job 的存取端口。 |
 | JVM 内存存储 | 已实现 | [`InMemoryMemoryStore`](src/main/java/com/github/agentos/memory/InMemoryMemoryStore.java) | 适用于测试和单进程运行。 |
 | 本地文件持久化 | 已实现基础版 | [`FileMemoryStore`](src/main/java/com/github/agentos/memory/FileMemoryStore.java) | 使用带版本号的自定义二进制格式和原子文件替换。 |
-| 规划前记忆召回 | 已接入 | [`LlmTaskPlanner`](../agentos-planner/src/main/java/com/github/agentos/planner/LlmTaskPlanner.java) | 构建规划请求前调用 `MemoryService.recall()`。 |
+| 规划前记忆召回 | 已接入 | [`LlmAgentPlanner`](../agentos-planner/src/main/java/com/github/agentos/planner/LlmAgentPlanner.java) | 初始规划和重规划前调用 `MemoryService.recall()`。 |
 | 成功后记忆捕获 | 已接入 | [`MainAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/MainAgent.java) | Agent 执行成功后保存本轮输入、输出和工具结果。 |
 | Spring 运行配置 | 已接入 | [`AgentOsConfiguration`](../agentos-server/src/main/java/com/github/agentos/server/AgentOsConfiguration.java) | 支持 `memory` 和本地文件两种运行模式。 |
 
@@ -140,7 +141,7 @@ MemoryService.recall(MemoryScope scope, String currentInput)
 调用链：
 
 ```text
-LlmTaskPlanner.createPlan()
+LlmAgentPlanner.createPlan()/replan()
   -> MemoryService.recall()
   -> MemoryStore.listRecentTurns()
   -> HybridMemoryRetriever.search()
@@ -192,7 +193,6 @@ RuleBasedMemoryModel
 | Team、User、Role 和 Membership | 未实现 | `Team`、`User`、`Role`、`TeamMembership` |
 | private/team/restricted/agent 可见性 | 未实现 | `AssetVisibility`、`AccessPolicy` |
 | User/Role/Agent ACL | 未实现 | `AssetAcl`、`AuthorizationService` |
-| Memory HTTP Gateway | 未实现 | `MemoryController`、`MemoryAdminController` |
 | `/v3/tools/list`、`/v3/tools/call` | 未实现 | `MemoryToolController`、`MemoryToolRegistry` |
 | Knowledge HTTP API 和状态回调 | 未实现 | `KnowledgeController`、`KnowledgeCallbackClient` |
 | OpenAPI 文档 | 未实现 | SpringDoc/OpenAPI 配置与接口注解 |
@@ -200,7 +200,7 @@ RuleBasedMemoryModel
 | OpenClaw/Hermes/Claude Code 适配器 | 未实现 | 独立适配器模块 |
 | SQLite/JDBC 数据库持久化 | 未实现 | JDBC/JPA/MyBatis Repository 实现 |
 | 数据库版本迁移 | 未实现 | Flyway 或 Liquibase 迁移脚本 |
-| Memory Hub 管理面板 | 未实现 | 后端管理 API 及对应前端页面 |
+| Memory Hub 管理面板 | 未实现 | 管理前端、鉴权及写操作 API |
 | Proxy 服务和模型绑定 | 未实现 | `MemoryProxyService`、`LlmBindingService` |
 | 生产部署、健康检查和可观测性 | 未实现 | Actuator、指标、Trace、Docker 部署配置 |
 
@@ -252,18 +252,8 @@ BUILD SUCCESS
 mvn test
 ```
 
-结果：`BUILD FAILURE`。
-
-失败位置：
-
-- [`LlmTaskPlannerTest`](../agentos-planner/src/test/java/com/github/agentos/planner/LlmTaskPlannerTest.java)
-  的 `recallsLayeredMemoryBeforeCallingTheModel()`。
-- 失败断言要求输入 `hello` 时仍能召回非空 L1 原子记忆。
-- 当前 `HybridMemoryRetriever` 只保留 BM25 得分大于零或向量余弦得分大于零的结果，
-  因此该断言与当前相关性过滤行为不一致。
-
-这可能是测试预期错误，也可能说明召回缺少稳定记忆兜底策略。在明确产品语义前，不能据此
-直接修改检索算法。
+当前规划器测试使用与已保存记忆相关的查询验证 L0 召回，不再假设无相关性的输入必须命中 L1。
+完整构建结果以项目根目录最近一次 `mvn clean test` 为准。
 
 ### 8.3 尚缺测试
 
@@ -285,7 +275,7 @@ mvn test
 
 ### 阶段一：稳定现有 Chat Memory
 
-1. 修复全项目失败测试并明确无相关性查询的召回策略。
+1. 持续补充召回相关性、失败恢复和作用域边界测试。
 2. 清理或迁移 `ShortMemory`、`LongMemory` 和 `MemoryEntry` 旧实现。
 3. 更新 `agentos-memory/ReadMe.md`，使其与当前 API 一致。
 4. 增加真实 LLM `MemoryModel` 实现和真实 Embedding 适配器。

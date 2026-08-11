@@ -5,9 +5,9 @@
 ## 主要职责
 
 - 创建和切换 Agent 会话。
-- 向 `POST /api/agents/runs` 提交任务指令。
-- 展示 Agent 输出、失败信息、运行状态和迭代次数。
-- 可视化 Context、Plan、Tool、Memory 执行管线。
+- 向 `POST /api/agents/runs/stream` 提交任务指令并解析 SSE 响应。
+- 实时展示 Plan、Tool、Observation、Decision、最终输出和失败信息。
+- 可视化 MainAgent、Planner、Tool、Observation、Decision 执行管线。
 - 将最近 20 个会话及消息保存在浏览器 `localStorage` 中。
 - 展示当前 HITL 风险门禁策略。
 

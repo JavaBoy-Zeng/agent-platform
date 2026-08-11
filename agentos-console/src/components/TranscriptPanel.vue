@@ -13,7 +13,12 @@ function timeLabel(value) {
 }
 
 function roleLabel(role) {
-  return { user: 'OPERATOR', assistant: 'MAIN AGENT', error: 'SYSTEM ERROR' }[role] || role
+  return {
+    user: 'OPERATOR',
+    assistant: 'MAIN AGENT',
+    event: 'RUNTIME EVENT',
+    error: 'SYSTEM ERROR'
+  }[role] || role
 }
 </script>
 

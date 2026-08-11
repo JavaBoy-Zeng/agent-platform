@@ -1,4 +1,10 @@
-package com.github.agentos.tool;
+package com.github.agentos.tool.tools;
+
+import com.github.agentos.tool.AgentTool;
+import com.github.agentos.tool.ToolCall;
+import com.github.agentos.tool.ToolParameter;
+import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.ToolFailureType;
 
 import java.util.List;
 
@@ -59,7 +65,7 @@ public final class EchoTool implements AgentTool {
     public ToolResult execute(ToolCall call) {
         Object message = call.arguments().get("message");
         return message == null
-                ? ToolResult.failure("missing required argument: message")
+                ? ToolResult.failure(ToolFailureType.INVALID_ARGUMENT, "missing required argument: message")
                 : ToolResult.success(message.toString());
     }
 }

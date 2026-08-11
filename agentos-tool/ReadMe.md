@@ -1,70 +1,43 @@
 # agentos-tool
 
-`agentos-tool` 定义 Agent 可调用能力的统一协议，并负责工具注册、查找和安全执行。搜索、数据库查询、文件操作或第三方 API 都可以作为 `AgentTool` 接入。
-
-## 主要职责
-
-- 定义工具名称、说明、风险级别、参数结构和执行方法。
-- 使用统一模型描述工具参数和执行结果。
-- 按名称注册、查找和枚举工具。
-- 捕获工具异常，将其转换为标准失败结果。
+`agentos-tool` 定义 Agent 可调用能力的统一协议、注册表、执行边界和结构化失败类型。
 
 ## 核心类型
 
 | 类型 | 作用 |
 | --- | --- |
-| `AgentTool` | 工具扩展接口，同时声明 `LOW`、`MEDIUM` 或 `HIGH` 风险等级。 |
-| `ToolParameter` | 参数名称、JSON 基础类型、说明和必填标记。 |
-| `ToolDefinition` | 面向模型的工具名称、说明、风险和参数结构快照。 |
-| `ToolCall` | 一次工具调用，包含工具名称和参数 Map。 |
-| `ToolResult` | 标准执行结果，包含成功标记、输出和错误。 |
-| `ToolRegistry` | 线程安全的工具注册表，同时向规划器提供稳定排序的工具定义。 |
-| `ToolExecutor` | 查找并执行工具，把异常归一化为 `ToolResult.failure`。 |
-| `EchoTool` | 内置低风险示例工具，用于验证完整调用链。 |
+| `AgentTool` | 工具扩展接口，声明名称、说明、参数、风险等级和执行方法。 |
+| `ToolParameter / ToolDefinition` | 同时供模型 Schema 和运行前校验使用的参数结构。 |
+| `ToolCall` | 工具名称和不可变参数 Map。 |
+| `ToolResult` | 成功输出，或带 `ToolFailureType` 的结构化失败。 |
+| `ToolRegistry` | 线程安全地注册、查找和枚举工具。 |
+| `ToolExecutor` | 捕获未处理异常并转换为 `TOOL_INTERNAL_ERROR`。 |
+| `FileAccessPolicy` | 所有文件工具共用的路径授权抽象。 |
 
-## 新增工具
+当前服务端装配 `AllowAllReadableFileAccessPolicy`，允许读取本机任意可读路径，不限制 workspace。
+未来可以替换为 sandbox 策略而不修改工具实现。
 
-```java
-public final class SearchTool implements AgentTool {
-    @Override
-    public String name() {
-        return "search";
-    }
+## 内置工具
 
-    @Override
-    public String description() {
-        return "Searches the knowledge base";
-    }
+| 工具 | 用途和边界 |
+| --- | --- |
+| `directory_list` | 有界列出目录；深度默认 2、最大 5，条目默认 200、最大 500，不跟随符号链接。 |
+| `file_search` | `NAME` glob 或 `CONTENT` 字面量搜索；深度默认 8、最大 12，结果默认 100、最大 500。 |
+| `file_read` | 在路径已确认后读取文本文件。 |
+| `echo` | 仅用于调用链测试，不承担最终回答。 |
+| `weather` | 查询外部天气接口。 |
 
-    @Override
-    public RiskLevel riskLevel() {
-        return RiskLevel.LOW;
-    }
+`file_search` 最多扫描 20,000 个文件。内容搜索会跳过符号链接、二进制、不可读和大于 1 MiB 的
+文件，并返回带行号的匹配结果。
 
-    @Override
-    public List<ToolParameter> parameters() {
-        return List.of(new ToolParameter(
-                "query",
-                ToolParameter.ValueType.STRING,
-                "搜索关键词",
-                true));
-    }
+## 失败分类约定
 
-    @Override
-    public ToolResult execute(ToolCall call) {
-        return ToolResult.success("search result");
-    }
-}
-```
+工具应尽量返回明确的 `ToolFailureType`：
 
-在 Spring Boot 服务中将实现声明为 Bean 后，`ToolRegistry` 会自动收集它。
-`ToolRegistry.definitions()` 会把工具说明和参数结构提供给 `LlmTaskPlanner`，同一份定义也用于
-执行前参数校验。
+- 参数错误：`INVALID_ARGUMENT`
+- 资源不存在：`NOT_FOUND`
+- 短暂网络或服务故障：`TRANSIENT`
+- 访问、权限或安全策略拒绝：对应 `ACCESS_DENIED / PERMISSION_DENIED / SECURITY_DENIED`
+- 工具实现 Bug：`TOOL_INTERNAL_ERROR`
 
-## 安全边界
-
-- 工具只声明自身风险等级，不决定是否批准执行。
-- 是否需要人工审批由 `agentos-hitl` 的 `RiskPolicy` 判断。
-- `ToolExecutor` 负责执行和异常归一化，不绕过审批直接制定安全策略。
-
-模块构建依赖 `agentos-kernel`，工具协议本身保持与具体 Agent 实现解耦。
+`UNKNOWN` 默认由 Runtime 终止，避免规划器掩盖没有正确分类的工具问题。

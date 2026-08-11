@@ -1,0 +1,57 @@
+# AgentOS 配置示例。
+# 使用方式：复制为 application.yml，再按实际环境修改。
+# 不要把真实 API Key 写入并提交到 Git。
+
+server:
+  port: 8080
+
+agentos:
+  runtime:
+    # 单次 Agent 运行的累计预算；工具重试也计入 max-tool-calls。
+    max-replan-count: 3
+    max-step-count: 30
+    max-tool-calls: 30
+    max-model-calls: 6
+    # 仅将摘要后的工具结果反馈给模型，避免多轮规划持续放大上下文。
+    max-observation-chars: 4000
+    max-observation-total-chars: 24000
+
+  model:
+    # MiniMax 中国区 OpenAI-compatible 配置。
+    model: "MiniMax-M3"
+    api-key: "${AGENTOS_MODEL_API_KEY:}"
+    endpoint: "https://api.minimaxi.com/v1/chat/completions"
+
+    # MiniMax 当前不接收 OpenAI response_format 参数。
+    response-format: "NONE"
+
+    # 将 MiniMax-M3 的思考内容拆分到 reasoning_content，保持 content 为纯 JSON。
+    reasoning-split: true
+
+    connect-timeout: "10s"
+    request-timeout: "60s"
+    # 单次 Planner user prompt 的字符上限；超限时保留首尾关键上下文。
+    max-prompt-chars: 60000
+
+  memory:
+    # 可选值：file、memory。生产环境建议使用 file。
+    mode: "file"
+    data-dir: ".agentos/memory"
+
+logging:
+  level:
+    root: INFO
+    com.github.agentos: INFO
+
+  # 同时写入控制台和滚动日志文件。
+  file:
+    name: "logs/agentos.log"
+  logback:
+    rollingpolicy:
+      max-file-size: "10MB"
+      max-history: 14
+      total-size-cap: "200MB"
+
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

@@ -4,7 +4,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-/** 经过检索、隔离和预算裁剪后提供给规划器的记忆上下文。 */
+/**
+ * 经过检索、隔离和预算裁剪后提供给规划器的记忆上下文。
+ */
 public record MemoryContext(
         List<CompletedTurn> recentTurns,
         List<MemorySearchHit> atomicMemories,

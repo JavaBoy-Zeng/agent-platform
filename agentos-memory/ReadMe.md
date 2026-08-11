@@ -86,8 +86,8 @@ memory.rememberFact("session-1", "用户偏好中文回复");
 能力      private/team/restricted/agent ACL
 当前状态  未实现；MemoryScope 只是数据隔离
 ───────────────────────────────────────────────────────────────
-能力      Memory HTTP Gateway、OpenAPI
-当前状态  未实现
+能力      Memory HTTP 只读查询
+当前状态  已实现基础版，尚无鉴权和写接口
 ───────────────────────────────────────────────────────────────
 能力      /v3/tools/list、/v3/tools/call
 当前状态  未实现
@@ -117,15 +117,12 @@ memory.rememberFact("session-1", "用户偏好中文回复");
   模型。
 
 - agentos-server/src/main/java/com/github/agentos/server/
-  AgentController.java:21：目前只有 Agent 运行接口，没有记忆资
-  产管理接口。
+  MemoryController.java：提供按作用域查看 L0-L3 的只读接口。
 
 测试结果也不能支持“全部完成”：
 
 - agentos-memory 自身 2 个测试全部通过。
-- 全项目执行 mvn test 失败：agentos-planner/src/test/java/com/
-  github/agentos/planner/LlmTaskPlannerTest.java:57 对原子记忆
-  召回的断言失败。
+- 规划器测试通过相关查询验证分层记忆召回，不再要求无相关性查询必须命中 L1。
 
 - 记忆模块只有一个测试类，尚未覆盖并发、失败重试、损坏文件、权
   限隔离、容量边界和真实 Embedding 等场景。

@@ -29,17 +29,34 @@ public final class AgentRuntime {
     /**
      * 在指定上下文中执行一次 Agent 循环并保存最终状态。
      *
-     * @param context 本次运行上下文
+     * @param request 本次用户请求
+     * @param context 本次身份和任务上下文
      * @return 执行结束后的状态快照
-     * @throws NullPointerException 当上下文为 {@code null} 时抛出
+     * @throws NullPointerException 当请求或上下文为 {@code null} 时抛出
      */
-    public AgentState run(AgentContext context) {
+    public AgentState run(AgentRequest request, AgentContext context) {
+        return run(request, context, AgentEventSink.NOOP);
+    }
+
+    /**
+     * 在指定上下文中执行 Agent，并向调用方流式发送阶段事件。
+     *
+     * @param request 本次用户请求
+     * @param context 本次身份和任务上下文
+     * @param eventSink 运行事件接收端
+     * @return 执行结束后的状态快照
+     */
+    public AgentState run(
+            AgentRequest request, AgentContext context, AgentEventSink eventSink) {
+        Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
-        return states.compute(context.sessionId(), (sessionId, previous) -> {
+        Objects.requireNonNull(eventSink, "eventSink must not be null");
+        return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
             try {
                 AgentState result = Objects.requireNonNull(
-                        agentLoop.run(context, running), "agentLoop returned null state");
+                        agentLoop.run(request, context, running, eventSink),
+                        "agentLoop returned null state");
                 if (result.status() == AgentState.Status.RUNNING) {
                     return result.fail("agent loop finished without a terminal state");
                 }
@@ -48,6 +65,10 @@ public final class AgentRuntime {
                 String message = exception.getMessage() == null
                         ? exception.getClass().getSimpleName()
                         : exception.getMessage();
+                if (Thread.currentThread().isInterrupted()
+                        || exception instanceof java.util.concurrent.CancellationException) {
+                    return running.cancel(message);
+                }
                 return running.fail(message);
             }
         });

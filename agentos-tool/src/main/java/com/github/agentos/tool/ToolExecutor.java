@@ -35,11 +35,14 @@ public final class ToolExecutor {
             return Objects.requireNonNull(
                     registry.require(call.toolName()).execute(call),
                     "tool returned null result");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return ToolResult.failure(ToolFailureType.TRANSIENT, "tool execution interrupted");
         } catch (Exception exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName()
                     : exception.getMessage();
-            return ToolResult.failure(message);
+            return ToolResult.failure(ToolFailureType.TOOL_INTERNAL_ERROR, message);
         }
     }
 }

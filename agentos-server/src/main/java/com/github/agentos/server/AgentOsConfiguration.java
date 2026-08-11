@@ -1,30 +1,38 @@
 package com.github.agentos.server;
 
+import com.github.agentos.agent.AgentFinalizer;
+import com.github.agentos.agent.DefaultAgentFinalizer;
 import com.github.agentos.agent.MainAgent;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.RiskPolicy;
+import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRuntime;
 import com.github.agentos.memory.MemoryService;
-import com.github.agentos.planner.PlanExecutor;
-import com.github.agentos.planner.PlanValidator;
-import com.github.agentos.planner.TaskPlanner;
+import com.github.agentos.planner.*;
 import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.EchoTool;
+import com.github.agentos.tool.FileReaderFactory;
 import com.github.agentos.tool.ToolExecutor;
 import com.github.agentos.tool.ToolRegistry;
+import com.github.agentos.tool.file.AllowAllReadableFileAccessPolicy;
+import com.github.agentos.tool.file.FileAccessPolicy;
+import com.github.agentos.tool.reader.DocxFileReader;
+import com.github.agentos.tool.reader.PdfFileReader;
+import com.github.agentos.tool.reader.TextFileReader;
+import com.github.agentos.tool.tools.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * AgentOS 默认组件的 Spring 装配配置。
  *
  * <p>该配置集中组装工具、记忆、风险策略、计划执行器、主 Agent 和运行时。
- * 规划器按照运行环境分别由 {@link LlmPlannerConfiguration} 和
- * {@link DemoPlannerConfiguration} 装配，领域模块本身不依赖 Spring。</p>
+ * 规划器由 {@link LlmPlannerConfiguration} 装配。</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class AgentOsConfiguration {
@@ -44,6 +52,41 @@ public class AgentOsConfiguration {
     EchoTool echoTool() {
         return new EchoTool();
     }
+
+    @Bean
+    WeatherTool weatherTool() {
+        return new WeatherTool();
+    }
+
+    @Bean
+    FileAccessPolicy fileAccessPolicy() {
+        return new AllowAllReadableFileAccessPolicy();
+    }
+
+    @Bean
+    FileReadTool fileReadTool(FileAccessPolicy fileAccessPolicy) {
+        return new FileReadTool(
+                fileAccessPolicy,
+                new FileReaderFactory(
+                        List.of(
+                                new TextFileReader(),
+                                new DocxFileReader(),
+                                new PdfFileReader()
+                        )
+                )
+        );
+    }
+
+    @Bean
+    DirectoryListTool directoryListTool(FileAccessPolicy fileAccessPolicy) {
+        return new DirectoryListTool(fileAccessPolicy);
+    }
+
+    @Bean
+    FileSearchTool fileSearchTool(FileAccessPolicy fileAccessPolicy) {
+        return new FileSearchTool(fileAccessPolicy);
+    }
+
 
     /**
      * 创建工具注册表，并注册 Spring 容器中的全部工具。
@@ -68,20 +111,10 @@ public class AgentOsConfiguration {
     }
 
     /**
-     * 创建每个会话最多保留二十条记录的短期记忆。
-     *
-     * @return 短期记忆存储
-     */
-    /**
-     * 创建进程内长期记忆存储。
-     *
-     * @return 长期记忆存储
-     */
-    /**
      * 创建统一记忆服务。
      *
-     * @param shortMemory 短期记忆存储
-     * @param longMemory  长期记忆存储
+     * @param mode          存储模式：{@code memory} 或 {@code file}
+     * @param dataDirectory 文件模式的数据目录
      * @return 记忆服务
      */
     @Bean(destroyMethod = "close")
@@ -127,6 +160,28 @@ public class AgentOsConfiguration {
         return new PlanValidator(toolRegistry);
     }
 
+    @Bean
+    AgentExecutionLimits agentExecutionLimits(
+            @Value("${agentos.runtime.max-replan-count:3}") int maxReplanCount,
+            @Value("${agentos.runtime.max-step-count:30}") int maxStepCount,
+            @Value("${agentos.runtime.max-tool-calls:30}") int maxToolCalls,
+            @Value("${agentos.runtime.max-model-calls:6}") int maxModelCalls) {
+        return new AgentExecutionLimits(
+                maxReplanCount, maxStepCount, maxToolCalls, maxModelCalls);
+    }
+
+    @Bean
+    FailureClassifier failureClassifier() {
+        return new DefaultFailureClassifier();
+    }
+
+    @Bean
+    ObservationSummarizer observationSummarizer(
+            @Value("${agentos.runtime.max-observation-chars:4000}") int maxObservationChars,
+            @Value("${agentos.runtime.max-observation-total-chars:24000}") int maxTotalChars) {
+        return new DefaultObservationSummarizer(maxObservationChars, maxTotalChars);
+    }
+
     /**
      * 创建计划执行器。
      *
@@ -141,24 +196,38 @@ public class AgentOsConfiguration {
             ToolRegistry toolRegistry,
             ToolExecutor toolExecutor,
             RiskPolicy riskPolicy,
-            ApprovalService approvalService) {
-        return new PlanExecutor(toolRegistry, toolExecutor, riskPolicy, approvalService);
+            ApprovalService approvalService,
+            FailureClassifier failureClassifier) {
+        return new PlanExecutor(
+                toolRegistry, toolExecutor, riskPolicy, approvalService, failureClassifier);
+    }
+
+    @Bean
+    AgentFinalizer agentFinalizer() {
+        return new DefaultAgentFinalizer();
     }
 
     /**
      * 创建默认主 Agent。
      *
-     * @param taskPlanner   任务规划器
-     * @param planExecutor  计划执行器
-     * @param memoryService 记忆服务
+     * @param agentPlanner   迭代式规划器
+     * @param planExecutor   计划执行器
+     * @param memoryService  记忆服务
+     * @param agentFinalizer 内部最终回答收口器
+     * @param limits         单次运行累计预算
      * @return 主 Agent
      */
     @Bean
     MainAgent mainAgent(
-            TaskPlanner taskPlanner,
+            AgentPlanner agentPlanner,
             PlanExecutor planExecutor,
-            MemoryService memoryService) {
-        return new MainAgent(taskPlanner, planExecutor, memoryService);
+            MemoryService memoryService,
+            AgentFinalizer agentFinalizer,
+            AgentExecutionLimits limits,
+            ObservationSummarizer observationSummarizer) {
+        return new MainAgent(
+                agentPlanner, planExecutor, memoryService, agentFinalizer, limits,
+                observationSummarizer);
     }
 
     /**
@@ -170,5 +239,17 @@ public class AgentOsConfiguration {
     @Bean
     AgentRuntime agentRuntime(MainAgent mainAgent) {
         return new AgentRuntime(mainAgent);
+    }
+
+    /** 为 SSE Agent 运行创建轻量虚拟线程执行器。 */
+    @Bean(destroyMethod = "close")
+    ExecutorService agentStreamExecutor() {
+        return Executors.newVirtualThreadPerTaskExecutor();
+    }
+
+    /** 注册流式运行及其真实执行线程，供停止接口协作取消。 */
+    @Bean
+    AgentRunTaskRegistry agentRunTaskRegistry() {
+        return new AgentRunTaskRegistry();
     }
 }

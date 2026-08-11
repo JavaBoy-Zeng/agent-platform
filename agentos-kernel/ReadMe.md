@@ -4,7 +4,7 @@
 
 ## 主要职责
 
-- 为一次运行提供不可变的输入上下文和扩展属性。
+- 将本次请求与身份/任务上下文建模为两个不可变对象。
 - 定义 Agent 循环的统一执行协议。
 - 保存每个会话最新的运行状态。
 - 统一处理状态迭代、异常隔离和终态校验。
@@ -14,7 +14,9 @@
 
 | 类型 | 作用 |
 | --- | --- |
-| `AgentContext` | 保存 `agentId`、`sessionId`、用户输入和自定义属性。 |
+| `AgentRequest` | 保存 `sessionId`、用户目标和自定义属性。 |
+| `AgentContext` | 保存 `teamId`、`userId`、`agentId` 和 `taskId`。 |
+| `AgentExecutionLimits` | 单次运行的重规划、步骤、工具和模型调用累计预算。 |
 | `AgentState` | Agent 的不可变状态快照，包含状态、迭代次数、输出、错误和更新时间。 |
 | `AgentLoop` | 函数式执行协议，具体 Agent 通过实现它接入运行时。 |
 | `AgentRuntime` | Agent 的统一运行入口，按会话保存状态并调用 `AgentLoop`。 |
@@ -36,11 +38,13 @@ READY/上一轮终态
 ## 调用方式
 
 ```java
-AgentLoop loop = (context, state) -> state.complete("done: " + context.input());
+AgentLoop loop = (request, context, state) ->
+        state.complete("done: " + request.objective());
 AgentRuntime runtime = new AgentRuntime(loop);
 
 AgentState result = runtime.run(
-        AgentContext.of("demo-agent", "session-1", "hello"));
+        AgentRequest.of("session-1", "hello"),
+        AgentContext.of("main-agent"));
 ```
 
 ## 依赖与边界

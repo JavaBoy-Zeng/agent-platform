@@ -888,6 +888,7 @@ kbd {
 
 .message-user header strong { color: var(--blue); }
 .message-assistant header strong { color: var(--signal); }
+.message-event header strong { color: var(--amber); }
 .message-error header strong { color: var(--danger); }
 
 .message p {
@@ -908,6 +909,19 @@ kbd {
 .message-agent {
   margin-right: clamp(20px, 8%, 80px);
   border-left: 2px solid var(--signal-dark);
+}
+
+.message-event {
+  margin-right: clamp(10px, 4%, 40px);
+  margin-left: clamp(10px, 4%, 40px);
+  border-left: 2px solid var(--amber);
+  background: rgba(242, 180, 95, 0.025);
+}
+
+.message-event p {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
 }
 
 .message-error {

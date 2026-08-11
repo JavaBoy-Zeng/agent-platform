@@ -1,6 +1,7 @@
 package com.github.agentos.hitl;
 
 import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.ToolCall;
 
@@ -30,15 +31,19 @@ public final class ApprovalService {
     /**
      * 为指定工具调用请求人工审批。
      *
+     * @param agentRequest 当前 Agent 请求
      * @param context 当前 Agent 运行上下文
      * @param tool 即将执行的工具
      * @param call 具体工具调用
      * @return 审批通过时返回 {@code true}，否则返回 {@code false}
      */
-    public boolean requestApproval(AgentContext context, AgentTool tool, ToolCall call) {
-        ApprovalRequest request = new ApprovalRequest(
-                context.sessionId(), context.agentId(), tool.name(), tool.description(), call, Instant.now());
-        return handler.approve(request);
+    public boolean requestApproval(
+            AgentRequest agentRequest, AgentContext context, AgentTool tool, ToolCall call) {
+        Objects.requireNonNull(agentRequest, "agentRequest must not be null");
+        Objects.requireNonNull(context, "context must not be null");
+        ApprovalRequest approvalRequest = new ApprovalRequest(
+                agentRequest.sessionId(), context.agentId(), tool.name(), tool.description(), call, Instant.now());
+        return handler.approve(approvalRequest);
     }
 
     /**

@@ -1,0 +1,25 @@
+agentos:
+  runtime:
+    max-replan-count: 3
+    max-step-count: 30
+    max-tool-calls: 30
+    max-model-calls: 6
+    max-observation-chars: 4000
+    max-observation-total-chars: 24000
+  model:
+    # 本地开发可以直接填写模型 ID；生产环境建议使用同名环境变量覆盖。
+    model: "${AGENTOS_MODEL_MODEL:MiniMax-M3}"
+    # 不建议把真实 API Key 提交到 Git。
+    api-key: "${AGENTOS_MODEL_API_KEY:sk-cp-15nE6zilY9IrESJA6fzkAWNgJbjs7rN_ZKyf6RxEJf3XyAFFESzpRydmTwWWfkMdYoNrT2QOFoNNy0QEZTmL40vOSlGy3fgLO3NHipqwCZKtha2Rklr1F3U}"
+    endpoint: "${AGENTOS_MODEL_ENDPOINT:https://api.minimaxi.com/v1/chat/completions}"
+    # MiniMax 当前的 OpenAI-compatible 接口不接收 response_format。
+    response-format: "${AGENTOS_MODEL_RESPONSE_FORMAT:NONE}"
+    # MiniMax-M3 将思考内容放入 reasoning_content，保持 content 为纯 JSON。
+    reasoning-split: "${AGENTOS_MODEL_REASONING_SPLIT:true}"
+    connect-timeout: "${AGENTOS_MODEL_CONNECT_TIMEOUT:10s}"
+    request-timeout: "${AGENTOS_MODEL_REQUEST_TIMEOUT:60s}"
+    max-prompt-chars: "${AGENTOS_MODEL_MAX_PROMPT_CHARS:60000}"
+
+logging:
+  level:
+    com.github.agentos: INFO

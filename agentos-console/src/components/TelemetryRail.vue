@@ -23,10 +23,11 @@ const updatedTime = computed(() => {
 })
 
 const stages = [
-  ['CONTEXT', '建立运行上下文'],
-  ['PLAN', '生成任务计划'],
+  ['MAIN AGENT', '建立本次运行上下文'],
+  ['PLANNER', '生成最小可执行计划'],
   ['TOOL', '调用注册工具'],
-  ['MEMORY', '写入会话记忆']
+  ['OBSERVATION', '摘要化工具执行结果'],
+  ['DECISION', '完成或继续规划']
 ]
 
 function stageClass(index) {
@@ -79,6 +80,7 @@ function stageClass(index) {
     <section class="endpoint-note">
       <span>ACTIVE ENDPOINT</span>
       <code>POST /api/agents/runs</code>
+      <code>POST /api/agents/runs/stream</code>
     </section>
   </aside>
 </template>

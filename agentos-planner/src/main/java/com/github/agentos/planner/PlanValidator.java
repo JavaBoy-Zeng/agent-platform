@@ -65,15 +65,18 @@ public final class PlanValidator {
      * @throws NullPointerException 当计划为 {@code null} 时抛出
      * @throws PlanValidationException 当计划违反任一校验规则时抛出
      */
-    public void validate(Plan plan) {
+    public void validate(AgentPlan plan) {
         Objects.requireNonNull(plan, "plan must not be null");
         List<String> violations = new ArrayList<>();
+        if (plan.outcome() == PlanOutcome.COMPLETE) {
+            return;
+        }
         if (plan.steps().size() > maxSteps) {
             violations.add("step count " + plan.steps().size() + " exceeds limit " + maxSteps);
         }
 
-        for (Plan.Step step : plan.steps()) {
-            validateStep(step, violations);
+        for (PlanStep step : plan.steps()) {
+            validateStep(plan, step, violations);
         }
 
         if (!violations.isEmpty()) {
@@ -81,12 +84,15 @@ public final class PlanValidator {
         }
     }
 
-    private void validateStep(Plan.Step step, List<String> violations) {
+    private void validateStep(AgentPlan plan, PlanStep step, List<String> violations) {
         String toolName = step.toolCall().toolName();
         AgentTool tool = toolRegistry.find(toolName).orElse(null);
         if (tool == null) {
             violations.add("step " + step.id() + " references unknown tool " + toolName);
             return;
+        }
+        if (plan.type() == PlanType.DISCOVERY && tool.riskLevel() != AgentTool.RiskLevel.LOW) {
+            violations.add("discovery step " + step.id() + " must use a LOW risk tool");
         }
 
         ToolDefinition definition = ToolDefinition.from(tool);

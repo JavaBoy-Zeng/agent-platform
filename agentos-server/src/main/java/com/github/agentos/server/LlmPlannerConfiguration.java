@@ -1,14 +1,22 @@
 package com.github.agentos.server;
 
 import com.github.agentos.memory.MemoryService;
-import com.github.agentos.planner.LlmTaskPlanner;
+import com.github.agentos.kernel.AgentExecutionLimits;
+import com.github.agentos.planner.AgentPlanner;
+import com.github.agentos.planner.LlmAgentPlanner;
 import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.PlanValidator;
-import com.github.agentos.planner.TaskPlanner;
+import com.github.agentos.server.model.ModelClientProperties;
+import com.github.agentos.server.model.OpenAiCompatibleModelClient;
 import com.github.agentos.tool.ToolRegistry;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import tools.jackson.databind.ObjectMapper;
+
+import java.net.http.HttpClient;
 
 /**
  * 非演示环境的大语言模型规划器装配。
@@ -17,13 +25,34 @@ import org.springframework.context.annotation.Profile;
  * 不属于规划核心模块，由服务端适配器或业务应用实现。</p>
  */
 @Configuration(proxyBeanMethods = false)
-@Profile("!demo")
+@EnableConfigurationProperties(ModelClientProperties.class)
 public class LlmPlannerConfiguration {
 
     /**
      * 创建大语言模型规划器配置。
      */
     public LlmPlannerConfiguration() {
+    }
+
+    /**
+     * 创建默认的 OpenAI-compatible 模型客户端。
+     *
+     * <p>业务应用可以自行声明 {@link ModelClient} Bean 覆盖该默认适配器。</p>
+     *
+     * @param properties 模型端点配置
+     * @param objectMapper 应用 JSON 映射器
+     * @return 模型客户端适配器
+     */
+    @Bean
+    @ConditionalOnMissingBean(ModelClient.class)
+    ModelClient openAiCompatibleModelClient(
+            ModelClientProperties properties,
+            ObjectMapper objectMapper) {
+        HttpClient httpClient = HttpClient.newBuilder()
+                .connectTimeout(properties.getConnectTimeout())
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+        return new OpenAiCompatibleModelClient(httpClient, objectMapper, properties);
     }
 
     /**
@@ -36,11 +65,13 @@ public class LlmPlannerConfiguration {
      * @return 大语言模型任务规划器
      */
     @Bean
-    TaskPlanner llmTaskPlanner(
+    AgentPlanner llmAgentPlanner(
             ModelClient modelClient,
             ToolRegistry toolRegistry,
             MemoryService memoryService,
-            PlanValidator planValidator) {
-        return new LlmTaskPlanner(modelClient, toolRegistry, memoryService, planValidator);
+            PlanValidator planValidator,
+            AgentExecutionLimits limits) {
+        return new LlmAgentPlanner(
+                modelClient, toolRegistry, memoryService, planValidator, limits);
     }
 }

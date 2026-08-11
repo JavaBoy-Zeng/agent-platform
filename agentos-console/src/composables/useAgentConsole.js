@@ -1,5 +1,5 @@
 import { computed, onMounted, ref } from 'vue'
-import { getAgentState, runAgent } from '../services/agentApi.js'
+import { getAgentState, runAgentStream } from '../services/agentApi.js'
 
 const STORAGE_KEY = 'agentos.console.sessions.v1'
 
@@ -41,7 +41,6 @@ export function useAgentConsole() {
   const busy = ref(false)
   const connection = ref('standby')
   const activeStage = ref(0)
-  let pipelineTimer
 
   const currentSession = computed(() =>
     sessions.value.find((session) => session.id === currentSessionId.value) || null)
@@ -114,19 +113,58 @@ export function useAgentConsole() {
   }
 
   function startPipeline() {
-    window.clearInterval(pipelineTimer)
     activeStage.value = 1
-    pipelineTimer = window.setInterval(() => {
-      activeStage.value = Math.min(activeStage.value + 1, 4)
-    }, 420)
   }
 
   function stopPipeline() {
-    window.clearInterval(pipelineTimer)
-    activeStage.value = 4
+    activeStage.value = 5
     window.setTimeout(() => {
       activeStage.value = 0
     }, 700)
+  }
+
+  function streamStage(event) {
+    return {
+      run_started: 1,
+      plan_created: 2,
+      tool_started: 3,
+      tool_finished: 3,
+      observation: 4,
+      decision: 5,
+      replan: 2,
+      run_completed: 5,
+      run_failed: 5
+    }[event] || activeStage.value
+  }
+
+  function eventMessage(event, data) {
+    const details = data?.data || {}
+    if (event === 'plan_created' && details.outcome !== 'COMPLETE') {
+      return `PLAN / ${details.type || ''} / ${data.message || ''}`
+    }
+    if (event === 'tool_started') {
+      return `TOOL / ${details.toolName || ''} / ${data.message || ''}`
+    }
+    if (event === 'observation') {
+      return `OBSERVATION / ${details.toolName || ''}\n${data.message || '(empty result)'}`
+    }
+    if (event === 'decision') {
+      return `DECISION / ${details.outcome || ''} / ${data.message || ''}`
+    }
+    if (event === 'replan') {
+      return `REPLAN ${details.replanCount || ''} / ${data.message || ''}`
+    }
+    return ''
+  }
+
+  function handleStreamEvent(session, packet) {
+    activeStage.value = streamStage(packet.event)
+    const content = eventMessage(packet.event, packet.data)
+    if (content) addMessage(session, 'event', content)
+    if (packet.event === 'state' && packet.data?.state) {
+      session.state = packet.data.state
+    }
+    persist()
   }
 
   async function execute() {
@@ -152,12 +190,12 @@ export function useAgentConsole() {
     persist()
 
     try {
-      const response = await runAgent({
+      const response = await runAgentStream({
         agentId: normalizedAgentId,
         sessionId: normalizedSessionId,
         input: task,
         attributes: { source: 'agentos-console' }
-      })
+      }, (event) => handleStreamEvent(session, event))
       connection.value = 'online'
       session.state = response.state
       if (response.state.status === 'COMPLETED') {

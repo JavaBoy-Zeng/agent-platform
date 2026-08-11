@@ -64,7 +64,7 @@ const {
 
     <footer class="status-footer">
       <span><i></i> AGENTOS KERNEL ONLINE</span>
-      <span class="footer-marquee">CONTEXT → PLAN → APPROVAL → TOOL → MEMORY → STATE</span>
+      <span class="footer-marquee">USER → MAIN AGENT → PLANNER → TOOL → OBSERVATION → DECISION</span>
       <span>CONSOLE v0.1</span>
     </footer>
   </div>

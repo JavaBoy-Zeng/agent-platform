@@ -1,80 +1,67 @@
 # agentos-planner
 
-`agentos-planner` 负责把用户目标转换为可执行计划，并按照计划顺序调度工具。它连接“理解任务”和“执行能力”两个阶段。
+`agentos-planner` 负责生成、校验和执行可迭代调整的 Agent 计划。计划不是一次性静态脚本：
+探索获得新事实或遇到明确可恢复的工具失败后，Runtime 会携带累计执行快照再次调用规划器。
 
-## 主要职责
-
-- 定义规划器协议，隔离具体的计划生成方式。
-- 收集用户输入、Agent 上下文、短期记忆、长期事实和可用工具定义。
-- 通过模型客户端获取结构化计划，并转换为领域计划。
-- 在执行前校验工具、参数结构和最大步骤数。
-- 表示计划、计划步骤和每一步的工具调用。
-- 按顺序执行步骤，并在失败或审批拒绝时停止后续步骤。
-- 汇总每一步的状态、输出和错误。
-
-## 核心类型
+## 领域模型
 
 | 类型 | 作用 |
 | --- | --- |
-| `TaskPlanner` | 根据 `AgentContext` 创建 `Plan` 的函数式接口。 |
-| `LlmTaskPlanner` | 收集规划数据、调用模型、转换响应并校验计划的生产规划器。 |
-| `ModelClient` | 与模型厂商无关的结构化计划生成协议。 |
-| `PlanningRequest` | 发送给模型的输入、上下文、记忆、工具定义和步骤上限。 |
-| `ModelPlan` | 模型适配器解析后的结构化传输模型，不能直接执行。 |
-| `PlanValidator` | 校验工具存在性、参数必填项、参数类型和步骤数上限。 |
-| `PlanValidationException` | 汇总模型计划中的全部校验问题。 |
-| `DemoTaskPlanner` | 仅用于 `demo` Profile 的单步骤回显规划器。 |
-| `Plan` | 不可变计划模型，包含目标和有序步骤，并校验步骤 ID 唯一性。 |
-| `PlanExecutor` | 执行计划，串联工具查找、风险判断、人工审批和工具调用。 |
+| `AgentPlanner` | 提供 `createPlan`、兼容的 `replan`，以及基于 Observation 的 `decide`。 |
+| `LlmAgentPlanner` | 召回记忆、调用 `ModelClient`、把模型 DTO 转成领域计划并校验。 |
+| `AgentPlan` | Runtime 创建的计划，包含 `type`、`origin`、`outcome`、步骤或最终回答。 |
+| `PlanType` | `DISCOVERY` 探索未知环境；`EXECUTION` 执行任务，也包含最终回答阶段。 |
+| `PlanOrigin` | `INITIAL` 或 `REPLANNED`，描述计划如何产生，不进入模型输出 Schema。 |
+| `PlanOutcome` | `CONTINUE` 表示执行工具步骤；`COMPLETE` 表示内部 Finalizer 可返回最终回答。 |
+| `PlanStep` | 一个工具步骤；`optional` 是所有计划类型都可使用的通用语义。 |
+| `Observation` | 原始工具结果的有界摘要，是 Planner 决策阶段使用的证据。 |
+| `ObservationSummarizer` | 确定性摘要工具结果，不额外消耗模型调用。 |
+| `PlanExecutionSnapshot` | 保留累计 `stepResults`，并携带有界 `observations`、当前步骤、最后结果和原因。 |
+| `AgentDecision` | 明确区分 `COMPLETE` 和 `REPLAN`；仅后者消耗重规划预算。 |
+| `PlanExecutor` | 顺序执行步骤，并返回完成、需要重规划或必须终止。 |
+| `FailureClassifier` | 将结构化工具失败分类为 `RETRY / SKIP / REPLAN / ABORT`。 |
 
-## LLM 规划流程
+模型响应使用独立的 `ModelPlan` DTO，只包含：
+
+- `type / outcome / objective`
+- `steps`（`CONTINUE`）
+- `finalAnswer`（`COMPLETE`）
+
+计划 `id` 和 `origin` 由 Runtime 转换 DTO 时注入，不由模型生成。
+
+## 迭代流程
 
 ```text
-AgentContext + MemoryService + ToolRegistry.definitions()
-    │
-    ▼
-PlanningRequest
-    │ ModelClient.generatePlan(...)
-    ▼
-ModelPlan（模型结构化响应）
-    │ LlmTaskPlanner 转换
-    ▼
-Plan + PlanValidator
-    │
-    ▼
-PlanExecutor
-    ├── ToolRegistry：查找工具
-    ├── RiskPolicy：判断是否需要审批
-    ├── ApprovalService：请求人工决策
-    └── ToolExecutor：执行工具
+User → MainAgent → Planner → Tool → Observation → Decision
+                                                  ├── 信息充分 → COMPLETE → Finalizer
+                                                  └── 信息不足 → REPLAN → 下一份计划
 ```
 
-`ModelClient` 的具体适配器负责提示词、鉴权、模型 API 调用和厂商响应解析。
-`LlmTaskPlanner` 不直接依赖任何厂商 SDK，只接收统一的 `ModelPlan`。
+`final_answer` 不是 `AgentTool`。`COMPLETE` 计划必须是 `EXECUTION`、不得包含步骤，并且必须
+包含非空 `finalAnswer`；`CONTINUE` 计划必须包含步骤且不得包含最终回答。
 
-计划只有在满足以下条件后才能交给 `PlanExecutor`：
+## 失败策略
 
-- 步骤数没有超过 `PlanValidator` 配置的上限，默认是 10。
-- 每一步引用的工具已经注册。
-- 不缺少工具声明的必填参数。
-- 不包含未声明参数，并且参数值符合声明的数据类型。
+| 失败类型 | 必选步骤 | 可选步骤 |
+| --- | --- | --- |
+| `TRANSIENT` | 重试一次，仍失败则重规划 | 重试一次，仍失败则跳过 |
+| `NOT_FOUND` | 以 `INVALID_ASSUMPTION` 重规划 | 跳过 |
+| `INVALID_ARGUMENT` | 以 `RECOVERABLE_FAILURE` 重规划 | 跳过 |
+| `ACCESS_DENIED / PERMISSION_DENIED / SECURITY_DENIED` | 终止 | 终止 |
+| `TOOL_INTERNAL_ERROR / UNKNOWN` | 终止 | 终止 |
 
-每个步骤的结果状态为：
+未知工具、计划校验失败、预算耗尽和人工审批拒绝也直接终止。内部错误不会交给规划器掩盖。
 
-- `COMPLETED`：工具执行成功。
-- `FAILED`：工具不存在、执行异常或返回失败。
-- `REJECTED`：风险操作未得到人工批准。
+## 校验和预算
 
-任何步骤失败或被拒绝后，当前执行器都会立即停止后续步骤。
+`PlanValidator` 默认限制每份计划最多 10 步，并验证工具存在性、必填参数、参数类型和未知参数。
+`DISCOVERY` 只允许低风险工具。单次运行的累计预算由 `AgentExecutionLimits` 控制：
 
-## 模块依赖
+- 最大重规划次数：3
+- 最大累计处理步骤数：30
+- 最大工具调用数：30，包含重试
+- 最大模型调用数：6，包含初始规划和重规划尝试
 
-- `agentos-kernel`：读取 Agent 上下文。
-- `agentos-tool`：描述和执行工具调用。
-- `agentos-hitl`：执行风险判断与人工审批。
-- `agentos-memory`：读取短期记忆和长期事实。
-
-## 扩展方式
-
-接入具体模型时实现 `ModelClient` 并在 Spring 容器中注册即可。非 `demo` 环境会自动将其注入
-`LlmTaskPlanner`；`PlanExecutor` 不需要感知模型厂商。
+每次发给模型的 `maxSteps` 是单计划上限与剩余累计步骤预算的较小值。原始 `stepResults` 仍供
+Runtime 审计，但 Planner 只接收 `ObservationSummarizer` 生成的摘要。默认单条 4,000 字符、
+累计 24,000 字符，并优先保留最新结果。Decision 返回 COMPLETE 不计入 `maxReplanCount`。

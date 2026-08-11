@@ -12,9 +12,23 @@ public interface AgentLoop {
     /**
      * 执行一次 Agent 循环。
      *
-     * @param context 本次运行的上下文
+     * @param request 本次用户请求
+     * @param context 本次身份和任务上下文
      * @param runningState 已进入运行中的状态快照
      * @return 本次运行结束后的状态，通常为完成或失败状态
      */
-    AgentState run(AgentContext context, AgentState runningState);
+    AgentState run(AgentRequest request, AgentContext context, AgentState runningState);
+
+    /**
+     * 执行一次 Agent 循环并向观察端持续发送运行事件。
+     *
+     * <p>默认实现保持现有 AgentLoop 的源代码兼容性。</p>
+     */
+    default AgentState run(
+            AgentRequest request,
+            AgentContext context,
+            AgentState runningState,
+            AgentEventSink eventSink) {
+        return run(request, context, runningState);
+    }
 }
