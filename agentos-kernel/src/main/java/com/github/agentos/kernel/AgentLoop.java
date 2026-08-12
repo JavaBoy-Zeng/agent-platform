@@ -31,4 +31,29 @@ public interface AgentLoop {
             AgentEventSink eventSink) {
         return run(request, context, runningState);
     }
+
+    /**
+     * 从 Checkpoint 恢复执行。实现可根据 {@code currentStepIndex} 跳过已完成步骤；
+     * 默认实现保持旧 AgentLoop 兼容并重新进入普通执行入口。
+     */
+    default AgentState resume(
+            AgentRequest request,
+            AgentContext context,
+            AgentState runningState,
+            AgentCheckpoint checkpoint,
+            PendingActionResolution resolution,
+            AgentEventSink eventSink) {
+        return run(request, context, runningState, eventSink);
+    }
+
+    /**
+     * 在运行时写入 Checkpoint 前补充执行循环私有的恢复位置。
+     *
+     * <p>默认实现保留基础快照；Plan、React 等策略可以覆盖此方法写入当前步骤和
+     * 已完成步骤，而无需让 kernel 依赖具体执行模型。</p>
+     */
+    default AgentCheckpoint checkpoint(
+            AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
+        return checkpoint;
+    }
 }

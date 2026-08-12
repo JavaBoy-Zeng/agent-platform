@@ -3,7 +3,6 @@ package com.github.agentos.hitl;
 import com.github.agentos.tool.ToolBeforeResult;
 import com.github.agentos.tool.ToolCall;
 import com.github.agentos.tool.ToolExecutionContext;
-import com.github.agentos.tool.ToolFailureType;
 import com.github.agentos.tool.ToolInterceptor;
 import com.github.agentos.tool.ToolResult;
 import com.github.agentos.kernel.PendingAction;
@@ -11,7 +10,7 @@ import com.github.agentos.kernel.PendingActionType;
 
 import java.util.Objects;
 
-/** 将风险判断和同步人工审批封装为工具前置生命周期拦截器。 */
+/** 将风险判断和可恢复人工审批封装为工具前置生命周期拦截器。 */
 public final class ApprovalToolInterceptor implements ToolInterceptor {
 
     private final RiskPolicy riskPolicy;
@@ -24,10 +23,15 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
                 approvalService, "approvalService must not be null");
     }
 
-    /** 高风险调用未获批准时在真实工具执行前短路。 */
+    /** 高风险调用未获批准时返回挂起动作，恢复后允许真实工具执行。 */
     @Override
     public ToolBeforeResult beforeExecute(ToolCall call, ToolExecutionContext context) {
         if (!riskPolicy.requiresApproval(context.agentContext(), context.tool(), call)) {
+            return ToolBeforeResult.allow();
+        }
+        if (context.agentContext().invocation() != null
+                && context.agentContext().invocation().resolution() != null
+                && context.agentContext().invocation().resolution().approved()) {
             return ToolBeforeResult.allow();
         }
         PendingAction action = new PendingAction(

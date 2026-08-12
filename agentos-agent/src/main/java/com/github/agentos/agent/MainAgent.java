@@ -169,6 +169,9 @@ public final class MainAgent implements AgentLoop {
                     com.github.agentos.kernel.PendingAction action =
                             Objects.requireNonNull(execution.pendingAction(),
                                     "waiting execution must have pendingAction");
+                    if (context.invocation() != null) {
+                        context.invocation().waitFor(action);
+                    }
                     emit(eventSink, AgentRunEvent.of(
                             AgentRunEvent.Type.DECISION,
                             request.sessionId(),

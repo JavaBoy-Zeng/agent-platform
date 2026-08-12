@@ -23,6 +23,8 @@ public final class AgentInvocation {
     private volatile Instant finishedAt;
     private volatile AgentRunStatus status;
     private volatile Throwable error;
+    private volatile PendingAction pendingAction;
+    private volatile PendingActionResolution resolution;
 
     /** 创建尚未进入执行循环的 Invocation。 */
     public AgentInvocation(
@@ -75,6 +77,10 @@ public final class AgentInvocation {
     public int toolCalls() { return toolCalls.get(); }
     public int replans() { return replans.get(); }
     public int steps() { return steps.get(); }
+    public PendingAction pendingAction() { return pendingAction; }
+    public PendingActionResolution resolution() { return resolution; }
+    public void waitFor(PendingAction action) { pendingAction = action; }
+    public void resolve(PendingActionResolution value) { resolution = value; }
     public int incrementModelCalls() { return modelCalls.incrementAndGet(); }
     public int incrementToolCalls() { return toolCalls.incrementAndGet(); }
     public int incrementReplans() { return replans.incrementAndGet(); }

@@ -17,6 +17,7 @@ public final class AgentRuntime {
 
     private final AgentLoop agentLoop;
     private final AgentEventPublisher eventPublisher;
+    private final CheckpointStore checkpointStore;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
@@ -33,9 +34,18 @@ public final class AgentRuntime {
 
     /** 创建使用指定领域事件发布器的 Agent 运行时。 */
     public AgentRuntime(AgentLoop agentLoop, AgentEventPublisher eventPublisher) {
+        this(agentLoop, eventPublisher, new InMemoryCheckpointStore());
+    }
+
+    /** 创建使用指定领域事件发布器和 CheckpointStore 的运行时。 */
+    public AgentRuntime(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore) {
         this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
         this.eventPublisher = Objects.requireNonNull(
                 eventPublisher, "eventPublisher must not be null");
+        this.checkpointStore = Objects.requireNonNull(
+                checkpointStore, "checkpointStore must not be null");
     }
 
     /** 创建将事件同时发布给监听器并写入存储的 Agent 运行时。 */
@@ -43,7 +53,16 @@ public final class AgentRuntime {
             AgentLoop agentLoop, AgentEventPublisher eventPublisher, AgentEventStore eventStore) {
         this(agentLoop, new CompositeAgentEventPublisher(java.util.List.of(
                 Objects.requireNonNull(eventPublisher, "eventPublisher must not be null"),
-                new StoringAgentEventPublisher(eventStore))));
+                new StoringAgentEventPublisher(eventStore))), new InMemoryCheckpointStore());
+    }
+
+    /** 创建同时使用 EventStore 与 CheckpointStore 的完整运行时。 */
+    public AgentRuntime(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore) {
+        this(agentLoop, new CompositeAgentEventPublisher(java.util.List.of(
+                Objects.requireNonNull(eventPublisher, "eventPublisher must not be null"),
+                new StoringAgentEventPublisher(eventStore))), checkpointStore);
     }
 
     /**
@@ -95,6 +114,11 @@ public final class AgentRuntime {
                     result = result.fail("agent loop finished without a terminal state");
                 }
                 invocation.finish(result);
+                if (result.status() == AgentState.Status.WAITING) {
+                    saveCheckpoint(invocationContext, request, invocation);
+                } else {
+                    checkpointStore.delete(invocation.invocationId());
+                }
                 publishTerminal(invocationContext, result);
                 return result;
             } catch (RuntimeException exception) {
@@ -134,6 +158,88 @@ public final class AgentRuntime {
     /** 查询指定 Session 最近一次运行记录。 */
     public Optional<AgentInvocation> latestInvocation(String sessionId) {
         return Optional.ofNullable(latestInvocationIds.get(sessionId)).flatMap(this::invocation);
+    }
+
+    /** 使用原 InvocationId 解决挂起动作并从 Checkpoint 恢复执行。 */
+    public AgentState resume(String invocationId, PendingActionResolution resolution) {
+        return resume(invocationId, resolution, AgentEventSink.NOOP);
+    }
+
+    /** 使用事件接收端恢复指定 Invocation。 */
+    public AgentState resume(
+            String invocationId, PendingActionResolution resolution, AgentEventSink eventSink) {
+        Objects.requireNonNull(resolution, "resolution must not be null");
+        AgentCheckpoint checkpoint = checkpointStore.load(invocationId).orElseThrow(
+                () -> new IllegalArgumentException("checkpoint not found: " + invocationId));
+        PendingAction pending = Objects.requireNonNull(
+                checkpoint.pendingAction(), "checkpoint has no pending action");
+        if (!pending.pendingActionId().equals(resolution.pendingActionId())) {
+            throw new IllegalArgumentException("pending action id does not match checkpoint");
+        }
+        AgentInvocation invocation = invocations.computeIfAbsent(invocationId, ignored ->
+                new AgentInvocation(
+                        invocationId, checkpoint.sessionId(), checkpoint.agentId(),
+                        checkpoint.taskId(), checkpoint.savedAt()));
+        invocation.resolve(resolution);
+        AgentContext context = new AgentContext(
+                checkpoint.teamId(), checkpoint.userId(), checkpoint.agentId(),
+                checkpoint.taskId()).withRuntime(invocation, eventPublisher);
+        publish(DefaultAgentEvent.of(
+                context, AgentEventType.HUMAN_ACTION_RESOLVED,
+                resolution.approved() ? "人工操作已批准" : "人工操作已拒绝",
+                java.util.Map.of(
+                        "pendingActionId", resolution.pendingActionId(),
+                        "approved", resolution.approved())));
+        if (!resolution.approved()) {
+            AgentState rejected = states.getOrDefault(
+                    checkpoint.sessionId(), AgentState.ready()).fail("human approval rejected");
+            states.put(checkpoint.sessionId(), rejected);
+            invocation.finish(rejected);
+            checkpointStore.delete(invocationId);
+            publishTerminal(context, rejected);
+            return rejected;
+        }
+        AgentRequest request = AgentRequest.of(checkpoint.sessionId(), checkpoint.objective());
+        return states.compute(checkpoint.sessionId(), (sessionId, previous) -> {
+            AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
+            invocation.start();
+            AgentEventSink publishingSink = event -> {
+                eventSink.emit(event);
+                mapLegacyEvent(context, event).ifPresent(this::publish);
+            };
+            AgentState result = agentLoop.resume(
+                    request, context, running, checkpoint, resolution, publishingSink);
+            invocation.finish(result);
+            if (result.status() == AgentState.Status.WAITING) {
+                saveCheckpoint(context, request, invocation);
+            } else {
+                checkpointStore.delete(invocationId);
+                publishTerminal(context, result);
+            }
+            return result;
+        });
+    }
+
+    /** 按 Invocation 标识查询当前 Checkpoint。 */
+    public Optional<AgentCheckpoint> checkpoint(String invocationId) {
+        return checkpointStore.load(invocationId);
+    }
+
+    private void saveCheckpoint(
+            AgentContext context, AgentRequest request, AgentInvocation invocation) {
+        PendingAction action = Objects.requireNonNull(
+                invocation.pendingAction(), "waiting invocation must have pendingAction");
+        AgentCheckpoint checkpoint = new AgentCheckpoint(
+                request.sessionId(), invocation.invocationId(), context.agentId(), context.taskId(),
+                context.teamId(), context.userId(), request.objective(), "", "", 0,
+                java.util.List.of(), java.util.Map.of(), action,
+                new ExecutionCounters(
+                        invocation.modelCalls(), invocation.toolCalls(), invocation.replans(),
+                        invocation.steps()),
+                AgentRunStatus.WAITING, Instant.now());
+        checkpointStore.save(Objects.requireNonNull(
+                agentLoop.checkpoint(request, context, checkpoint),
+                "agentLoop returned null checkpoint"));
     }
 
     private Optional<AgentEvent> mapLegacyEvent(AgentContext context, AgentRunEvent event) {
