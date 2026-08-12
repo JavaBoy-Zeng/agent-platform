@@ -42,6 +42,18 @@ public final class LlmAgentPlanner implements AgentPlanner {
         this.limits = Objects.requireNonNull(limits, "limits must not be null");
     }
 
+    /** 创建带模型生命周期拦截器的迭代式规划器。 */
+    public LlmAgentPlanner(
+            ModelClient modelClient,
+            List<ModelInterceptor> modelInterceptors,
+            ToolRegistry toolRegistry,
+            MemoryService memoryService,
+            PlanValidator planValidator,
+            AgentExecutionLimits limits) {
+        this(new InterceptingModelClient(modelClient, modelInterceptors), toolRegistry,
+                memoryService, planValidator, limits);
+    }
+
     @Override
     public AgentPlan createPlan(AgentRequest request, AgentContext context) {
         return generate(request, context, null, null, PlanOrigin.INITIAL);
