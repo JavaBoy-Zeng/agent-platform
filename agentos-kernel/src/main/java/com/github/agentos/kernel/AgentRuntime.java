@@ -87,24 +87,43 @@ public final class AgentRuntime {
      */
     public AgentState run(
             AgentRequest request, AgentContext context, AgentEventSink eventSink) {
+        return run(request, context, eventSink, AgentEventPublisher.NOOP);
+    }
+
+    /**
+     * 执行 Agent，并把领域事件单独发送到本次运行发布器。
+     *
+     * <p>领域事件发布器与旧版流事件接收端互相独立，便于 SSE 区分 token、兼容事件和
+     * Runtime 领域事件。</p>
+     */
+    public AgentState run(
+            AgentRequest request,
+            AgentContext context,
+            AgentEventSink eventSink,
+            AgentEventPublisher invocationEventPublisher) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(eventSink, "eventSink must not be null");
+        Objects.requireNonNull(
+                invocationEventPublisher, "invocationEventPublisher must not be null");
         AgentInvocation invocation = new AgentInvocation(
                 UUID.randomUUID().toString(), request.sessionId(), context.agentId(),
                 context.taskId(), Instant.now());
         invocations.put(invocation.invocationId(), invocation);
         latestInvocationIds.put(request.sessionId(), invocation.invocationId());
-        AgentContext invocationContext = context.withRuntime(invocation, eventPublisher);
+        AgentEventPublisher runPublisher = new CompositeAgentEventPublisher(java.util.List.of(
+                eventPublisher, invocationEventPublisher));
+        AgentContext invocationContext = context.withRuntime(invocation, runPublisher);
         return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
             invocation.start();
-            publish(DefaultAgentEvent.of(
+            publish(runPublisher, DefaultAgentEvent.of(
                     invocationContext, AgentEventType.AGENT_STARTED, request.objective(),
                     java.util.Map.of("taskId", context.taskId(), "iteration", running.iteration())));
             AgentEventSink publishingSink = event -> {
                 eventSink.emit(event);
-                mapLegacyEvent(invocationContext, event).ifPresent(this::publish);
+                mapLegacyEvent(invocationContext, event)
+                        .ifPresent(domainEvent -> publish(runPublisher, domainEvent));
             };
             try {
                 AgentState result = Objects.requireNonNull(
@@ -262,13 +281,17 @@ public final class AgentRuntime {
         AgentEventType type = state.status() == AgentState.Status.COMPLETED
                 ? AgentEventType.AGENT_COMPLETED : AgentEventType.AGENT_FAILED;
         String message = state.status() == AgentState.Status.COMPLETED ? state.output() : state.error();
-        publish(DefaultAgentEvent.of(
+        publish(context.eventPublisher(), DefaultAgentEvent.of(
                 context, type, message, java.util.Map.of("status", state.status().name())));
     }
 
     private void publish(AgentEvent event) {
+        publish(eventPublisher, event);
+    }
+
+    private static void publish(AgentEventPublisher publisher, AgentEvent event) {
         try {
-            eventPublisher.publish(event);
+            publisher.publish(event);
         } catch (RuntimeException ignored) {
             // 领域事件观察端不得破坏 Runtime 执行。
         }
