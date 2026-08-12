@@ -1209,6 +1209,16 @@ button.session-select {
 .approval-card dt { color: var(--dim); }
 .approval-card dd { margin: 0; color: var(--text); }
 
+.approval-card dd ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.approval-card dd li + li {
+  margin-top: 3px;
+}
+
 .approval-actions {
   display: flex;
   justify-content: flex-end;

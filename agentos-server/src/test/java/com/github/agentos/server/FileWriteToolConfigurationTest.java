@@ -22,4 +22,13 @@ class FileWriteToolConfigurationTest {
         assertThat(tool.parameters()).extracting(parameter -> parameter.name())
                 .containsExactly("path", "content", "mode", "createParentDirectories");
     }
+
+    @Test
+    void registersGitCommitToolAsHighRisk() {
+        AgentTool tool = toolRegistry.require("git_commit");
+
+        assertThat(tool.riskLevel()).isEqualTo(AgentTool.RiskLevel.HIGH);
+        assertThat(tool.parameters()).extracting(parameter -> parameter.name())
+                .containsExactly("repository", "paths", "message");
+    }
 }

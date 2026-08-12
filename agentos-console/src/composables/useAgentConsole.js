@@ -225,8 +225,13 @@ export function useAgentConsole() {
         riskLevel: action.payload?.riskLevel || '',
         arguments: {
           path: argumentsSummary.path || '',
-          mode: argumentsSummary.mode || 'CREATE_NEW',
-          createParentDirectories: Boolean(argumentsSummary.createParentDirectories)
+          mode: action.payload?.toolName === 'file_write'
+            ? (argumentsSummary.mode || 'CREATE_NEW')
+            : (argumentsSummary.mode || ''),
+          createParentDirectories: Boolean(argumentsSummary.createParentDirectories),
+          repository: argumentsSummary.repository || '',
+          paths: Array.isArray(argumentsSummary.paths) ? argumentsSummary.paths.slice(0, 100) : [],
+          message: argumentsSummary.message || ''
         }
       },
       resolved: false

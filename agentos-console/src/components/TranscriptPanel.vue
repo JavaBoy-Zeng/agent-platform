@@ -68,6 +68,16 @@ function roleLabel(role) {
             <template v-if="message.payload.arguments?.mode">
               <dt>模式</dt><dd>{{ message.payload.arguments.mode }}</dd>
             </template>
+            <template v-if="message.payload.arguments?.repository">
+              <dt>仓库</dt><dd>{{ message.payload.arguments.repository }}</dd>
+            </template>
+            <template v-if="message.payload.arguments?.message">
+              <dt>提交说明</dt><dd>{{ message.payload.arguments.message }}</dd>
+            </template>
+            <template v-if="message.payload.arguments?.paths?.length">
+              <dt>提交文件</dt>
+              <dd><ul><li v-for="path in message.payload.arguments.paths" :key="path">{{ path }}</li></ul></dd>
+            </template>
           </dl>
           <div v-if="!message.resolved" class="approval-actions">
             <button type="button" class="approval-reject" :disabled="busy"

@@ -35,10 +35,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MainAgentApprovalResumeTest {
 
     @Test
-    void resumesExactPendingStepWithoutPlanningOrApprovalLoop() {
+    void resumesWriteThenCommitAcrossTwoApprovalsWithoutPlanningLoop() {
         AtomicInteger planCalls = new AtomicInteger();
         AtomicInteger decisionCalls = new AtomicInteger();
         AtomicInteger writes = new AtomicInteger();
+        AtomicInteger commits = new AtomicInteger();
         AgentTool writeTool = new AgentTool() {
             @Override public String name() { return "file_write"; }
             @Override public String description() { return "write a file"; }
@@ -48,7 +49,16 @@ class MainAgentApprovalResumeTest {
                 return ToolResult.success("written " + call.arguments().get("path"));
             }
         };
-        ToolRegistry registry = new ToolRegistry(List.of(writeTool));
+        AgentTool commitTool = new AgentTool() {
+            @Override public String name() { return "git_commit"; }
+            @Override public String description() { return "commit selected files"; }
+            @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
+            @Override public ToolResult execute(ToolCall call) {
+                commits.incrementAndGet();
+                return ToolResult.success("committed");
+            }
+        };
+        ToolRegistry registry = new ToolRegistry(List.of(writeTool, commitTool));
         PlanExecutor executor = new PlanExecutor(
                 registry,
                 new ToolExecutor(registry),
@@ -61,9 +71,16 @@ class MainAgentApprovalResumeTest {
                 return AgentPlan.create(
                         PlanType.EXECUTION, PlanOrigin.INITIAL, PlanOutcome.CONTINUE,
                         "write requested file",
-                        List.of(new PlanStep(
-                                "write-step", "write file", false,
-                                new ToolCall("file_write", Map.of("path", "docs/FEATURES.md")))),
+                        List.of(
+                                new PlanStep(
+                                        "write-step", "write file", false,
+                                        new ToolCall("file_write", Map.of(
+                                                "path", "docs/FEATURES.md"))),
+                                new PlanStep(
+                                        "commit-step", "commit file", false,
+                                        new ToolCall("git_commit", Map.of(
+                                                "paths", List.of("docs/FEATURES.md"),
+                                                "message", "docs: add features")))),
                         "");
             }
 
@@ -108,13 +125,27 @@ class MainAgentApprovalResumeTest {
                     PendingActionResolution.approved(
                             invocation.pendingAction().pendingActionId()));
 
-            assertThat(resumed.status()).isEqualTo(AgentState.Status.COMPLETED);
-            assertThat(resumed.output()).isEqualTo("文件已写入。");
+            assertThat(resumed.status()).isEqualTo(AgentState.Status.WAITING);
             assertThat(writes).hasValue(1);
+            assertThat(commits).hasValue(0);
             assertThat(planCalls).hasValue(1);
-            assertThat(decisionCalls).hasValue(1);
+            assertThat(decisionCalls).hasValue(0);
             assertThat(invocation.steps()).isEqualTo(1);
             assertThat(invocation.toolCalls()).isEqualTo(1);
+
+            AgentState committed = runtime.resume(
+                    invocation.invocationId(),
+                    PendingActionResolution.approved(
+                            invocation.pendingAction().pendingActionId()));
+
+            assertThat(committed.status()).isEqualTo(AgentState.Status.COMPLETED);
+            assertThat(committed.output()).isEqualTo("文件已写入。");
+            assertThat(writes).hasValue(1);
+            assertThat(commits).hasValue(1);
+            assertThat(planCalls).hasValue(1);
+            assertThat(decisionCalls).hasValue(1);
+            assertThat(invocation.steps()).isEqualTo(2);
+            assertThat(invocation.toolCalls()).isEqualTo(2);
             assertThat(runtime.checkpoint(invocation.invocationId())).isEmpty();
         }
     }

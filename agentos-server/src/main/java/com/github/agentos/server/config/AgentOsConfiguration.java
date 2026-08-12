@@ -101,6 +101,12 @@ public class AgentOsConfiguration {
         return new FileWriteTool(fileAccessPolicy);
     }
 
+    /** 创建只提交明确路径且需要 HITL 审批的本地 Git 提交工具。 */
+    @Bean
+    GitCommitTool gitCommitTool() {
+        return new GitCommitTool();
+    }
+
 
     /**
      * 创建工具注册表，并注册 Spring 容器中的全部工具。

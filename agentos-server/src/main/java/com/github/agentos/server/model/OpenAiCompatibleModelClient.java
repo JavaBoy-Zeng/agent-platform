@@ -167,6 +167,10 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         12. 除非用户任务明确要求执行某个外部动作，否则不要使用工具来代替最终回答。
             echo 只能用于工具链测试，不能作为 final_answer。
 
+            当用户明确要求“写完后提交代码”或等价目标时，实际写入步骤完成后必须使用
+            git_commit，并且 paths 只能列出本次任务实际修改的仓库相对路径；不得提交其他
+            工作区改动，不得声称已经推送。用户未要求提交时不得自行创建 commit。
+
         13. CONTINUE 的计划步骤数量不得超过 maxSteps，每个步骤必须明确 optional。
 
         14. 所有步骤必须按照真实执行依赖关系排序。
