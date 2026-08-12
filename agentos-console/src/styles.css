@@ -1132,7 +1132,7 @@ button.session-select {
   accent-color: var(--accent);
 }
 
-.message-user p {
+.message-user .message-content {
   width: fit-content;
   max-width: min(80%, 620px);
   margin-right: 38px;
@@ -1159,8 +1159,8 @@ button.session-select {
   margin-bottom: 2px;
 }
 
-.message-event p,
-.message-error p {
+.message-event .message-content,
+.message-error .message-content {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
@@ -1189,7 +1189,7 @@ button.session-select {
   font-weight: 600;
 }
 
-.approval-card p {
+.approval-description {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
@@ -1666,11 +1666,11 @@ kbd {
     font-size: 24px;
   }
 
-  .message p {
+  .message-content {
     font-size: 14px;
   }
 
-  .message-user p {
+  .message-user .message-content {
     max-width: 86%;
   }
 
@@ -1733,11 +1733,11 @@ kbd {
     display: none;
   }
 
-  .message p {
+  .message-content {
     margin-left: 34px;
   }
 
-  .message-user p {
+  .message-user .message-content {
     margin-right: 34px;
     margin-left: auto;
   }

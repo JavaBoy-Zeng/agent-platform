@@ -54,14 +54,12 @@ function roleLabel(role) {
           <strong>{{ roleLabel(message.role) }}</strong>
           <time>{{ timeLabel(message.createdAt) }}</time>
         </header>
-        <div
-          v-if="message.role === 'assistant'"
-          class="message-content markdown-body"
-          v-html="renderMarkdown(message.content)"
-        ></div>
-        <div v-else-if="message.role === 'approval'" class="approval-card">
+        <div v-if="message.role === 'approval'" class="approval-card">
           <strong>{{ message.title }}</strong>
-          <p>{{ message.content }}</p>
+          <div
+            class="approval-description markdown-body"
+            v-html="renderMarkdown(message.content)"
+          ></div>
           <dl v-if="message.payload?.toolName">
             <dt>工具</dt><dd>{{ message.payload.toolName }}</dd>
             <template v-if="message.payload.arguments?.path">
@@ -85,7 +83,11 @@ function roleLabel(role) {
             {{ message.approved ? '已批准并恢复执行' : '已拒绝' }}
           </span>
         </div>
-        <p v-else>{{ message.content }}</p>
+        <div
+          v-else
+          class="message-content markdown-body"
+          v-html="renderMarkdown(message.content)"
+        ></div>
       </article>
 
       <article v-if="busy" class="message message-agent message-pending">
