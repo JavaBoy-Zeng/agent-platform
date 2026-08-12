@@ -1,0 +1,21 @@
+package com.github.agentos.kernel;
+
+/** Agent Runtime 第一版稳定的领域事件类型。 */
+public enum AgentEventType {
+    AGENT_STARTED,
+    AGENT_COMPLETED,
+    AGENT_FAILED,
+    PLAN_CREATED,
+    REPLAN_STARTED,
+    STEP_STARTED,
+    STEP_COMPLETED,
+    STEP_FAILED,
+    MODEL_CALL_STARTED,
+    MODEL_CALL_COMPLETED,
+    MODEL_CALL_FAILED,
+    TOOL_CALL_STARTED,
+    TOOL_CALL_COMPLETED,
+    TOOL_CALL_FAILED,
+    HUMAN_ACTION_REQUIRED,
+    HUMAN_ACTION_RESOLVED
+}

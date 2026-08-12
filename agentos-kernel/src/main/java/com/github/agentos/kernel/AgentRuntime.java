@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentMap;
 public final class AgentRuntime {
 
     private final AgentLoop agentLoop;
+    private final AgentEventPublisher eventPublisher;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
@@ -27,7 +28,14 @@ public final class AgentRuntime {
      * @throws NullPointerException 当执行循环为 {@code null} 时抛出
      */
     public AgentRuntime(AgentLoop agentLoop) {
+        this(agentLoop, AgentEventPublisher.NOOP);
+    }
+
+    /** 创建使用指定领域事件发布器的 Agent 运行时。 */
+    public AgentRuntime(AgentLoop agentLoop, AgentEventPublisher eventPublisher) {
         this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
+        this.eventPublisher = Objects.requireNonNull(
+                eventPublisher, "eventPublisher must not be null");
     }
 
     /**
@@ -64,14 +72,22 @@ public final class AgentRuntime {
         return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
             invocation.start();
+            publish(DefaultAgentEvent.of(
+                    invocationContext, AgentEventType.AGENT_STARTED, request.objective(),
+                    java.util.Map.of("taskId", context.taskId(), "iteration", running.iteration())));
+            AgentEventSink publishingSink = event -> {
+                eventSink.emit(event);
+                mapLegacyEvent(invocationContext, event).ifPresent(this::publish);
+            };
             try {
                 AgentState result = Objects.requireNonNull(
-                        agentLoop.run(request, invocationContext, running, eventSink),
+                        agentLoop.run(request, invocationContext, running, publishingSink),
                         "agentLoop returned null state");
                 if (result.status() == AgentState.Status.RUNNING) {
                     result = result.fail("agent loop finished without a terminal state");
                 }
                 invocation.finish(result);
+                publishTerminal(invocationContext, result);
                 return result;
             } catch (RuntimeException exception) {
                 String message = exception.getMessage() == null
@@ -81,10 +97,12 @@ public final class AgentRuntime {
                         || exception instanceof java.util.concurrent.CancellationException) {
                     AgentState cancelled = running.cancel(message);
                     invocation.finish(cancelled);
+                    publishTerminal(invocationContext, cancelled);
                     return cancelled;
                 }
                 AgentState failed = running.fail(message);
                 invocation.fail(exception);
+                publishTerminal(invocationContext, failed);
                 return failed;
             }
         });
@@ -108,5 +126,34 @@ public final class AgentRuntime {
     /** 查询指定 Session 最近一次运行记录。 */
     public Optional<AgentInvocation> latestInvocation(String sessionId) {
         return Optional.ofNullable(latestInvocationIds.get(sessionId)).flatMap(this::invocation);
+    }
+
+    private Optional<AgentEvent> mapLegacyEvent(AgentContext context, AgentRunEvent event) {
+        AgentEventType type = switch (event.type()) {
+            case PLAN_CREATED -> AgentEventType.PLAN_CREATED;
+            case REPLAN -> AgentEventType.REPLAN_STARTED;
+            case TOOL_STARTED -> AgentEventType.STEP_STARTED;
+            case TOOL_FINISHED -> "COMPLETED".equals(event.data().get("status"))
+                    ? AgentEventType.STEP_COMPLETED : AgentEventType.STEP_FAILED;
+            default -> null;
+        };
+        return type == null ? Optional.empty() : Optional.of(
+                DefaultAgentEvent.of(context, type, event.message(), event.data()));
+    }
+
+    private void publishTerminal(AgentContext context, AgentState state) {
+        AgentEventType type = state.status() == AgentState.Status.COMPLETED
+                ? AgentEventType.AGENT_COMPLETED : AgentEventType.AGENT_FAILED;
+        String message = state.status() == AgentState.Status.COMPLETED ? state.output() : state.error();
+        publish(DefaultAgentEvent.of(
+                context, type, message, java.util.Map.of("status", state.status().name())));
+    }
+
+    private void publish(AgentEvent event) {
+        try {
+            eventPublisher.publish(event);
+        } catch (RuntimeException ignored) {
+            // 领域事件观察端不得破坏 Runtime 执行。
+        }
     }
 }
