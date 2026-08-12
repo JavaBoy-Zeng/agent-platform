@@ -1,4 +1,4 @@
-package com.github.agentos.server;
+package com.github.agentos.server.controller;
 
 import com.github.agentos.memory.AtomicMemory;
 import com.github.agentos.memory.CompletedTurn;

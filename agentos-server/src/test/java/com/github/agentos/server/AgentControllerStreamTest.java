@@ -7,6 +7,8 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRuntime;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.server.controller.AgentController;
+import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;

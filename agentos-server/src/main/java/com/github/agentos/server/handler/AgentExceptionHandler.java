@@ -1,4 +1,4 @@
-package com.github.agentos.server;
+package com.github.agentos.server.handler;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;

@@ -1,10 +1,11 @@
-package com.github.agentos.server;
+package com.github.agentos.server.controller;
 
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRuntime;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;

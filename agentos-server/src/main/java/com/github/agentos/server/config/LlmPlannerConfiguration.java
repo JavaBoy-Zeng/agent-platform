@@ -1,4 +1,4 @@
-package com.github.agentos.server;
+package com.github.agentos.server.config;
 
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.kernel.AgentExecutionLimits;
@@ -13,7 +13,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Profile;
 import tools.jackson.databind.ObjectMapper;
 
 import java.net.http.HttpClient;

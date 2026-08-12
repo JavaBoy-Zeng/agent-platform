@@ -1,4 +1,4 @@
-package com.github.agentos.server;
+package com.github.agentos.server.config;
 
 import com.github.agentos.agent.AgentFinalizer;
 import com.github.agentos.agent.DefaultAgentFinalizer;
@@ -14,6 +14,7 @@ import com.github.agentos.kernel.InMemoryAgentEventPublisher;
 import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.planner.*;
+import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.FileReaderFactory;
 import com.github.agentos.tool.ToolExecutor;

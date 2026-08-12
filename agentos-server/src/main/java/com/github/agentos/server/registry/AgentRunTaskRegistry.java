@@ -1,4 +1,4 @@
-package com.github.agentos.server;
+package com.github.agentos.server.registry;
 
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;

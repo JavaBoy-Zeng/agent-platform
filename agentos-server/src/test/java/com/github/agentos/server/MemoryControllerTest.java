@@ -3,6 +3,8 @@ package com.github.agentos.server;
 import com.github.agentos.memory.CompletedTurn;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.server.controller.MemoryController;
+import com.github.agentos.server.handler.AgentExceptionHandler;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 
