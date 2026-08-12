@@ -69,9 +69,9 @@ public class AgentOsConfiguration {
                 fileAccessPolicy,
                 new FileReaderFactory(
                         List.of(
-                                new TextFileReader(),
+                                new PdfFileReader(),
                                 new DocxFileReader(),
-                                new PdfFileReader()
+                                new TextFileReader()
                         )
                 )
         );
@@ -241,13 +241,17 @@ public class AgentOsConfiguration {
         return new AgentRuntime(mainAgent);
     }
 
-    /** 为 SSE Agent 运行创建轻量虚拟线程执行器。 */
+    /**
+     * 为 SSE Agent 运行创建轻量虚拟线程执行器。
+     */
     @Bean(destroyMethod = "close")
     ExecutorService agentStreamExecutor() {
         return Executors.newVirtualThreadPerTaskExecutor();
     }
 
-    /** 注册流式运行及其真实执行线程，供停止接口协作取消。 */
+    /**
+     * 注册流式运行及其真实执行线程，供停止接口协作取消。
+     */
     @Bean
     AgentRunTaskRegistry agentRunTaskRegistry() {
         return new AgentRunTaskRegistry();
