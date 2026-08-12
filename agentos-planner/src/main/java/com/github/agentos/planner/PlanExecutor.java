@@ -1,12 +1,15 @@
 package com.github.agentos.planner;
 
 import com.github.agentos.hitl.ApprovalService;
+import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
+import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.tool.AgentTool;
+import com.github.agentos.tool.ToolDispatcher;
+import com.github.agentos.tool.ToolExecutionContext;
 import com.github.agentos.tool.ToolExecutor;
 import com.github.agentos.tool.ToolFailureType;
 import com.github.agentos.tool.ToolRegistry;
@@ -25,10 +28,7 @@ public final class PlanExecutor {
     private static final Logger LOGGER = LoggerFactory.getLogger(PlanExecutor.class);
     private static final int MAX_LOG_VALUE_LENGTH = 1_000;
 
-    private final ToolRegistry toolRegistry;
-    private final ToolExecutor toolExecutor;
-    private final RiskPolicy riskPolicy;
-    private final ApprovalService approvalService;
+    private final ToolDispatcher toolDispatcher;
     private final FailureClassifier failureClassifier;
 
     public PlanExecutor(
@@ -37,10 +37,18 @@ public final class PlanExecutor {
             RiskPolicy riskPolicy,
             ApprovalService approvalService,
             FailureClassifier failureClassifier) {
-        this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
-        this.toolExecutor = Objects.requireNonNull(toolExecutor, "toolExecutor must not be null");
-        this.riskPolicy = Objects.requireNonNull(riskPolicy, "riskPolicy must not be null");
-        this.approvalService = Objects.requireNonNull(approvalService, "approvalService must not be null");
+        Objects.requireNonNull(toolExecutor, "toolExecutor must not be null");
+        this.toolDispatcher = new ToolDispatcher(
+                Objects.requireNonNull(toolRegistry, "toolRegistry must not be null"),
+                List.of(new ApprovalToolInterceptor(riskPolicy, approvalService)));
+        this.failureClassifier = Objects.requireNonNull(
+                failureClassifier, "failureClassifier must not be null");
+    }
+
+    /** 创建使用统一 ToolDispatcher 的计划执行器。 */
+    public PlanExecutor(ToolDispatcher toolDispatcher, FailureClassifier failureClassifier) {
+        this.toolDispatcher = Objects.requireNonNull(
+                toolDispatcher, "toolDispatcher must not be null");
         this.failureClassifier = Objects.requireNonNull(
                 failureClassifier, "failureClassifier must not be null");
     }
@@ -102,10 +110,14 @@ public final class PlanExecutor {
             PlanStep step = plan.steps().get(index);
             lastStep = step;
             processedSteps++;
+            if (context.invocation() != null) {
+                context.invocation().incrementSteps();
+            }
             long stepStarted = System.nanoTime();
             LOGGER.info(
-                    "[agent-step] started sessionId={} planId={} position={}/{} stepId={} tool={} optional={} description={}",
-                    request.sessionId(), plan.id(), index + 1, plan.steps().size(), step.id(),
+                    "[agent-step] started sessionId={} invocationId={} planId={} position={}/{} stepId={} tool={} optional={} description={}",
+                    request.sessionId(), context.invocationId(), plan.id(), index + 1,
+                    plan.steps().size(), step.id(),
                     step.toolCall().toolName(), step.optional(), logValue(step.description()));
             emit(eventSink, AgentRunEvent.of(
                     AgentRunEvent.Type.TOOL_STARTED,
@@ -118,27 +130,6 @@ public final class PlanExecutor {
                             "position", index + 1,
                             "stepCount", plan.steps().size())));
 
-            AgentTool tool = toolRegistry.find(step.toolCall().toolName()).orElse(null);
-            if (tool == null) {
-                String error = "unknown tool: " + step.toolCall().toolName();
-                lastResult = StepResult.failed(
-                        plan, step, error, ToolFailureType.UNKNOWN, 0);
-                results.add(lastResult);
-                logFailure(request, plan, step, lastResult, stepStarted);
-                return ExecutionResult.aborted(
-                        plan.id(), results, step, lastResult, processedSteps, toolCalls, error);
-            }
-
-            if (riskPolicy.requiresApproval(context, tool, step.toolCall())
-                    && !approvalService.requestApproval(request, context, tool, step.toolCall())) {
-                String error = "human approval was not granted";
-                lastResult = StepResult.rejected(plan, step, error);
-                results.add(lastResult);
-                logFailure(request, plan, step, lastResult, stepStarted);
-                return ExecutionResult.aborted(
-                        plan.id(), results, step, lastResult, processedSteps, toolCalls, error);
-            }
-
             int attempts = 0;
             while (true) {
                 if (toolCalls >= remainingToolCalls) {
@@ -148,7 +139,22 @@ public final class PlanExecutor {
                 }
                 attempts++;
                 toolCalls++;
-                ToolResult toolResult = toolExecutor.execute(step.toolCall());
+                if (context.invocation() != null) {
+                    context.invocation().incrementToolCalls();
+                }
+                ToolResult toolResult = toolDispatcher.dispatch(
+                        step.toolCall(), tool -> new ToolExecutionContext(
+                                request,
+                                context,
+                                plan.id(),
+                                step.id(),
+                                new AgentExecutionLimits(
+                                        0,
+                                        Math.max(1, remainingStepCount),
+                                        Math.max(1, remainingToolCalls),
+                                        1),
+                                java.util.Map.of(),
+                                tool));
                 if (Thread.currentThread().isInterrupted()) {
                     return ExecutionResult.cancelled(
                             plan.id(), results, step, lastResult, processedSteps, toolCalls);

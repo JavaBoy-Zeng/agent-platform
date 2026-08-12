@@ -4,6 +4,7 @@ import com.github.agentos.agent.AgentFinalizer;
 import com.github.agentos.agent.DefaultAgentFinalizer;
 import com.github.agentos.agent.MainAgent;
 import com.github.agentos.hitl.ApprovalService;
+import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentEventPublisher;
@@ -16,6 +17,8 @@ import com.github.agentos.planner.*;
 import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.FileReaderFactory;
 import com.github.agentos.tool.ToolExecutor;
+import com.github.agentos.tool.ToolDispatcher;
+import com.github.agentos.tool.ToolInterceptor;
 import com.github.agentos.tool.ToolRegistry;
 import com.github.agentos.tool.file.AllowAllReadableFileAccessPolicy;
 import com.github.agentos.tool.file.FileAccessPolicy;
@@ -114,6 +117,20 @@ public class AgentOsConfiguration {
         return new ToolExecutor(toolRegistry);
     }
 
+    /** 创建将 HITL 审批纳入工具生命周期的前置拦截器。 */
+    @Bean
+    ToolInterceptor approvalToolInterceptor(
+            RiskPolicy riskPolicy, ApprovalService approvalService) {
+        return new ApprovalToolInterceptor(riskPolicy, approvalService);
+    }
+
+    /** 创建所有计划和未来执行策略共享的工具调度器。 */
+    @Bean
+    ToolDispatcher toolDispatcher(
+            ToolRegistry toolRegistry, List<ToolInterceptor> toolInterceptors) {
+        return new ToolDispatcher(toolRegistry, toolInterceptors);
+    }
+
     /**
      * 创建统一记忆服务。
      *
@@ -197,13 +214,9 @@ public class AgentOsConfiguration {
      */
     @Bean
     PlanExecutor planExecutor(
-            ToolRegistry toolRegistry,
-            ToolExecutor toolExecutor,
-            RiskPolicy riskPolicy,
-            ApprovalService approvalService,
+            ToolDispatcher toolDispatcher,
             FailureClassifier failureClassifier) {
-        return new PlanExecutor(
-                toolRegistry, toolExecutor, riskPolicy, approvalService, failureClassifier);
+        return new PlanExecutor(toolDispatcher, failureClassifier);
     }
 
     @Bean

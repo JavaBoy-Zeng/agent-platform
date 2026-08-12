@@ -15,11 +15,19 @@ public record AgentContext(
         String userId,
         String agentId,
         String taskId,
-        AgentInvocation invocation) {
+        AgentInvocation invocation,
+        AgentEventPublisher eventPublisher) {
 
     /** 保留既有四参数 API，Invocation 由 Runtime 在执行边界注入。 */
     public AgentContext(String teamId, String userId, String agentId, String taskId) {
-        this(teamId, userId, agentId, taskId, null);
+        this(teamId, userId, agentId, taskId, null, AgentEventPublisher.NOOP);
+    }
+
+    /** 保留 Phase 1 的五参数 API。 */
+    public AgentContext(
+            String teamId, String userId, String agentId, String taskId,
+            AgentInvocation invocation) {
+        this(teamId, userId, agentId, taskId, invocation, AgentEventPublisher.NOOP);
     }
 
     /**
@@ -32,6 +40,7 @@ public record AgentContext(
         userId = requireText(userId, "userId");
         agentId = requireText(agentId, "agentId");
         taskId = taskId == null ? "" : taskId.trim();
+        eventPublisher = eventPublisher == null ? AgentEventPublisher.NOOP : eventPublisher;
     }
 
     /** 创建默认团队和用户作用域下的 Agent 上下文。 */
@@ -51,7 +60,16 @@ public record AgentContext(
     /** 返回绑定指定 Invocation 的新上下文。 */
     public AgentContext withInvocation(AgentInvocation value) {
         return new AgentContext(teamId, userId, agentId, taskId,
-                java.util.Objects.requireNonNull(value, "invocation must not be null"));
+                java.util.Objects.requireNonNull(value, "invocation must not be null"),
+                eventPublisher);
+    }
+
+    /** 返回同时绑定 Invocation 与 Runtime 领域事件发布器的新上下文。 */
+    public AgentContext withRuntime(
+            AgentInvocation value, AgentEventPublisher publisher) {
+        return new AgentContext(teamId, userId, agentId, taskId,
+                java.util.Objects.requireNonNull(value, "invocation must not be null"),
+                java.util.Objects.requireNonNull(publisher, "publisher must not be null"));
     }
 
     /** 返回 Runtime 注入的 Invocation 标识，未进入 Runtime 时返回空字符串。 */

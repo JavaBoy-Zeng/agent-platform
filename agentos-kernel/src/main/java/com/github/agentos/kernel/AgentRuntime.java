@@ -76,7 +76,7 @@ public final class AgentRuntime {
                 context.taskId(), Instant.now());
         invocations.put(invocation.invocationId(), invocation);
         latestInvocationIds.put(request.sessionId(), invocation.invocationId());
-        AgentContext invocationContext = context.withInvocation(invocation);
+        AgentContext invocationContext = context.withRuntime(invocation, eventPublisher);
         return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
             invocation.start();

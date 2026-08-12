@@ -1,6 +1,9 @@
 package com.github.agentos.server;
 
 import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.AgentEvent;
+import com.github.agentos.kernel.AgentEventStore;
+import com.github.agentos.kernel.AgentEventType;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRuntime;
@@ -36,6 +39,9 @@ class AgentRuntimeIntegrationTest {
     @Autowired
     private MemoryService memoryService;
 
+    @Autowired
+    private AgentEventStore eventStore;
+
     @Test
     void replansAfterExecutionThenFinalizesAndCapturesOnlyCompletedTurn() {
         AgentRequest request = AgentRequest.of("session-1", "I prefer Java");
@@ -63,6 +69,26 @@ class AgentRuntimeIntegrationTest {
         assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.DECISION)
                 .extracting(event -> event.data().get("outcome"))
                 .containsExactly("REPLAN", "COMPLETE");
+        String invocationId = runtime.latestInvocation("session-1").orElseThrow().invocationId();
+        assertThat(eventStore.findByInvocationId(invocationId))
+                .extracting(AgentEvent::type)
+                .containsSubsequence(
+                        AgentEventType.AGENT_STARTED,
+                        AgentEventType.PLAN_CREATED,
+                        AgentEventType.STEP_STARTED,
+                        AgentEventType.TOOL_CALL_STARTED,
+                        AgentEventType.TOOL_CALL_COMPLETED,
+                        AgentEventType.STEP_COMPLETED,
+                        AgentEventType.AGENT_COMPLETED);
+        assertThat(eventStore.findByInvocationId(invocationId))
+                .extracting(AgentEvent::invocationId)
+                .containsOnly(invocationId);
+        assertThat(runtime.invocation(invocationId).orElseThrow()).satisfies(invocation -> {
+            assertThat(invocation.modelCalls()).isEqualTo(3);
+            assertThat(invocation.toolCalls()).isEqualTo(2);
+            assertThat(invocation.replans()).isEqualTo(1);
+            assertThat(invocation.steps()).isEqualTo(2);
+        });
         assertThat(memoryService.awaitIdle(Duration.ofSeconds(2))).isTrue();
 
         MemoryScope scope = MemoryScope.defaultScope("main-agent", "session-1");

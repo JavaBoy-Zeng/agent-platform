@@ -96,8 +96,9 @@ public final class MainAgent implements AgentLoop {
         Objects.requireNonNull(eventSink, "eventSink must not be null");
         long runStarted = System.nanoTime();
         LOGGER.info(
-                "[agent-run] started sessionId={} taskId={} agentId={} iteration={} limits={}",
-                request.sessionId(), context.taskId(), context.agentId(), runningState.iteration(), limits);
+                "[agent-run] started sessionId={} invocationId={} taskId={} agentId={} iteration={} limits={}",
+                request.sessionId(), context.invocationId(), context.taskId(), context.agentId(),
+                runningState.iteration(), limits);
         emit(eventSink, AgentRunEvent.of(
                 AgentRunEvent.Type.RUN_STARTED,
                 request.sessionId(),
@@ -114,6 +115,7 @@ public final class MainAgent implements AgentLoop {
         try {
             requireNotCancelled();
             modelCalls++;
+            incrementModelCalls(context);
             plan = planner.createPlan(request, context);
             logPlan(request, plan, modelCalls, replanCount, processedSteps, toolCalls);
             emitPlan(eventSink, request, plan, modelCalls, replanCount);
@@ -195,6 +197,7 @@ public final class MainAgent implements AgentLoop {
                 AgentPlan previousPlan = plan;
                 requireNotCancelled();
                 modelCalls++;
+                incrementModelCalls(context);
                 LOGGER.info(
                         "[agent-decision] started sessionId={} previousPlanId={} reason={} modelCall={}/{} observationCount={}",
                         request.sessionId(), previousPlan.id(), reason,
@@ -226,6 +229,9 @@ public final class MainAgent implements AgentLoop {
                                 eventSink);
                     }
                     replanCount++;
+                    if (context.invocation() != null) {
+                        context.invocation().incrementReplans();
+                    }
                     LOGGER.info(
                             "[agent-replan] accepted sessionId={} previousPlanId={} nextPlanId={} reason={} replan={}/{}",
                             request.sessionId(), previousPlan.id(), plan.id(), reason,
@@ -442,6 +448,12 @@ public final class MainAgent implements AgentLoop {
     private static void requireNotCancelled() {
         if (Thread.currentThread().isInterrupted()) {
             throw new java.util.concurrent.CancellationException("run cancelled by user");
+        }
+    }
+
+    private static void incrementModelCalls(AgentContext context) {
+        if (context.invocation() != null) {
+            context.invocation().incrementModelCalls();
         }
     }
 
