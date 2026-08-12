@@ -214,6 +214,7 @@ public final class AgentRuntime {
                     checkpoint.sessionId(), AgentState.ready()).fail("human approval rejected");
             states.put(checkpoint.sessionId(), rejected);
             invocation.finish(rejected);
+            agentLoop.discard(checkpoint);
             checkpointStore.delete(invocationId);
             publishTerminal(context, rejected);
             return rejected;

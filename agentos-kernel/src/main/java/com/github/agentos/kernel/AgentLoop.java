@@ -56,4 +56,9 @@ public interface AgentLoop {
             AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
         return checkpoint;
     }
+
+    /** 丢弃已经拒绝或无法继续的 Checkpoint 私有恢复数据。 */
+    default void discard(AgentCheckpoint checkpoint) {
+        // 默认循环没有额外恢复数据。
+    }
 }

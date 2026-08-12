@@ -110,9 +110,6 @@ public final class PlanExecutor {
             PlanStep step = plan.steps().get(index);
             lastStep = step;
             processedSteps++;
-            if (context.invocation() != null) {
-                context.invocation().incrementSteps();
-            }
             long stepStarted = System.nanoTime();
             LOGGER.info(
                     "[agent-step] started sessionId={} invocationId={} planId={} position={}/{} stepId={} tool={} optional={} description={}",
@@ -140,11 +137,6 @@ public final class PlanExecutor {
                 }
                 attempts++;
                 toolCalls += batchSize;
-                if (context.invocation() != null) {
-                    for (int callIndex = 0; callIndex < batchSize; callIndex++) {
-                        context.invocation().incrementToolCalls();
-                    }
-                }
                 List<ToolResult> toolResults = toolDispatcher.dispatch(
                         step.toolCalls(), step.executionMode(), tool -> new ToolExecutionContext(
                                 request,
@@ -163,8 +155,17 @@ public final class PlanExecutor {
                         .findFirst().orElse(null);
                 if (pendingResult != null) {
                     return ExecutionResult.waiting(
-                            plan.id(), results, step, processedSteps, toolCalls,
+                            plan.id(), results, step,
+                            processedSteps - 1, toolCalls - batchSize,
                             pendingResult.actions().pendingAction());
+                }
+                if (context.invocation() != null) {
+                    if (attempts == 1) {
+                        context.invocation().incrementSteps();
+                    }
+                    for (int callIndex = 0; callIndex < batchSize; callIndex++) {
+                        context.invocation().incrementToolCalls();
+                    }
                 }
                 if (Thread.currentThread().isInterrupted()) {
                     return ExecutionResult.cancelled(

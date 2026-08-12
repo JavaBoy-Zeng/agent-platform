@@ -4,9 +4,11 @@ import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentLoop;
+import com.github.agentos.kernel.AgentCheckpoint;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.memory.CompletedTurn;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
@@ -33,6 +35,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * AgentOS 默认的迭代式主 Agent。
@@ -51,6 +55,7 @@ public final class MainAgent implements AgentLoop, Agent {
     private final AgentFinalizer finalizer;
     private final AgentExecutionLimits limits;
     private final ObservationSummarizer observationSummarizer;
+    private final ConcurrentMap<String, Continuation> continuations = new ConcurrentHashMap<>();
 
     public MainAgent(
             AgentPlanner planner,
@@ -114,6 +119,55 @@ public final class MainAgent implements AgentLoop, Agent {
             AgentContext context,
             AgentState runningState,
             AgentEventSink eventSink) {
+        return run(request, context, runningState, eventSink, null);
+    }
+
+    @Override
+    public AgentState resume(
+            AgentRequest request,
+            AgentContext context,
+            AgentState runningState,
+            AgentCheckpoint checkpoint,
+            PendingActionResolution resolution,
+            AgentEventSink eventSink) {
+        Objects.requireNonNull(checkpoint, "checkpoint must not be null");
+        Objects.requireNonNull(resolution, "resolution must not be null");
+        Continuation continuation = continuations.remove(checkpoint.invocationId());
+        if (continuation == null) {
+            return runningState.fail(
+                    "approved invocation cannot resume because its execution continuation is missing");
+        }
+        return run(continuation.request(), context, runningState, eventSink, continuation);
+    }
+
+    @Override
+    public AgentCheckpoint checkpoint(
+            AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
+        Continuation continuation = continuations.get(checkpoint.invocationId());
+        if (continuation == null) {
+            return checkpoint;
+        }
+        return new AgentCheckpoint(
+                checkpoint.sessionId(), checkpoint.invocationId(), checkpoint.agentId(),
+                checkpoint.taskId(), checkpoint.teamId(), checkpoint.userId(),
+                checkpoint.objective(), continuation.remainingPlan().id(),
+                continuation.remainingPlan().steps().getFirst().id(), 0,
+                continuation.cumulativeResults().stream().map(StepResult::stepId).toList(),
+                checkpoint.state(), checkpoint.pendingAction(), checkpoint.executionCounters(),
+                checkpoint.status(), checkpoint.savedAt());
+    }
+
+    @Override
+    public void discard(AgentCheckpoint checkpoint) {
+        continuations.remove(checkpoint.invocationId());
+    }
+
+    private AgentState run(
+            AgentRequest request,
+            AgentContext context,
+            AgentState runningState,
+            AgentEventSink eventSink,
+            Continuation continuation) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(runningState, "runningState must not be null");
@@ -129,20 +183,28 @@ public final class MainAgent implements AgentLoop, Agent {
                 request.objective(),
                 Map.of("agentId", context.agentId(), "iteration", runningState.iteration())));
 
-        List<StepResult> cumulativeResults = new ArrayList<>();
-        List<Observation> observations = List.of();
-        int modelCalls = 0;
-        int replanCount = 0;
-        int processedSteps = 0;
-        int toolCalls = 0;
-        AgentPlan plan = null;
+        List<StepResult> cumulativeResults = continuation == null
+                ? new ArrayList<>() : new ArrayList<>(continuation.cumulativeResults());
+        List<Observation> observations = observationSummarizer.summarize(cumulativeResults);
+        int modelCalls = continuation == null ? 0 : continuation.modelCalls();
+        int replanCount = continuation == null ? 0 : continuation.replanCount();
+        int processedSteps = continuation == null ? 0 : continuation.processedSteps();
+        int toolCalls = continuation == null ? 0 : continuation.toolCalls();
+        AgentPlan plan = continuation == null ? null : continuation.remainingPlan();
         try {
-            requireNotCancelled();
-            modelCalls++;
-            incrementModelCalls(context);
-            plan = planner.createPlan(request, context);
-            logPlan(request, plan, modelCalls, replanCount, processedSteps, toolCalls);
-            emitPlan(eventSink, request, plan, modelCalls, replanCount);
+            if (continuation == null) {
+                requireNotCancelled();
+                modelCalls++;
+                incrementModelCalls(context);
+                plan = planner.createPlan(request, context);
+                logPlan(request, plan, modelCalls, replanCount, processedSteps, toolCalls);
+                emitPlan(eventSink, request, plan, modelCalls, replanCount);
+            } else {
+                LOGGER.info(
+                        "[agent-run] resumed sessionId={} invocationId={} planId={} stepId={}",
+                        request.sessionId(), context.invocationId(), plan.id(),
+                        plan.steps().getFirst().id());
+            }
 
             while (true) {
                 if (plan.outcome() == PlanOutcome.COMPLETE) {
@@ -195,6 +257,16 @@ public final class MainAgent implements AgentLoop, Agent {
                                     "waiting execution must have pendingAction");
                     if (context.invocation() != null) {
                         context.invocation().waitFor(action);
+                        PlanStep waitingStep = Objects.requireNonNull(
+                                execution.currentStep(), "waiting execution must have currentStep");
+                        continuations.put(context.invocationId(), new Continuation(
+                                request,
+                                remainingPlan(plan, waitingStep),
+                                cumulativeResults,
+                                modelCalls,
+                                replanCount,
+                                processedSteps,
+                                toolCalls));
                     }
                     emit(eventSink, AgentRunEvent.of(
                             AgentRunEvent.Type.DECISION,
@@ -328,6 +400,40 @@ public final class MainAgent implements AgentLoop, Agent {
                             "steps", processedSteps,
                             "toolCalls", toolCalls)));
             return runningState.fail(error);
+        }
+    }
+
+    private static AgentPlan remainingPlan(AgentPlan plan, PlanStep waitingStep) {
+        int index = -1;
+        for (int candidate = 0; candidate < plan.steps().size(); candidate++) {
+            if (plan.steps().get(candidate).id().equals(waitingStep.id())) {
+                index = candidate;
+                break;
+            }
+        }
+        if (index < 0) {
+            throw new IllegalStateException(
+                    "waiting step is not part of current plan: " + waitingStep.id());
+        }
+        return new AgentPlan(
+                plan.id(), plan.type(), plan.origin(), plan.outcome(), plan.objective(),
+                plan.steps().subList(index, plan.steps().size()), plan.finalAnswer());
+    }
+
+    private record Continuation(
+            AgentRequest request,
+            AgentPlan remainingPlan,
+            List<StepResult> cumulativeResults,
+            int modelCalls,
+            int replanCount,
+            int processedSteps,
+            int toolCalls) {
+
+        private Continuation {
+            request = Objects.requireNonNull(request, "request must not be null");
+            remainingPlan = Objects.requireNonNull(
+                    remainingPlan, "remainingPlan must not be null");
+            cumulativeResults = List.copyOf(cumulativeResults);
         }
     }
 
