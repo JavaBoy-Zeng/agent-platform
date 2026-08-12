@@ -7,6 +7,7 @@ import com.github.agentos.planner.ModelPlan;
 import com.github.agentos.planner.PlanOutcome;
 import com.github.agentos.planner.PlanType;
 import com.github.agentos.planner.PlanningRequest;
+import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.ToolDefinition;
 import com.github.agentos.tool.tools.EchoTool;
 import com.sun.net.httpserver.HttpExchange;
@@ -65,7 +66,7 @@ class OpenAiCompatibleModelClientTest {
 
         OpenAiCompatibleModelClient client = new OpenAiCompatibleModelClient(
                 HttpClient.newHttpClient(), objectMapper, properties("test-model"));
-        ModelPlan result = client.generatePlan(planningRequest(3));
+        ModelPlan result = client.generatePlan(planningRequestWithRiskyTool(3));
 
         assertThat(result.type()).isEqualTo(PlanType.DISCOVERY);
         assertThat(result.outcome()).isEqualTo(PlanOutcome.CONTINUE);
@@ -82,13 +83,20 @@ class OpenAiCompatibleModelClientTest {
                         "hasMore=true", "nextPage", "nextOffset",
                         "不存在未消费的待续读位置");
         JsonNode schema = sent.path("response_format").path("json_schema").path("schema");
-        JsonNode continueSchema = schema.path("oneOf").path(0);
-        JsonNode completeSchema = schema.path("oneOf").path(1);
-        assertThat(continueSchema.path("properties").path("steps").path("maxItems").intValue())
+        JsonNode discoverySchema = schema.path("oneOf").path(0);
+        JsonNode executionSchema = schema.path("oneOf").path(1);
+        JsonNode completeSchema = schema.path("oneOf").path(2);
+        assertThat(discoverySchema.path("properties").path("type").path("enum").toString())
+                .contains("DISCOVERY");
+        assertThat(executionSchema.path("properties").path("type").path("enum").toString())
+                .contains("EXECUTION");
+        assertThat(discoverySchema.path("properties").path("steps").path("maxItems").intValue())
                 .isEqualTo(3);
-        JsonNode echoStep = continueSchema.path("properties").path("steps")
+        JsonNode echoStep = discoverySchema.path("properties").path("steps")
                 .path("items").path("oneOf").path(0);
         assertThat(echoStep.path("required").toString()).contains("optional");
+        assertThat(discoverySchema.toString()).doesNotContain("file_write");
+        assertThat(executionSchema.toString()).contains("echo", "file_write");
         assertThat(completeSchema.path("properties").path("finalAnswer").path("type").stringValue())
                 .isEqualTo("string");
         assertThat(sent.toString()).doesNotContain("PlanOrigin", "REPLANNED");
@@ -185,6 +193,21 @@ class OpenAiCompatibleModelClientTest {
                 null,
                 null,
                 List.of(ToolDefinition.from(new EchoTool())),
+                maxSteps);
+    }
+
+    private static PlanningRequest planningRequestWithRiskyTool(int maxSteps) {
+        return new PlanningRequest(
+                AgentRequest.of("session-1", "hello"),
+                AgentContext.of("main-agent"),
+                MemoryContext.empty(false),
+                null,
+                null,
+                List.of(
+                        ToolDefinition.from(new EchoTool()),
+                        new ToolDefinition(
+                                "file_write", "write a file", AgentTool.RiskLevel.HIGH,
+                                List.of())),
                 maxSteps);
     }
 

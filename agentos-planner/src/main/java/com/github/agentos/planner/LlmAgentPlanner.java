@@ -6,6 +6,7 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.memory.MemoryContext;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.ToolCall;
 import com.github.agentos.tool.ToolRegistry;
 import org.slf4j.Logger;
@@ -142,6 +143,7 @@ public final class LlmAgentPlanner implements AgentPlanner {
         if (!violations.isEmpty()) {
             throw new PlanValidationException(violations);
         }
+        PlanType effectiveType = normalizePlanType(modelPlan);
         List<PlanStep> steps = modelPlan.steps() == null
                 ? List.of()
                 : modelPlan.steps().stream()
@@ -152,12 +154,32 @@ public final class LlmAgentPlanner implements AgentPlanner {
                                 new ToolCall(step.toolName(), step.arguments())))
                         .toList();
         return AgentPlan.create(
-                modelPlan.type(),
+                effectiveType,
                 origin,
                 modelPlan.outcome(),
                 modelPlan.objective(),
                 steps,
                 modelPlan.finalAnswer());
+    }
+
+    private PlanType normalizePlanType(ModelPlan modelPlan) {
+        if (modelPlan.type() != PlanType.DISCOVERY
+                || modelPlan.outcome() != PlanOutcome.CONTINUE
+                || modelPlan.steps() == null) {
+            return modelPlan.type();
+        }
+        boolean containsSideEffectingTool = modelPlan.steps().stream()
+                .map(ModelPlan.Step::toolName)
+                .map(toolRegistry::find)
+                .flatMap(java.util.Optional::stream)
+                .anyMatch(tool -> tool.riskLevel() != AgentTool.RiskLevel.LOW);
+        if (!containsSideEffectingTool) {
+            return modelPlan.type();
+        }
+        LOGGER.warn(
+                "[agent-plan] normalized model plan type from DISCOVERY to EXECUTION "
+                        + "because it contains a non-LOW risk tool");
+        return PlanType.EXECUTION;
     }
 
     private List<String> validateModelStructure(ModelPlan modelPlan) {

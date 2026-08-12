@@ -8,6 +8,7 @@ import com.github.agentos.planner.PlanOutcome;
 import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.PlanType;
 import com.github.agentos.planner.PlanningRequest;
+import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.ToolDefinition;
 import com.github.agentos.tool.ToolParameter;
 import org.slf4j.Logger;
@@ -155,6 +156,10 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
 
         10. 信息不足时返回 outcome=CONTINUE。未知环境探索使用 type=DISCOVERY；
             已确认环境后的实际操作使用 type=EXECUTION。
+
+            DISCOVERY 计划只能调用 riskLevel=LOW 的只读工具。只要任一步骤调用
+            riskLevel=MEDIUM 或 riskLevel=HIGH 的工具，整个计划必须使用 type=EXECUTION；
+            不得把 file_write 等会产生副作用的工具放入 DISCOVERY 计划。
 
         11. 当已有工具结果足以回答用户时，返回 type=EXECUTION、outcome=COMPLETE、
             finalAnswer，并且不要返回 steps。最终回答是 Runtime 内部控制结果，不是工具。
@@ -383,21 +388,22 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
     }
 
     private Map<String, Object> planSchema(PlanningRequest request) {
-        List<Map<String, Object>> stepVariants = request.availableTools().stream().map(this::stepSchema).toList();
-        Map<String, Object> continueProperties = new LinkedHashMap<>();
-        continueProperties.put("type", Map.of(
-                "type", "string", "enum", List.of("DISCOVERY", "EXECUTION")));
-        continueProperties.put("outcome", Map.of("type", "string", "enum", List.of("CONTINUE")));
-        continueProperties.put("objective", Map.of(
-                "type", "string", "description", "The concrete objective of this plan"));
-        continueProperties.put("steps", Map.of(
-                "type", "array", "minItems", 1, "maxItems", request.maxSteps(),
-                "items", Map.of("oneOf", stepVariants)));
-        Map<String, Object> continueSchema = Map.of(
-                "type", "object",
-                "properties", continueProperties,
-                "required", List.of("type", "outcome", "objective", "steps"),
-                "additionalProperties", false);
+        List<Map<String, Object>> stepVariants = request.availableTools().stream()
+                .map(this::stepSchema)
+                .toList();
+        List<Map<String, Object>> discoveryStepVariants = request.availableTools().stream()
+                .filter(tool -> tool.riskLevel() == AgentTool.RiskLevel.LOW)
+                .map(this::stepSchema)
+                .toList();
+        List<Map<String, Object>> planVariants = new ArrayList<>();
+        if (request.maxSteps() > 0 && !discoveryStepVariants.isEmpty()) {
+            planVariants.add(continueSchema(
+                    PlanType.DISCOVERY, discoveryStepVariants, request.maxSteps()));
+        }
+        if (request.maxSteps() > 0 && !stepVariants.isEmpty()) {
+            planVariants.add(continueSchema(
+                    PlanType.EXECUTION, stepVariants, request.maxSteps()));
+        }
 
         Map<String, Object> completeProperties = new LinkedHashMap<>();
         completeProperties.put("type", Map.of("type", "string", "enum", List.of("EXECUTION")));
@@ -407,14 +413,30 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         completeProperties.put("finalAnswer", Map.of(
                 "type", "string", "minLength", 1,
                 "description", "Final answer returned directly to the user"));
-        Map<String, Object> completeSchema = Map.of(
+        planVariants.add(Map.of(
                 "type", "object",
                 "properties", completeProperties,
                 "required", List.of("type", "outcome", "objective", "finalAnswer"),
+                "additionalProperties", false));
+        return Map.of("oneOf", planVariants);
+    }
+
+    private Map<String, Object> continueSchema(
+            PlanType type, List<Map<String, Object>> stepVariants, int maxSteps) {
+        Map<String, Object> continueProperties = new LinkedHashMap<>();
+        continueProperties.put("type", Map.of(
+                "type", "string", "enum", List.of(type.name())));
+        continueProperties.put("outcome", Map.of("type", "string", "enum", List.of("CONTINUE")));
+        continueProperties.put("objective", Map.of(
+                "type", "string", "description", "The concrete objective of this plan"));
+        continueProperties.put("steps", Map.of(
+                "type", "array", "minItems", 1, "maxItems", maxSteps,
+                "items", Map.of("oneOf", stepVariants)));
+        return Map.of(
+                "type", "object",
+                "properties", continueProperties,
+                "required", List.of("type", "outcome", "objective", "steps"),
                 "additionalProperties", false);
-        return request.maxSteps() > 0 && !stepVariants.isEmpty()
-                ? Map.of("oneOf", List.of(continueSchema, completeSchema))
-                : completeSchema;
     }
 
     private Map<String, Object> stepSchema(ToolDefinition tool) {

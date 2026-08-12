@@ -6,9 +6,11 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.memory.CompletedTurn;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.ToolRegistry;
 import com.github.agentos.tool.ToolCall;
 import com.github.agentos.tool.ToolFailureType;
+import com.github.agentos.tool.ToolResult;
 import com.github.agentos.tool.tools.EchoTool;
 import org.junit.jupiter.api.Test;
 
@@ -21,6 +23,43 @@ import java.util.stream.IntStream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LlmAgentPlannerTest {
+
+    @Test
+    void promotesDiscoveryPlanWithSideEffectingToolToExecution() {
+        AgentTool writeTool = new AgentTool() {
+            @Override public String name() { return "write"; }
+            @Override public String description() { return "write a resource"; }
+            @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
+            @Override public ToolResult execute(ToolCall call) {
+                return ToolResult.success("written");
+            }
+        };
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(writeTool));
+
+        try (MemoryService memoryService = MemoryService.inMemory()) {
+            ModelClient modelClient = request -> new ModelPlan(
+                    PlanType.DISCOVERY,
+                    PlanOutcome.CONTINUE,
+                    "Write the requested resource",
+                    List.of(new ModelPlan.Step(
+                            "step-1", "Write it", false, "write", Map.of())),
+                    null);
+            LlmAgentPlanner planner = new LlmAgentPlanner(
+                    modelClient,
+                    toolRegistry,
+                    memoryService,
+                    new PlanValidator(toolRegistry, 5),
+                    new AgentExecutionLimits(3, 30, 30, 6));
+
+            AgentPlan plan = planner.createPlan(
+                    AgentRequest.of("session-1", "write it"),
+                    AgentContext.of("main-agent"));
+
+            assertThat(plan.type()).isEqualTo(PlanType.EXECUTION);
+            assertThat(plan.steps()).singleElement().satisfies(step ->
+                    assertThat(step.toolCalls().getFirst().toolName()).isEqualTo("write"));
+        }
+    }
 
     @Test
     void recallsMemoryAndInjectsRuntimeOnlyPlanMetadata() {
