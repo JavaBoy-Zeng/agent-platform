@@ -6,7 +6,11 @@ import com.github.agentos.agent.MainAgent;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentExecutionLimits;
+import com.github.agentos.kernel.AgentEventPublisher;
+import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.InMemoryAgentEventPublisher;
+import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.planner.*;
 import com.github.agentos.tool.AgentTool;
@@ -237,8 +241,23 @@ public class AgentOsConfiguration {
      * @return Agent 运行时
      */
     @Bean
-    AgentRuntime agentRuntime(MainAgent mainAgent) {
-        return new AgentRuntime(mainAgent);
+    AgentRuntime agentRuntime(
+            MainAgent mainAgent,
+            AgentEventPublisher agentEventPublisher,
+            AgentEventStore agentEventStore) {
+        return new AgentRuntime(mainAgent, agentEventPublisher, agentEventStore);
+    }
+
+    /** 创建进程内领域事件发布器，后续可注册审计或遥测监听器。 */
+    @Bean
+    AgentEventPublisher agentEventPublisher() {
+        return new InMemoryAgentEventPublisher();
+    }
+
+    /** 创建进程内领域事件存储，支持按 Invocation 和 Session 查询轨迹。 */
+    @Bean
+    AgentEventStore agentEventStore() {
+        return new InMemoryAgentEventStore();
     }
 
     /**

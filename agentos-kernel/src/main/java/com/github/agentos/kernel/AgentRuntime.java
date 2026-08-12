@@ -38,6 +38,14 @@ public final class AgentRuntime {
                 eventPublisher, "eventPublisher must not be null");
     }
 
+    /** 创建将事件同时发布给监听器并写入存储的 Agent 运行时。 */
+    public AgentRuntime(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher, AgentEventStore eventStore) {
+        this(agentLoop, new CompositeAgentEventPublisher(java.util.List.of(
+                Objects.requireNonNull(eventPublisher, "eventPublisher must not be null"),
+                new StoringAgentEventPublisher(eventStore))));
+    }
+
     /**
      * 在指定上下文中执行一次 Agent 循环并保存最终状态。
      *
