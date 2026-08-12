@@ -7,13 +7,17 @@ import com.github.agentos.tool.ToolResult;
 import com.github.agentos.tool.file.AllowAllFileAccessPolicy;
 import com.github.agentos.tool.file.FileAccessPolicy;
 import com.github.agentos.tool.tools.FileWriteTool;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -81,6 +85,45 @@ class FileWriteToolTest {
     }
 
     @Test
+    void createsRealDocxAndPreservesParagraphs() throws Exception {
+        Path file = directory.resolve("report.docx");
+
+        ToolResult result = tool().execute(call(file, "标题\n第一段\n第二段", Map.of()));
+
+        assertThat(result.success()).isTrue();
+        assertThat(Files.readAllBytes(file)).startsWith(0x50, 0x4b);
+        assertThat(readDocx(file)).isEqualTo("标题\n第一段\n第二段");
+        assertThat(((Map<?, ?>) result.data()).get("format")).isEqualTo("DOCX");
+    }
+
+    @Test
+    void appendsParagraphsToExistingDocx() throws Exception {
+        Path file = directory.resolve("append.docx");
+        FileWriteTool tool = tool();
+
+        ToolResult created = tool.execute(call(file, "第一段", Map.of()));
+        ToolResult appended = tool.execute(call(file, "第二段\n第三段", Map.of("mode", "APPEND")));
+
+        assertThat(created.success()).isTrue();
+        assertThat(appended.success()).isTrue();
+        assertThat(readDocx(file)).isEqualTo("第一段\n第二段\n第三段");
+    }
+
+    @Test
+    void rejectsLegacyDocAndUnknownExtensions() {
+        ToolResult legacyDoc = tool().execute(call(
+                directory.resolve("legacy.doc"), "body", Map.of()));
+        ToolResult pdf = tool().execute(call(
+                directory.resolve("report.pdf"), "body", Map.of()));
+
+        assertThat(legacyDoc.success()).isFalse();
+        assertThat(legacyDoc.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);
+        assertThat(legacyDoc.error()).contains("supported extensions are .txt, .md, and .docx");
+        assertThat(pdf.success()).isFalse();
+        assertThat(pdf.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);
+    }
+
+    @Test
     void readOnlyPolicyDeniesWritesByDefault() {
         FileAccessPolicy readOnly = requested -> requested.toAbsolutePath().normalize();
         FileWriteTool tool = new FileWriteTool(readOnly);
@@ -107,6 +150,14 @@ class FileWriteToolTest {
 
     private FileWriteTool tool() {
         return new FileWriteTool(new AllowAllFileAccessPolicy());
+    }
+
+    private static String readDocx(Path path) throws Exception {
+        try (XWPFDocument document = new XWPFDocument(Files.newInputStream(path))) {
+            return document.getParagraphs().stream()
+                    .map(XWPFParagraph::getText)
+                    .collect(Collectors.joining("\n"));
+        }
     }
 
     private static ToolCall call(

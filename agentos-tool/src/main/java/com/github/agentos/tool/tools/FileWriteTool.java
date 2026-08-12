@@ -8,24 +8,36 @@ import com.github.agentos.tool.ToolFailureType;
 import com.github.agentos.tool.ToolParameter;
 import com.github.agentos.tool.ToolResult;
 import com.github.agentos.tool.file.FileAccessPolicy;
+import com.github.agentos.tool.writer.DocxFileContentWriter;
+import com.github.agentos.tool.writer.FileContentWriter;
+import com.github.agentos.tool.writer.FileContentWriterFactory;
+import com.github.agentos.tool.writer.TextFileContentWriter;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
-/** 使用 UTF-8 创建、覆盖或追加本地文本文件。 */
+/** 创建、覆盖或追加 TXT、Markdown 和 Word OOXML 文档。 */
 public final class FileWriteTool implements AgentTool {
 
     private final FileAccessPolicy accessPolicy;
+    private final FileContentWriterFactory writerFactory;
 
     public FileWriteTool(FileAccessPolicy accessPolicy) {
+        this(accessPolicy, new FileContentWriterFactory(List.of(
+                new TextFileContentWriter(), new DocxFileContentWriter())));
+    }
+
+    public FileWriteTool(
+            FileAccessPolicy accessPolicy, FileContentWriterFactory writerFactory) {
         this.accessPolicy = Objects.requireNonNull(
                 accessPolicy, "accessPolicy must not be null");
+        this.writerFactory = Objects.requireNonNull(
+                writerFactory, "writerFactory must not be null");
     }
 
     @Override
@@ -35,16 +47,18 @@ public final class FileWriteTool implements AgentTool {
 
     @Override
     public String description() {
-        return "使用 UTF-8 写入本地文本文件；默认仅创建新文件，也可明确选择覆盖或追加。该操作会修改文件系统，需要人工审批";
+        return "写入 .txt、.md 或真实 .docx 文件；不支持旧版 .doc。默认仅创建新文件，也可明确选择覆盖或追加。该操作会修改文件系统，需要人工审批";
     }
 
     @Override
     public List<ToolParameter> parameters() {
         return List.of(
                 new ToolParameter(
-                        "path", ToolParameter.ValueType.STRING, "目标文件完整路径", true),
+                        "path", ToolParameter.ValueType.STRING,
+                        "目标文件完整路径，扩展名必须是 .txt、.md、.markdown 或 .docx", true),
                 new ToolParameter(
-                        "content", ToolParameter.ValueType.STRING, "要写入的 UTF-8 文本内容，可为空字符串", true),
+                        "content", ToolParameter.ValueType.STRING,
+                        "要写入的文本内容；DOCX 会按换行符生成 Word 段落，可为空字符串", true),
                 new ToolParameter(
                         "mode", ToolParameter.ValueType.STRING,
                         "写入模式：CREATE_NEW（默认，仅新建）、OVERWRITE（覆盖）或 APPEND（追加）", false),
@@ -69,6 +83,7 @@ public final class FileWriteTool implements AgentTool {
                     call.arguments().get("createParentDirectories"),
                     "createParentDirectories", false);
             Path path = accessPolicy.authorizeWrite(Path.of(requested));
+            FileContentWriter writer = writerFactory.require(path);
             Path parent = path.getParent();
             if (parent == null) {
                 return ToolResult.failure(
@@ -89,17 +104,21 @@ public final class FileWriteTool implements AgentTool {
             }
 
             boolean created = !Files.exists(path);
-            write(path, content, mode);
+            mode.write(writer, path, content);
             int bytesWritten = content.getBytes(StandardCharsets.UTF_8).length;
             Map<String, Object> data = Map.of(
                     "path", path.toString(),
+                    "format", writer.format(),
                     "mode", mode.name(),
                     "created", created,
-                    "bytesWritten", bytesWritten);
+                    "bytesWritten", bytesWritten,
+                    "fileSizeBytes", Files.size(path));
             return ToolResult.success(
                     data,
                     "file written successfully",
-                    Map.of("charset", StandardCharsets.UTF_8.name()),
+                    Map.of(
+                            "charset", StandardCharsets.UTF_8.name(),
+                            "supportedExtensions", List.of("txt", "md", "markdown", "docx")),
                     ToolActions.none());
         } catch (Exception exception) {
             return FileToolSupport.failure(exception, "file write");
@@ -113,23 +132,19 @@ public final class FileWriteTool implements AgentTool {
         return content;
     }
 
-    private static void write(Path path, String content, WriteMode mode) throws java.io.IOException {
-        switch (mode) {
-            case CREATE_NEW -> Files.writeString(
-                    path, content, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
-            case OVERWRITE -> Files.writeString(
-                    path, content, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            case APPEND -> Files.writeString(
-                    path, content, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        }
-    }
-
     private enum WriteMode {
         CREATE_NEW,
         OVERWRITE,
         APPEND;
+
+        private void write(FileContentWriter writer, Path path, String content)
+                throws java.io.IOException {
+            switch (this) {
+                case CREATE_NEW -> writer.create(path, content);
+                case OVERWRITE -> writer.overwrite(path, content);
+                case APPEND -> writer.append(path, content);
+            }
+        }
 
         private static WriteMode parse(Object value) {
             if (value == null) {
