@@ -2,6 +2,8 @@ package com.github.agentos.kernel;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.time.Instant;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -15,6 +17,8 @@ public final class AgentRuntime {
 
     private final AgentLoop agentLoop;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
 
     /**
      * 创建 Agent 运行时。
@@ -51,15 +55,23 @@ public final class AgentRuntime {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(eventSink, "eventSink must not be null");
+        AgentInvocation invocation = new AgentInvocation(
+                UUID.randomUUID().toString(), request.sessionId(), context.agentId(),
+                context.taskId(), Instant.now());
+        invocations.put(invocation.invocationId(), invocation);
+        latestInvocationIds.put(request.sessionId(), invocation.invocationId());
+        AgentContext invocationContext = context.withInvocation(invocation);
         return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
+            invocation.start();
             try {
                 AgentState result = Objects.requireNonNull(
-                        agentLoop.run(request, context, running, eventSink),
+                        agentLoop.run(request, invocationContext, running, eventSink),
                         "agentLoop returned null state");
                 if (result.status() == AgentState.Status.RUNNING) {
-                    return result.fail("agent loop finished without a terminal state");
+                    result = result.fail("agent loop finished without a terminal state");
                 }
+                invocation.finish(result);
                 return result;
             } catch (RuntimeException exception) {
                 String message = exception.getMessage() == null
@@ -67,9 +79,13 @@ public final class AgentRuntime {
                         : exception.getMessage();
                 if (Thread.currentThread().isInterrupted()
                         || exception instanceof java.util.concurrent.CancellationException) {
-                    return running.cancel(message);
+                    AgentState cancelled = running.cancel(message);
+                    invocation.finish(cancelled);
+                    return cancelled;
                 }
-                return running.fail(message);
+                AgentState failed = running.fail(message);
+                invocation.fail(exception);
+                return failed;
             }
         });
     }
@@ -82,5 +98,15 @@ public final class AgentRuntime {
      */
     public Optional<AgentState> state(String sessionId) {
         return Optional.ofNullable(states.get(sessionId));
+    }
+
+    /** 按 Invocation 标识查询运行记录。 */
+    public Optional<AgentInvocation> invocation(String invocationId) {
+        return Optional.ofNullable(invocations.get(invocationId));
+    }
+
+    /** 查询指定 Session 最近一次运行记录。 */
+    public Optional<AgentInvocation> latestInvocation(String sessionId) {
+        return Optional.ofNullable(latestInvocationIds.get(sessionId)).flatMap(this::invocation);
     }
 }

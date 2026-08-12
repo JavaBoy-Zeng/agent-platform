@@ -14,7 +14,13 @@ public record AgentContext(
         String teamId,
         String userId,
         String agentId,
-        String taskId) {
+        String taskId,
+        AgentInvocation invocation) {
+
+    /** 保留既有四参数 API，Invocation 由 Runtime 在执行边界注入。 */
+    public AgentContext(String teamId, String userId, String agentId, String taskId) {
+        this(teamId, userId, agentId, taskId, null);
+    }
 
     /**
      * 创建并校验 Agent 上下文。
@@ -40,6 +46,22 @@ public record AgentContext(
             String agentId,
             String taskId) {
         return new AgentContext(teamId, userId, agentId, taskId);
+    }
+
+    /** 返回绑定指定 Invocation 的新上下文。 */
+    public AgentContext withInvocation(AgentInvocation value) {
+        return new AgentContext(teamId, userId, agentId, taskId,
+                java.util.Objects.requireNonNull(value, "invocation must not be null"));
+    }
+
+    /** 返回 Runtime 注入的 Invocation 标识，未进入 Runtime 时返回空字符串。 */
+    public String invocationId() {
+        return invocation == null ? "" : invocation.invocationId();
+    }
+
+    /** 返回 Runtime 注入的 Session 标识，未进入 Runtime 时返回空字符串。 */
+    public String sessionId() {
+        return invocation == null ? "" : invocation.sessionId();
     }
 
     private static String requireText(String value, String field) {
