@@ -6,6 +6,8 @@ import com.github.agentos.tool.ToolExecutionContext;
 import com.github.agentos.tool.ToolFailureType;
 import com.github.agentos.tool.ToolInterceptor;
 import com.github.agentos.tool.ToolResult;
+import com.github.agentos.kernel.PendingAction;
+import com.github.agentos.kernel.PendingActionType;
 
 import java.util.Objects;
 
@@ -28,10 +30,15 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
         if (!riskPolicy.requiresApproval(context.agentContext(), context.tool(), call)) {
             return ToolBeforeResult.allow();
         }
-        boolean approved = approvalService.requestApproval(
-                context.request(), context.agentContext(), context.tool(), call);
-        return approved ? ToolBeforeResult.allow() : ToolBeforeResult.shortCircuit(
-                ToolResult.failure(
-                        ToolFailureType.SECURITY_DENIED, "human approval was not granted"));
+        PendingAction action = new PendingAction(
+                java.util.UUID.randomUUID().toString(),
+                PendingActionType.HUMAN_APPROVAL,
+                "批准工具调用 " + context.tool().name(),
+                context.tool().description(),
+                java.util.Map.of(
+                        "toolName", context.tool().name(),
+                        "arguments", call.arguments(),
+                        "riskLevel", context.tool().riskLevel().name()));
+        return ToolBeforeResult.shortCircuit(ToolResult.pending(action));
     }
 }

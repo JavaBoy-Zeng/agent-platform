@@ -46,6 +46,7 @@ public final class AgentInvocation {
         status = switch (state.status()) {
             case COMPLETED -> AgentRunStatus.COMPLETED;
             case CANCELLED -> AgentRunStatus.CANCELLED;
+            case WAITING -> AgentRunStatus.WAITING;
             case FAILED -> AgentRunStatus.FAILED;
             default -> AgentRunStatus.FAILED;
         };

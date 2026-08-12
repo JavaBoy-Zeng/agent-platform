@@ -6,6 +6,8 @@ public enum AgentRunStatus {
     CREATED,
     /** 正在执行。 */
     RUNNING,
+    /** 等待外部动作解决后恢复。 */
+    WAITING,
     /** 已成功完成。 */
     COMPLETED,
     /** 执行失败。 */

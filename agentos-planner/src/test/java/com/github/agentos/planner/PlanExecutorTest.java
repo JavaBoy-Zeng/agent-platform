@@ -92,6 +92,28 @@ class PlanExecutorTest {
         assertThat(result.replanReason()).isEqualTo(ReplanReason.INVALID_ASSUMPTION);
     }
 
+    @Test
+    void waitsWhenRiskyToolRequiresHumanApproval() {
+        AgentTool risky = new AgentTool() {
+            @Override public String name() { return "risky"; }
+            @Override public String description() { return "write external state"; }
+            @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
+            @Override public ToolResult execute(ToolCall call) {
+                return ToolResult.success("must not execute");
+            }
+        };
+        PlanExecutor executor = executor(risky);
+
+        PlanExecutor.ExecutionResult result = executor.execute(
+                AgentRequest.of("session-1", "write"),
+                AgentContext.of("main-agent"), plan("risky", false), 30, 30);
+
+        assertThat(result.status()).isEqualTo(PlanExecutor.ExecutionStatus.WAITING);
+        assertThat(result.pendingAction()).isNotNull();
+        assertThat(result.pendingAction().type())
+                .isEqualTo(com.github.agentos.kernel.PendingActionType.HUMAN_APPROVAL);
+    }
+
     private static PlanExecutor executor(AgentTool tool) {
         ToolRegistry registry = new ToolRegistry(List.of(tool));
         return new PlanExecutor(

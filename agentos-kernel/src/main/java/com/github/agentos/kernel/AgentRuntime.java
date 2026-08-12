@@ -150,6 +150,9 @@ public final class AgentRuntime {
     }
 
     private void publishTerminal(AgentContext context, AgentState state) {
+        if (state.status() == AgentState.Status.WAITING) {
+            return;
+        }
         AgentEventType type = state.status() == AgentState.Status.COMPLETED
                 ? AgentEventType.AGENT_COMPLETED : AgentEventType.AGENT_FAILED;
         String message = state.status() == AgentState.Status.COMPLETED ? state.output() : state.error();

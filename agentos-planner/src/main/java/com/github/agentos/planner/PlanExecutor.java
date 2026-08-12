@@ -155,6 +155,11 @@ public final class PlanExecutor {
                                         1),
                                 java.util.Map.of(),
                                 tool));
+                if (toolResult.actions().pendingAction() != null) {
+                    return ExecutionResult.waiting(
+                            plan.id(), results, step, processedSteps, toolCalls,
+                            toolResult.actions().pendingAction());
+                }
                 if (Thread.currentThread().isInterrupted()) {
                     return ExecutionResult.cancelled(
                             plan.id(), results, step, lastResult, processedSteps, toolCalls);
@@ -267,7 +272,8 @@ public final class PlanExecutor {
         COMPLETED,
         REPLAN_REQUIRED,
         CANCELLED,
-        ABORTED
+        ABORTED,
+        WAITING
     }
 
     /** 一份计划的有界执行结果。 */
@@ -280,11 +286,20 @@ public final class PlanExecutor {
             ReplanReason replanReason,
             int processedStepCount,
             int toolCallCount,
-            String error) {
+            String error,
+            com.github.agentos.kernel.PendingAction pendingAction) {
 
         public ExecutionResult {
             stepResults = List.copyOf(stepResults);
             error = error == null ? "" : error;
+        }
+
+        static ExecutionResult waiting(
+                String planId, List<StepResult> results, PlanStep step,
+                int steps, int calls, com.github.agentos.kernel.PendingAction action) {
+            return new ExecutionResult(
+                    planId, ExecutionStatus.WAITING, results, step, null, null,
+                    steps, calls, "", action);
         }
 
         static ExecutionResult completed(
@@ -292,7 +307,7 @@ public final class PlanExecutor {
                 int processed, int calls) {
             return new ExecutionResult(
                     planId, ExecutionStatus.COMPLETED, results, step, last, null,
-                    processed, calls, "");
+                    processed, calls, "", null);
         }
 
         static ExecutionResult replan(
@@ -300,7 +315,7 @@ public final class PlanExecutor {
                 ReplanReason reason, int processed, int calls) {
             return new ExecutionResult(
                     planId, ExecutionStatus.REPLAN_REQUIRED, results, step, last, reason,
-                    processed, calls, "");
+                    processed, calls, "", null);
         }
 
         static ExecutionResult aborted(
@@ -308,7 +323,7 @@ public final class PlanExecutor {
                 int processed, int calls, String error) {
             return new ExecutionResult(
                     planId, ExecutionStatus.ABORTED, results, step, last, null,
-                    processed, calls, error);
+                    processed, calls, error, null);
         }
 
         static ExecutionResult cancelled(
@@ -316,7 +331,7 @@ public final class PlanExecutor {
                 int processed, int calls) {
             return new ExecutionResult(
                     planId, ExecutionStatus.CANCELLED, results, step, last, null,
-                    processed, calls, "run cancelled by user");
+                    processed, calls, "run cancelled by user", null);
         }
     }
 }

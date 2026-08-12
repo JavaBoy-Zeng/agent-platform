@@ -105,4 +105,11 @@ public record ToolResult(
                 ToolStatus.FAILURE, null, error, failureType,
                 Map.of(), ToolActions.none());
     }
+
+    /** 创建要求 Runtime 挂起的工具结果。 */
+    public static ToolResult pending(com.github.agentos.kernel.PendingAction action) {
+        return new ToolResult(
+                ToolStatus.SUCCESS, null, action.description(), ToolFailureType.NONE,
+                Map.of(), ToolActions.pending(action));
+    }
 }

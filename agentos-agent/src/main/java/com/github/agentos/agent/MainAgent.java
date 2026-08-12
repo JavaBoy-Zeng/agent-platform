@@ -165,6 +165,34 @@ public final class MainAgent implements AgentLoop {
                             processedSteps, toolCalls, runStarted, eventSink);
                 }
 
+                if (execution.status() == PlanExecutor.ExecutionStatus.WAITING) {
+                    com.github.agentos.kernel.PendingAction action =
+                            Objects.requireNonNull(execution.pendingAction(),
+                                    "waiting execution must have pendingAction");
+                    emit(eventSink, AgentRunEvent.of(
+                            AgentRunEvent.Type.DECISION,
+                            request.sessionId(),
+                            action.description(),
+                            Map.of(
+                                    "pendingActionId", action.pendingActionId(),
+                                    "pendingActionType", action.type().name(),
+                                    "title", action.title())));
+                    try {
+                        context.eventPublisher().publish(
+                                com.github.agentos.kernel.DefaultAgentEvent.of(
+                                        context,
+                                        com.github.agentos.kernel.AgentEventType.HUMAN_ACTION_REQUIRED,
+                                        action.description(),
+                                        Map.of(
+                                                "pendingActionId", action.pendingActionId(),
+                                                "type", action.type().name(),
+                                                "title", action.title())));
+                    } catch (RuntimeException ignored) {
+                        // 观察端不得中断挂起流程。
+                    }
+                    return runningState.waitForAction(action.description());
+                }
+
                 if (execution.status() == PlanExecutor.ExecutionStatus.ABORTED) {
                     String error = execution.error().isBlank()
                             ? "plan execution aborted"

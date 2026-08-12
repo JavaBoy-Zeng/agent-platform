@@ -78,6 +78,11 @@ public record AgentState(
         return new AgentState(Status.CANCELLED, iteration, "", message, Instant.now());
     }
 
+    /** 将当前状态转换为等待外部动作状态。 */
+    public AgentState waitForAction(String message) {
+        return new AgentState(Status.WAITING, iteration, "", message, Instant.now());
+    }
+
     /**
      * Agent 会话支持的生命周期状态。
      */
@@ -93,7 +98,7 @@ public record AgentState(
         /**
          * 高风险操作正在等待人工审批。
          */
-        WAITING_APPROVAL,
+        WAITING,
         /**
          * 本次运行已成功完成。
          */
