@@ -21,7 +21,7 @@ import com.github.agentos.tool.ToolExecutor;
 import com.github.agentos.tool.ToolDispatcher;
 import com.github.agentos.tool.ToolInterceptor;
 import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.file.AllowAllReadableFileAccessPolicy;
+import com.github.agentos.tool.file.AllowAllFileAccessPolicy;
 import com.github.agentos.tool.file.FileAccessPolicy;
 import com.github.agentos.tool.reader.DocxFileReader;
 import com.github.agentos.tool.reader.PdfFileReader;
@@ -68,7 +68,7 @@ public class AgentOsConfiguration {
 
     @Bean
     FileAccessPolicy fileAccessPolicy() {
-        return new AllowAllReadableFileAccessPolicy();
+        return new AllowAllFileAccessPolicy();
     }
 
     @Bean
@@ -93,6 +93,12 @@ public class AgentOsConfiguration {
     @Bean
     FileSearchTool fileSearchTool(FileAccessPolicy fileAccessPolicy) {
         return new FileSearchTool(fileAccessPolicy);
+    }
+
+    /** 创建需要 HITL 审批的 UTF-8 文件写入工具。 */
+    @Bean
+    FileWriteTool fileWriteTool(FileAccessPolicy fileAccessPolicy) {
+        return new FileWriteTool(fileAccessPolicy);
     }
 
 

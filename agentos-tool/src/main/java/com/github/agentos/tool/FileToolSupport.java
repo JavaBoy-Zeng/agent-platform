@@ -4,6 +4,7 @@ import com.github.agentos.tool.file.FileAccessException;
 
 import java.io.IOException;
 import java.nio.file.AccessDeniedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.InvalidPathException;
 import java.nio.file.NoSuchFileException;
 
@@ -53,7 +54,9 @@ public final class FileToolSupport {
         ToolFailureType type;
         if (exception instanceof FileAccessException accessException) {
             type = accessException.failureType();
-        } else if (exception instanceof InvalidPathException || exception instanceof IllegalArgumentException) {
+        } else if (exception instanceof InvalidPathException
+                || exception instanceof IllegalArgumentException
+                || exception instanceof FileAlreadyExistsException) {
             type = ToolFailureType.INVALID_ARGUMENT;
         } else if (exception instanceof NoSuchFileException) {
             type = ToolFailureType.NOT_FOUND;
