@@ -111,3 +111,29 @@ export async function getAgentState(sessionId) {
   }
   return response.status === 404 ? null : body
 }
+
+export async function getPendingAction(sessionId) {
+  const response = await fetch(`/api/agents/${encodeURIComponent(sessionId)}/pending-action`)
+  if (response.status === 204) return null
+  const body = await readBody(response)
+  if (!response.ok) {
+    throw new AgentApiError(body?.detail || '无法读取待审批操作', response.status)
+  }
+  return body
+}
+
+export async function resolvePendingAction(invocationId, pendingActionId, approved) {
+  const response = await fetch(
+    `/api/agents/invocations/${encodeURIComponent(invocationId)}/resolution`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingActionId, approved, data: {} })
+    }
+  )
+  const body = await readBody(response)
+  if (!response.ok) {
+    throw new AgentApiError(body?.detail || '处理审批操作失败', response.status)
+  }
+  return body
+}

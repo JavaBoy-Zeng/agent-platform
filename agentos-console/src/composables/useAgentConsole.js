@@ -1,5 +1,10 @@
 import { computed, onMounted, ref } from 'vue'
-import { getAgentState, runAgentStream } from '../services/agentApi.js'
+import {
+  getAgentState,
+  getPendingAction,
+  resolvePendingAction,
+  runAgentStream
+} from '../services/agentApi.js'
 
 const STORAGE_KEY = 'agentos.console.sessions.v1'
 
@@ -112,6 +117,10 @@ export function useAgentConsole() {
       connection.value = 'online'
       if (state) {
         session.state = state
+        if (state.status === 'WAITING') {
+          const waiting = await getPendingAction(id)
+          if (waiting) setPendingApproval(session, waiting)
+        }
         persist()
       }
     } catch {
@@ -132,12 +141,13 @@ export function useAgentConsole() {
     return session
   }
 
-  function addMessage(session, role, content) {
+  function addMessage(session, role, content, extra = {}) {
     session.messages.push({
       id: randomId('message'),
       role,
       content,
-      createdAt: nowIso()
+      createdAt: nowIso(),
+      ...extra
     })
     session.updatedAt = nowIso()
   }
@@ -179,6 +189,7 @@ export function useAgentConsole() {
       return `OBSERVATION / ${details.toolName || ''}\n${data.message || '(empty result)'}`
     }
     if (event === 'decision') {
+      if (details.pendingActionId) return ''
       return `DECISION / ${details.outcome || ''} / ${data.message || ''}`
     }
     if (event === 'replan') {
@@ -193,8 +204,33 @@ export function useAgentConsole() {
     if (content) addMessage(session, 'event', content)
     if (packet.event === 'state' && packet.data?.state) {
       session.state = packet.data.state
+      if (packet.data.state.status === 'WAITING') setPendingApproval(session, packet.data)
     }
     persist()
+  }
+
+  function setPendingApproval(session, response) {
+    const action = response.pendingAction
+    if (!action || session.messages.some(message =>
+      message.role === 'approval'
+      && message.pendingActionId === action.pendingActionId
+      && !message.resolved)) return
+    const argumentsSummary = action.payload?.arguments || {}
+    addMessage(session, 'approval', action.description || action.title || '等待人工审批', {
+      invocationId: response.invocationId,
+      pendingActionId: action.pendingActionId,
+      title: action.title || '需要批准操作',
+      payload: {
+        toolName: action.payload?.toolName || '',
+        riskLevel: action.payload?.riskLevel || '',
+        arguments: {
+          path: argumentsSummary.path || '',
+          mode: argumentsSummary.mode || 'CREATE_NEW',
+          createParentDirectories: Boolean(argumentsSummary.createParentDirectories)
+        }
+      },
+      resolved: false
+    })
   }
 
   async function execute() {
@@ -230,6 +266,10 @@ export function useAgentConsole() {
       session.state = response.state
       if (response.state.status === 'COMPLETED') {
         addMessage(session, 'assistant', response.state.output || '任务已完成。')
+      } else if (response.state.status === 'WAITING') {
+        setPendingApproval(session, response)
+      } else if (response.state.status === 'CANCELLED') {
+        addMessage(session, 'event', response.state.error || '任务已取消。')
       } else {
         addMessage(session, 'error', response.state.error || 'Agent 未能完成任务。')
       }
@@ -243,6 +283,39 @@ export function useAgentConsole() {
         updatedAt: nowIso()
       }
       addMessage(session, 'error', message)
+    } finally {
+      busy.value = false
+      stopPipeline()
+      persist()
+    }
+  }
+
+  async function resolveApproval(messageId, approved) {
+    if (busy.value || !currentSession.value) return
+    const session = currentSession.value
+    const message = session.messages.find(item => item.id === messageId)
+    if (!message || message.role !== 'approval' || message.resolved) return
+    busy.value = true
+    startPipeline()
+    try {
+      const response = await resolvePendingAction(
+        message.invocationId, message.pendingActionId, approved)
+      connection.value = 'online'
+      message.resolved = true
+      message.approved = approved
+      session.state = response.state
+      if (response.state.status === 'COMPLETED') {
+        addMessage(session, 'assistant', response.state.output || '任务已完成。')
+      } else if (response.state.status === 'WAITING') {
+        setPendingApproval(session, response)
+      } else if (!approved && response.state.error === 'human approval rejected') {
+        addMessage(session, 'event', '操作已拒绝，任务已停止。')
+      } else {
+        addMessage(session, 'error', response.state.error || 'Agent 未能完成任务。')
+      }
+    } catch (error) {
+      connection.value = error instanceof TypeError ? 'offline' : 'online'
+      addMessage(session, 'error', error.message || '处理审批操作失败')
     } finally {
       busy.value = false
       stopPipeline()
@@ -265,7 +338,7 @@ export function useAgentConsole() {
     }
 
     if (sessions.value.length) {
-      activateSession(sessions.value[0])
+      void selectSession(sessions.value[0].id)
     } else {
       createSession()
     }
@@ -287,6 +360,7 @@ export function useAgentConsole() {
     deleteSession,
     selectSession,
     execute,
+    resolveApproval,
     clearTranscript
   }
 }

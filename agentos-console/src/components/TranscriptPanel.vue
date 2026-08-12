@@ -6,7 +6,7 @@ defineProps({
   busy: { type: Boolean, default: false }
 })
 
-defineEmits(['clear'])
+defineEmits(['clear', 'resolve-approval'])
 
 function timeLabel(value) {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -19,6 +19,7 @@ function roleLabel(role) {
     user: 'OPERATOR',
     assistant: 'MAIN AGENT',
     event: 'RUNTIME EVENT',
+    approval: 'APPROVAL REQUIRED',
     error: 'SYSTEM ERROR'
   }[role] || role
 }
@@ -58,6 +59,32 @@ function roleLabel(role) {
           class="message-content markdown-body"
           v-html="renderMarkdown(message.content)"
         ></div>
+        <div v-else-if="message.role === 'approval'" class="approval-card">
+          <strong>{{ message.title }}</strong>
+          <p>{{ message.content }}</p>
+          <dl v-if="message.payload?.toolName">
+            <dt>工具</dt><dd>{{ message.payload.toolName }}</dd>
+            <template v-if="message.payload.arguments?.path">
+              <dt>目标</dt><dd>{{ message.payload.arguments.path }}</dd>
+            </template>
+            <template v-if="message.payload.arguments?.mode">
+              <dt>模式</dt><dd>{{ message.payload.arguments.mode }}</dd>
+            </template>
+          </dl>
+          <div v-if="!message.resolved" class="approval-actions">
+            <button type="button" class="approval-reject" :disabled="busy"
+                    @click="$emit('resolve-approval', { messageId: message.id, approved: false })">
+              拒绝
+            </button>
+            <button type="button" class="approval-accept" :disabled="busy"
+                    @click="$emit('resolve-approval', { messageId: message.id, approved: true })">
+              批准并继续
+            </button>
+          </div>
+          <span v-else class="approval-resolution" :class="{ approved: message.approved }">
+            {{ message.approved ? '已批准并恢复执行' : '已拒绝' }}
+          </span>
+        </div>
         <p v-else>{{ message.content }}</p>
       </article>
 

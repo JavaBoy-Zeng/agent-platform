@@ -22,6 +22,7 @@ const {
   deleteSession,
   selectSession,
   execute,
+  resolveApproval,
   clearTranscript
 } = useAgentConsole()
 </script>
@@ -61,7 +62,12 @@ const {
           @run="execute"
         />
 
-        <TranscriptPanel :messages="messages" :busy="busy" @clear="clearTranscript" />
+        <TranscriptPanel
+          :messages="messages"
+          :busy="busy"
+          @clear="clearTranscript"
+          @resolve-approval="resolveApproval($event.messageId, $event.approved)"
+        />
       </section>
 
       <TelemetryRail :runtime-state="runtimeState" :active-stage="activeStage" />

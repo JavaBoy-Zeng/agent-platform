@@ -5,6 +5,10 @@ import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRuntime;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.kernel.AgentInvocation;
+import com.github.agentos.kernel.AgentRunStatus;
+import com.github.agentos.kernel.PendingAction;
+import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
@@ -64,7 +68,7 @@ public class AgentController {
     public ResponseEntity<RunResponse> run(@RequestBody RunRequest request) {
         RunInvocation invocation = normalize(request);
         AgentState state = runtime.run(invocation.request(), invocation.context());
-        RunResponse response = new RunResponse(invocation.request().sessionId(), state);
+        RunResponse response = response(invocation.request().sessionId(), state);
         return ResponseEntity.created(URI.create(
                 "/api/agents/" + invocation.request().sessionId() + "/state")).body(response);
     }
@@ -98,7 +102,7 @@ public class AgentController {
                         invocation.context(),
                         event -> sendEvent(emitter, connected, event));
                 terminal.set(true);
-                send(emitter, connected, "state", new RunResponse(
+                send(emitter, connected, "state", response(
                         invocation.request().sessionId(), state));
                 if (connected.get()) {
                     emitter.complete();
@@ -191,6 +195,50 @@ public class AgentController {
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
+    /** 查询会话当前等待处理的外部动作。 */
+    @GetMapping("/{sessionId}/pending-action")
+    public ResponseEntity<PendingActionResponse> pendingAction(@PathVariable String sessionId) {
+        return runtime.latestInvocation(sessionId)
+                .filter(invocation -> invocation.status() == AgentRunStatus.WAITING
+                        && invocation.pendingAction() != null)
+                .map(invocation -> ResponseEntity.ok(new PendingActionResponse(
+                        sessionId, invocation.invocationId(), invocation.pendingAction())))
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    /** 批准或拒绝挂起动作，并使用原 Invocation 从 Checkpoint 恢复。 */
+    @PostMapping("/invocations/{invocationId}/resolution")
+    public ResponseEntity<RunResponse> resolve(
+            @PathVariable String invocationId,
+            @RequestBody ResolutionRequest request) {
+        if (request == null || request.pendingActionId() == null
+                || request.pendingActionId().isBlank()) {
+            throw new IllegalArgumentException("pendingActionId must not be blank");
+        }
+        AgentInvocation invocation = runtime.invocation(invocationId).orElseThrow(() ->
+                new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "invocation not found: " + invocationId));
+        if (invocation.status() != AgentRunStatus.WAITING) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "invocation is not waiting for an external action: " + invocationId);
+        }
+        AgentState state = runtime.resume(invocationId, new PendingActionResolution(
+                request.pendingActionId(), request.approved(),
+                request.data() == null ? Map.of() : request.data()));
+        return ResponseEntity.ok(response(invocation.sessionId(), state));
+    }
+
+    private RunResponse response(String sessionId, AgentState state) {
+        AgentInvocation invocation = runtime.latestInvocation(sessionId).orElse(null);
+        return new RunResponse(
+                sessionId,
+                invocation == null ? "" : invocation.invocationId(),
+                state,
+                state.status() == AgentState.Status.WAITING && invocation != null
+                        ? invocation.pendingAction() : null);
+    }
+
     /**
      * Agent 运行接口的请求体。
      *
@@ -215,7 +263,21 @@ public class AgentController {
      * @param sessionId 本次运行使用的会话标识
      * @param state Agent 最终运行状态
      */
-    public record RunResponse(String sessionId, AgentState state) {
+    public record RunResponse(
+            String sessionId,
+            String invocationId,
+            AgentState state,
+            PendingAction pendingAction) {
+    }
+
+    /** 待处理动作查询结果。 */
+    public record PendingActionResponse(
+            String sessionId, String invocationId, PendingAction pendingAction) {
+    }
+
+    /** 外部动作处理请求。 */
+    public record ResolutionRequest(
+            String pendingActionId, boolean approved, Map<String, Object> data) {
     }
 
     /** 停止请求的受理结果；最终 CANCELLED 状态可继续通过状态接口查询。 */

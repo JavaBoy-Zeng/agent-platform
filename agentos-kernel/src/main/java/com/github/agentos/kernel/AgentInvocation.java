@@ -81,6 +81,19 @@ public final class AgentInvocation {
     public PendingActionResolution resolution() { return resolution; }
     public void waitFor(PendingAction action) { pendingAction = action; }
     public void resolve(PendingActionResolution value) { resolution = value; }
+    /** 仅消费一次与当前挂起动作和工具调用完全匹配的批准结果。 */
+    public synchronized boolean consumeApproval(
+            String toolName, java.util.Map<String, Object> arguments) {
+        if (pendingAction == null || resolution == null || !resolution.approved()
+                || !pendingAction.pendingActionId().equals(resolution.pendingActionId())
+                || !java.util.Objects.equals(pendingAction.payload().get("toolName"), toolName)
+                || !java.util.Objects.equals(pendingAction.payload().get("arguments"), arguments)) {
+            return false;
+        }
+        pendingAction = null;
+        resolution = null;
+        return true;
+    }
     public int incrementModelCalls() { return modelCalls.incrementAndGet(); }
     public int incrementToolCalls() { return toolCalls.incrementAndGet(); }
     public int incrementReplans() { return replans.incrementAndGet(); }

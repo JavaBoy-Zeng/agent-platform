@@ -30,8 +30,8 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
             return ToolBeforeResult.allow();
         }
         if (context.agentContext().invocation() != null
-                && context.agentContext().invocation().resolution() != null
-                && context.agentContext().invocation().resolution().approved()) {
+                && context.agentContext().invocation().consumeApproval(
+                        context.tool().name(), call.arguments())) {
             return ToolBeforeResult.allow();
         }
         PendingAction action = new PendingAction(
