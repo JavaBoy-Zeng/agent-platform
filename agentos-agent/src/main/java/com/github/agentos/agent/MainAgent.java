@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  * <p>Runtime 可以先执行 DISCOVERY 计划，再把累计工具结果反馈给规划器；也可以在明确可恢复
  * 的失败后重新规划。只有模型返回 EXECUTION/COMPLETE 后才由内部 Finalizer 结束运行。</p>
  */
-public final class MainAgent implements AgentLoop {
+public final class MainAgent implements AgentLoop, Agent {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MainAgent.class);
     private static final int MAX_LOG_VALUE_LENGTH = 1_000;
@@ -82,6 +82,30 @@ public final class MainAgent implements AgentLoop {
     @Override
     public AgentState run(AgentRequest request, AgentContext context, AgentState runningState) {
         return run(request, context, runningState, AgentEventSink.NOOP);
+    }
+
+    /** 返回默认主 Agent 标识。 */
+    @Override
+    public String id() {
+        return "main-agent";
+    }
+
+    /** 返回当前主 Agent 的能力说明。 */
+    @Override
+    public String description() {
+        return "AgentOS default planning and tool execution agent";
+    }
+
+    /** 通过统一 Agent 抽象执行当前完整 Plan-and-Execute 流程。 */
+    @Override
+    public AgentExecutionResult run(
+            AgentRequest request,
+            com.github.agentos.kernel.AgentExecutionContext executionContext) {
+        AgentContext context = executionContext.agentContext();
+        AgentState result = run(
+                request, context, AgentState.ready().startNextIteration(), AgentEventSink.NOOP);
+        return AgentExecutionResult.from(
+                result, context.invocation() == null ? null : context.invocation().pendingAction());
     }
 
     @Override
