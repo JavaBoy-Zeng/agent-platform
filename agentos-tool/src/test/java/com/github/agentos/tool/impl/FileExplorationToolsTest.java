@@ -49,6 +49,27 @@ class FileExplorationToolsTest {
     }
 
     @Test
+    void excludesHiddenFilesAndPrunesHiddenDirectories() throws Exception {
+        Files.createDirectories(directory.resolve(".git/objects"));
+        Files.createDirectories(directory.resolve("visible/.cache"));
+        Files.writeString(directory.resolve(".env"), "SECRET=value", StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve(".git/config"), "hidden", StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve(".git/objects/object"), "hidden", StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("visible/readme.md"), "visible", StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("visible/.cache/item"), "hidden", StandardCharsets.UTF_8);
+        DirectoryListTool tool = new DirectoryListTool(new AllowAllReadableFileAccessPolicy());
+
+        ToolResult result = tool.execute(new ToolCall("directory_list", Map.of(
+                "path", directory.toString(),
+                "maxDepth", 5,
+                "maxEntries", 100)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("visible/", Path.of("visible", "readme.md").toString());
+        assertThat(result.output()).doesNotContain(".env", ".git", ".cache", "SECRET=value");
+    }
+
+    @Test
     void searchesByNameAndLiteralContent() throws Exception {
         Files.createDirectories(directory.resolve("src"));
         Files.writeString(
