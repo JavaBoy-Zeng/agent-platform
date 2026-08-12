@@ -132,18 +132,21 @@ public final class PlanExecutor {
 
             int attempts = 0;
             while (true) {
-                if (toolCalls >= remainingToolCalls) {
+                int batchSize = step.toolCalls().size();
+                if (toolCalls + batchSize > remainingToolCalls) {
                     String error = "maxToolCalls exhausted while executing step " + step.id();
                     return ExecutionResult.aborted(
                             plan.id(), results, step, lastResult, processedSteps, toolCalls, error);
                 }
                 attempts++;
-                toolCalls++;
+                toolCalls += batchSize;
                 if (context.invocation() != null) {
-                    context.invocation().incrementToolCalls();
+                    for (int callIndex = 0; callIndex < batchSize; callIndex++) {
+                        context.invocation().incrementToolCalls();
+                    }
                 }
-                ToolResult toolResult = toolDispatcher.dispatch(
-                        step.toolCall(), tool -> new ToolExecutionContext(
+                List<ToolResult> toolResults = toolDispatcher.dispatch(
+                        step.toolCalls(), step.executionMode(), tool -> new ToolExecutionContext(
                                 request,
                                 context,
                                 plan.id(),
@@ -155,22 +158,29 @@ public final class PlanExecutor {
                                         1),
                                 java.util.Map.of(),
                                 tool));
-                if (toolResult.actions().pendingAction() != null) {
+                ToolResult pendingResult = toolResults.stream()
+                        .filter(result -> result.actions().pendingAction() != null)
+                        .findFirst().orElse(null);
+                if (pendingResult != null) {
                     return ExecutionResult.waiting(
                             plan.id(), results, step, processedSteps, toolCalls,
-                            toolResult.actions().pendingAction());
+                            pendingResult.actions().pendingAction());
                 }
                 if (Thread.currentThread().isInterrupted()) {
                     return ExecutionResult.cancelled(
                             plan.id(), results, step, lastResult, processedSteps, toolCalls);
                 }
-                if (toolResult.success()) {
-                    lastResult = StepResult.completed(plan, step, toolResult.output(), attempts);
+                ToolResult toolResult = toolResults.stream()
+                        .filter(result -> !result.success()).findFirst().orElse(null);
+                if (toolResult == null) {
+                    String output = toolResults.stream().map(ToolResult::output)
+                            .collect(java.util.stream.Collectors.joining("\n"));
+                    lastResult = StepResult.completed(plan, step, output, attempts);
                     results.add(lastResult);
                     LOGGER.info(
                             "[agent-step] finished sessionId={} planId={} stepId={} status=COMPLETED attempts={} result={} durationMs={}",
                             request.sessionId(), plan.id(), step.id(), attempts,
-                            logValue(toolResult.output()), elapsedMillis(stepStarted));
+                            logValue(output), elapsedMillis(stepStarted));
                     emit(eventSink, AgentRunEvent.of(
                             AgentRunEvent.Type.TOOL_FINISHED,
                             request.sessionId(),
@@ -179,6 +189,7 @@ public final class PlanExecutor {
                                     "planId", plan.id(),
                                     "stepId", step.id(),
                                     "toolName", step.toolCall().toolName(),
+                                    "toolCount", batchSize,
                                     "status", StepStatus.COMPLETED.name(),
                                     "attempts", attempts)));
                     break;
@@ -191,7 +202,7 @@ public final class PlanExecutor {
                         request.sessionId(), plan.id(), step.id(), toolResult.failureType(),
                         decision.action(), attempts, logValue(toolResult.error()));
                 if (decision.action() == FailureAction.RETRY) {
-                    if (toolCalls >= remainingToolCalls) {
+                    if (toolCalls + batchSize > remainingToolCalls) {
                         String error = "maxToolCalls exhausted while retrying step " + step.id();
                         lastResult = StepResult.failed(
                                 plan, step, error, toolResult.failureType(), attempts);

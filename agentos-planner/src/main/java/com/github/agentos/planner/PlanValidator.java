@@ -85,7 +85,15 @@ public final class PlanValidator {
     }
 
     private void validateStep(AgentPlan plan, PlanStep step, List<String> violations) {
-        String toolName = step.toolCall().toolName();
+        for (com.github.agentos.tool.ToolCall call : step.toolCalls()) {
+            validateToolCall(plan, step, call, violations);
+        }
+    }
+
+    private void validateToolCall(
+            AgentPlan plan, PlanStep step, com.github.agentos.tool.ToolCall call,
+            List<String> violations) {
+        String toolName = call.toolName();
         AgentTool tool = toolRegistry.find(toolName).orElse(null);
         if (tool == null) {
             violations.add("step " + step.id() + " references unknown tool " + toolName);
@@ -99,12 +107,12 @@ public final class PlanValidator {
         Map<String, ToolParameter> parameters = new HashMap<>();
         for (ToolParameter parameter : definition.parameters()) {
             parameters.put(parameter.name(), parameter);
-            if (parameter.required() && !step.toolCall().arguments().containsKey(parameter.name())) {
+            if (parameter.required() && !call.arguments().containsKey(parameter.name())) {
                 violations.add("step " + step.id() + " misses required argument " + parameter.name());
             }
         }
 
-        for (Map.Entry<String, Object> argument : step.toolCall().arguments().entrySet()) {
+        for (Map.Entry<String, Object> argument : call.arguments().entrySet()) {
             ToolParameter parameter = parameters.get(argument.getKey());
             if (parameter == null) {
                 violations.add("step " + step.id() + " contains unknown argument " + argument.getKey());

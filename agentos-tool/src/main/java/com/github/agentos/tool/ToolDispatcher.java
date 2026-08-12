@@ -7,6 +7,8 @@ import com.github.agentos.kernel.DefaultAgentEvent;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
 
 /**
  * 工具注册表解析与完整生命周期的统一执行边界。
@@ -79,6 +81,36 @@ public final class ToolDispatcher {
             }
             return publishResult(context, call, result);
         }
+    }
+
+    /**
+     * 按指定模式执行一组调用并保持结果与输入位置一一对应。
+     *
+     * <p>当任一工具未知或没有显式声明 {@link AgentTool#parallelSafe()} 时，PARALLEL
+     * 会安全降级为顺序执行，避免意外并发写操作。</p>
+     */
+    public List<ToolResult> dispatch(
+            List<ToolCall> calls,
+            ToolExecutionMode mode,
+            ToolExecutionContextFactory contextFactory) {
+        List<ToolCall> safeCalls = List.copyOf(
+                Objects.requireNonNull(calls, "calls must not be null"));
+        Objects.requireNonNull(mode, "mode must not be null");
+        if (mode == ToolExecutionMode.SEQUENTIAL || !allParallelSafe(safeCalls)) {
+            return safeCalls.stream().map(call -> dispatch(call, contextFactory)).toList();
+        }
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<CompletableFuture<ToolResult>> futures = safeCalls.stream()
+                    .map(call -> CompletableFuture.supplyAsync(
+                            () -> dispatch(call, contextFactory), executor))
+                    .toList();
+            return futures.stream().map(CompletableFuture::join).toList();
+        }
+    }
+
+    private boolean allParallelSafe(List<ToolCall> calls) {
+        return !calls.isEmpty() && calls.stream().allMatch(call -> registry.find(call.toolName())
+                .map(AgentTool::parallelSafe).orElse(false));
     }
 
     private ToolResult publishResult(

@@ -46,6 +46,15 @@ public interface AgentTool {
     }
 
     /**
+     * 是否允许与同一步骤中的其他工具并行执行。
+     *
+     * <p>默认关闭，工具实现必须确认没有共享写入或顺序依赖后显式开启。</p>
+     */
+    default boolean parallelSafe() {
+        return false;
+    }
+
+    /**
      * 执行一次工具调用。
      *
      * @param call 工具名称及调用参数

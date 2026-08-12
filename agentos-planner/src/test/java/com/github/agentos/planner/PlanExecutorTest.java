@@ -10,6 +10,7 @@ import com.github.agentos.tool.ToolExecutor;
 import com.github.agentos.tool.ToolFailureType;
 import com.github.agentos.tool.ToolRegistry;
 import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.ToolExecutionMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -114,8 +115,35 @@ class PlanExecutorTest {
                 .isEqualTo(com.github.agentos.kernel.PendingActionType.HUMAN_APPROVAL);
     }
 
+    @Test
+    void executesAllToolCallsInOneStepAndAccountsForEachCall() {
+        PlanExecutor executor = executor(
+                tool("first", call -> ToolResult.success("one")),
+                tool("second", call -> ToolResult.success("two")));
+        AgentPlan plan = AgentPlan.create(
+                PlanType.EXECUTION, PlanOrigin.INITIAL, PlanOutcome.CONTINUE, "test",
+                List.of(new PlanStep(
+                        "step-1", "call tools", false,
+                        List.of(new ToolCall("first", Map.of()),
+                                new ToolCall("second", Map.of())),
+                        ToolExecutionMode.SEQUENTIAL)), "");
+
+        PlanExecutor.ExecutionResult result = executor.execute(
+                AgentRequest.of("session-1", "run"), AgentContext.of("main-agent"),
+                plan, 30, 30);
+
+        assertThat(result.status()).isEqualTo(PlanExecutor.ExecutionStatus.COMPLETED);
+        assertThat(result.toolCallCount()).isEqualTo(2);
+        assertThat(result.stepResults()).singleElement()
+                .extracting(StepResult::output).isEqualTo("one\ntwo");
+    }
+
     private static PlanExecutor executor(AgentTool tool) {
-        ToolRegistry registry = new ToolRegistry(List.of(tool));
+        return executor(new AgentTool[]{tool});
+    }
+
+    private static PlanExecutor executor(AgentTool... tools) {
+        ToolRegistry registry = new ToolRegistry(List.of(tools));
         return new PlanExecutor(
                 registry,
                 new ToolExecutor(registry),
