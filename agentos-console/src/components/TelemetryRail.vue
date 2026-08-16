@@ -11,7 +11,7 @@ const description = computed(() => ({
   RUNNING: 'Agent Loop 正在处理当前任务。',
   COMPLETED: '任务执行完成，状态已归档。',
   FAILED: '任务执行失败，请检查运行记录。',
-  WAITING_APPROVAL: '高风险操作正在等待人工批准。',
+  WAITING: '高风险操作正在等待人工批准。',
   CANCELLED: '当前任务已被取消。'
 })[props.runtimeState.status] || '等待运行时状态。')
 
@@ -79,8 +79,8 @@ function stageClass(index) {
 
     <section class="endpoint-note">
       <span>ACTIVE ENDPOINT</span>
-      <code>POST /api/agents/runs</code>
-      <code>POST /api/agents/runs/stream</code>
+      <code>POST /api/agent-runs</code>
+      <code>GET /api/agent-runs/{id}/events</code>
     </section>
   </aside>
 </template>

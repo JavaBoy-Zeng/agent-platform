@@ -73,6 +73,18 @@ public final class MemoryService implements AutoCloseable {
     }
 
     /**
+     * 创建使用 SQLite 数据库持久化数据的记忆服务。
+     *
+     * <p>数据库文件及父目录不存在时会自动创建，首次连接会执行内置版本迁移。</p>
+     *
+     * @param databaseFile SQLite 数据库文件
+     * @return 使用默认规则模型、Hashing 向量和召回策略的 SQLite 记忆服务
+     */
+    public static MemoryService sqlite(Path databaseFile) {
+        return create(new SqliteMemoryStore(databaseFile));
+    }
+
+    /**
      * 使用默认记忆组件创建服务。
      *
      * @param store 记忆存储实现

@@ -104,14 +104,16 @@ public class InMemoryMemoryStore implements MemoryStore {
 
     @Override
     public synchronized List<PipelineJob> listRecoverableJobs(int maxAttempts) {
-        List<PipelineJob> result = new ArrayList<>();
+        List<PipelineJob> selected = new ArrayList<>();
         for (PipelineJob job : jobs.values()) {
             if (job.status() != PipelineJob.Status.COMPLETED && job.attempts() < maxAttempts) {
-                result.add(job.status() == PipelineJob.Status.RUNNING ? job.retry() : job);
+                selected.add(job);
             }
         }
-        result.sort(Comparator.comparing(PipelineJob::updatedAt));
-        return List.copyOf(result);
+        selected.sort(Comparator.comparing(PipelineJob::updatedAt));
+        return selected.stream()
+                .map(job -> job.status() == PipelineJob.Status.RUNNING ? job.retry() : job)
+                .toList();
     }
 
     /** 文件实现利用该回调在每次成功变更后落盘。 */

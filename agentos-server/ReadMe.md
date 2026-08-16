@@ -20,6 +20,8 @@
 | `AgentOsConfiguration` | 装配工具、记忆、审批、计划执行器、主 Agent 和运行时。 |
 | `LlmPlannerConfiguration` | 装配 `LlmAgentPlanner` 和默认的 OpenAI-compatible `ModelClient`。 |
 | `AgentController` | 暴露 Agent 运行和状态查询 API。 |
+| `BackgroundAgentRunController` | 暴露后台运行创建、快照、事件补播和取消 API。 |
+| `AgentRunCoordinator` | 管理进程内后台 Run、事件序号和 SSE 订阅者。 |
 | `MemoryController` | 暴露 L0-L3 记忆快照只读查询 API。 |
 | `AgentExceptionHandler` | 将非法参数异常转换为 HTTP 400。 |
 | `AgentRuntimeIntegrationTest` | 验证规划、工具执行、状态更新和记忆写入的完整链路。 |
@@ -39,8 +41,9 @@ AgentRuntime
         │   └── ApprovalService
         ├── AgentFinalizer
         └── MemoryService
-            ├── ShortMemory
-            └── LongMemory
+            ├── MemoryStore (memory / file / sqlite)
+            ├── MemoryModel (rules / OpenAI-compatible)
+            └── MemoryEmbedding (hashing / OpenAI-compatible)
 ```
 
 ## HTTP API
@@ -82,6 +85,28 @@ Accept: text/event-stream
 接口依次发送 `run_started`、`plan_created`、`tool_started`、`tool_finished`、
 `observation`、`decision`、可选的 `replan`，最后发送 `state`。流式内容是运行阶段事件；
 Planner 的模型响应仍采用完整结构化 JSON 校验，最终回答随 `run_completed`/`state` 返回。
+
+### 可恢复的后台运行
+
+控制台默认使用与连接生命周期解耦的后台运行接口：
+
+```http
+POST /api/agent-runs
+Content-Type: application/json
+
+{"sessionId":"session-1","input":"阅读当前项目并总结功能"}
+```
+
+创建接口返回 `202 Accepted` 和 `runId`。随后可查询快照、从指定游标补播事件或显式取消：
+
+```http
+GET  /api/agent-runs/{runId}
+GET  /api/agent-runs/{runId}/events?after=42
+POST /api/agent-runs/{runId}/cancel
+```
+
+事件包含单调递增的 `sequence`，SSE 的 `id` 与该序号一致。断开事件连接不会取消任务；
+重新连接时传入最后成功处理的序号即可补播遗漏事件。
 
 ### 查询记忆快照
 
@@ -206,6 +231,6 @@ OpenAI-compatible 服务可以留空。配置映射如下：
 - 按需实现自定义 `ModelClient`，覆盖默认的 OpenAI-compatible 适配器。
 - 注册新的 `AgentTool` Bean，工具会被自动加入注册表。
 - 用真实审批渠道替换默认拒绝型 `ApprovalService`。
-- 用持久化存储替换内存型长期记忆。
+- 多实例部署时将后台 Run、事件和记忆迁移到共享持久化基础设施。
 
 该模块是唯一需要感知 Spring 的模块，领域逻辑应优先保留在其他模块中。

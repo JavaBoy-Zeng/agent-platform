@@ -16,12 +16,14 @@ const {
   connection,
   activeStage,
   messages,
+  canStop,
   runtimeState,
   createSession,
   renameSession,
   deleteSession,
   selectSession,
   execute,
+  cancelCurrentRun,
   resolveApproval,
   clearTranscript
 } = useAgentConsole()
@@ -56,10 +58,12 @@ const {
           :session-id="sessionId"
           :prompt="prompt"
           :busy="busy"
+          :can-stop="canStop"
           @update:agent-id="agentId = $event"
           @update:session-id="sessionId = $event"
           @update:prompt="prompt = $event"
           @run="execute"
+          @stop="cancelCurrentRun"
         />
 
         <TranscriptPanel

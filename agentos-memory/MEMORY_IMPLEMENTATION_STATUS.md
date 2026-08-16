@@ -9,7 +9,7 @@
 核查结论：当前项目已经使用 Java 实现了一个可运行的 L0-L3 Chat Memory
 内核，但尚未完成 TencentDB Agent Memory 全部能力的 Java 化移植。
 
-本文档核查日期为 2026-08-10。本地核查基线为提交 `6c7368d`；上游对照范围为
+本文档首次核查日期为 2026-08-10，阶段一完成状态更新于 2026-08-16。本地原始核查基线为提交 `6c7368d`；上游对照范围为
 核查当日 GitHub 默认展示的 `feat/server_team` 分支及其 README、MemoryCore、
 MemoryKnowledge 能力说明。由于本次没有记录上游提交号，本文档适合作为当前差距
 清单，不作为严格的版本兼容证明。正式验收前必须固定上游 tag 或 commit。
@@ -20,8 +20,8 @@ MemoryKnowledge 能力说明。由于本次没有记录上游提交号，本文�
 
 1. 已实现基础能力：L0-L3 数据模型、异步加工流水线、基础持久化、混合检索、
    召回上下文组装以及与 Agent 执行链路的集成。
-2. 部分实现能力：记忆抽取、Embedding、场景归纳、画像生成、基础持久化和
-   检索质量。目前主要为零配置、单机和规则驱动实现。
+2. 可替换能力：默认仍使用零配置规则抽取和 Hashing 向量，同时已经提供真实
+   OpenAI-compatible LLM/Embedding 适配器及 JDBC/SQLite 持久化。
 3. 尚未实现能力：Skill、Wiki、CodeGraph、Memory Asset、团队权限治理、Memory
    HTTP Gateway、SDK、适配器、管理面板以及完整部署体系。
 
@@ -49,7 +49,7 @@ LlmAgentPlanner
     │
     ├── 规划前调用 MemoryService.recall()
     │       ├── 查询 L0 最近对话
-    │       ├── BM25 + Hashing Vector + RRF 查询 L1
+    │       ├── BM25 + 可替换 Vector + RRF 查询 L1
     │       ├── 查询 L2 场景记忆
     │       ├── 查询 L3 核心画像
     │       └── MemoryContextFormatter 组装受限上下文
@@ -73,13 +73,14 @@ MainAgent
 | 能力 | 状态 | 主要实现类 | 实现说明 |
 | --- | --- | --- | --- |
 | 统一记忆服务入口 | 已实现 | [`MemoryService`](src/main/java/com/github/agentos/memory/MemoryService.java) | 提供召回、捕获、手工事实写入和分层数据查询入口。 |
-| L0 完整对话模型 | 已实现 | [`CompletedTurn`](src/main/java/com/github/agentos/memory/CompletedTurn.java) | 保存用户输入、Agent 最终输出、工具输出、作用域及完成时间。 |
-| L0 对话捕获 | 已实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | `capture()` 先保存完整对话，再创建异步处理任务。 |
+| L0 成功轮次快照 | 已实现 | [`CompletedTurn`](src/main/java/com/github/agentos/memory/CompletedTurn.java) | 保存请求目标、Agent 最终输出、成功工具结果的有界摘要、作用域及完成时间，不等同于完整原始日志。 |
+| L0 轮次捕获 | 已实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | `capture()` 先保存成功轮次快照，再创建异步处理任务；两次写入当前不属于同一事务。 |
 | L0 最近对话查询 | 已实现 | [`InMemoryMemoryStore`](src/main/java/com/github/agentos/memory/InMemoryMemoryStore.java) | 按同一会话作用域查询最近完成轮次。 |
 | L1 原子记忆模型 | 已实现 | [`AtomicMemory`](src/main/java/com/github/agentos/memory/AtomicMemory.java) | 支持类型、置信度、优先级、版本和来源轮次。 |
 | L1 记忆语义类型 | 已实现 | [`MemoryType`](src/main/java/com/github/agentos/memory/MemoryType.java) | 包含事实、偏好、约束、决策、事件、经验和画像。 |
 | L1 抽取扩展接口 | 已实现 | [`MemoryModel`](src/main/java/com/github/agentos/memory/MemoryModel.java) | 抽象原子记忆抽取、场景生成和画像生成能力。 |
 | L1 规则式抽取 | 部分实现 | [`RuleBasedMemoryModel`](src/main/java/com/github/agentos/memory/RuleBasedMemoryModel.java) | 使用关键词和正则分类，不是真正的 LLM 抽取实现。 |
+| 真实 LLM 记忆加工适配器 | 已实现 | [`OpenAiCompatibleMemoryModel`](src/main/java/com/github/agentos/memory/OpenAiCompatibleMemoryModel.java) | 通过 OpenAI-compatible Chat Completions 完成 L1 抽取、L2 场景和 L3 画像生成，并校验结构化 JSON。 |
 | L1 去重与修订 | 已实现基础版 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | 支持规范化精确去重、Jaccard 相似合并和版本递增。 |
 | L1 手工事实写入 | 已实现 | [`MemoryService`](src/main/java/com/github/agentos/memory/MemoryService.java) | `rememberFact()` 可用于管理或迁移场景。 |
 | L2 场景记忆模型 | 已实现 | [`ScenarioMemory`](src/main/java/com/github/agentos/memory/ScenarioMemory.java) | 按任务或 Agent 聚合场景摘要，并支持版本递增。 |
@@ -87,8 +88,9 @@ MainAgent
 | L3 核心画像模型 | 已实现 | [`ProfileMemory`](src/main/java/com/github/agentos/memory/ProfileMemory.java) | 保存用户和 Agent 的稳定长期画像。 |
 | L3 画像归纳 | 部分实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java)、[`RuleBasedMemoryModel`](src/main/java/com/github/agentos/memory/RuleBasedMemoryModel.java) | 当前从高优先级原子记忆和场景中规则化生成。 |
 | BM25 关键词检索 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java) | 对 L1 原子记忆进行即时 BM25 排序。 |
-| 向量检索 | 部分实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java)、[`MemoryEmbedding`](src/main/java/com/github/agentos/memory/MemoryEmbedding.java) | 已定义 Embedding 扩展口，但没有真实模型适配器。 |
+| 向量检索 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java)、[`MemoryEmbedding`](src/main/java/com/github/agentos/memory/MemoryEmbedding.java) | 支持本地 Hashing 或真实 HTTP Embedding，并与 BM25 进行 RRF 融合。 |
 | 默认 Hashing 向量 | 已实现基础版 | [`HashingMemoryEmbedding`](src/main/java/com/github/agentos/memory/HashingMemoryEmbedding.java) | 用于零配置和测试，不能视为真正语义 Embedding。 |
+| 真实 Embedding 适配器 | 已实现 | [`OpenAiCompatibleMemoryEmbedding`](src/main/java/com/github/agentos/memory/OpenAiCompatibleMemoryEmbedding.java) | 调用 OpenAI-compatible Embeddings 端点并校验数值向量。 |
 | RRF 混合排序 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java) | 融合 BM25 和向量召回排名。 |
 | 中英文基础分词 | 已实现基础版 | [`TextAnalyzer`](src/main/java/com/github/agentos/memory/TextAnalyzer.java) | 英文按词、中文按单字和二元组进行无依赖分词。 |
 | 检索请求和结果模型 | 已实现 | [`MemoryQuery`](src/main/java/com/github/agentos/memory/MemoryQuery.java)、[`MemorySearchHit`](src/main/java/com/github/agentos/memory/MemorySearchHit.java) | 支持作用域、记忆类型、数量限制、评分和来源。 |
@@ -99,13 +101,15 @@ MainAgent
 | 上下文边界及截断 | 已实现 | [`MemoryContextFormatter`](src/main/java/com/github/agentos/memory/MemoryContextFormatter.java) | 添加不可信历史数据边界，并根据字符预算截断。 |
 | 异步 L1-L3 流水线 | 已实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | 使用单线程调度器依次执行 L1、L2、L3。 |
 | Pipeline 状态持久化 | 已实现 | [`PipelineJob`](src/main/java/com/github/agentos/memory/PipelineJob.java)、[`MemoryStore`](src/main/java/com/github/agentos/memory/MemoryStore.java)、[`FileMemoryStore`](src/main/java/com/github/agentos/memory/FileMemoryStore.java) | 保存阶段、状态、尝试次数、错误和更新时间；文件模式下可跨进程重启加载。 |
-| 失败重试与启动恢复 | 已实现基础版 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | 最多重试六次，使用退避延迟恢复未完成任务。 |
+| 失败重试与启动恢复 | 已实现基础版 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | 整个 Job 跨阶段累计最多尝试六次，使用退避延迟恢复已经持久化的未完成任务。 |
 | 统一存储接口 | 已实现 | [`MemoryStore`](src/main/java/com/github/agentos/memory/MemoryStore.java) | 定义 L0-L3 和 Pipeline Job 的存取端口。 |
 | JVM 内存存储 | 已实现 | [`InMemoryMemoryStore`](src/main/java/com/github/agentos/memory/InMemoryMemoryStore.java) | 适用于测试和单进程运行。 |
 | 本地文件持久化 | 已实现基础版 | [`FileMemoryStore`](src/main/java/com/github/agentos/memory/FileMemoryStore.java) | 使用带版本号的自定义二进制格式和原子文件替换。 |
+| JDBC/SQLite 持久化 | 已实现 | [`JdbcMemoryStore`](src/main/java/com/github/agentos/memory/JdbcMemoryStore.java)、[`SqliteMemoryStore`](src/main/java/com/github/agentos/memory/SqliteMemoryStore.java) | 提供事务写入、幂等和版本保护、作用域查询与任务恢复。当前 JDBC 实现使用 SQLite 方言。 |
+| 数据库迁移与索引 | 已实现 | [`migration`](src/main/resources/com/github/agentos/memory/migration) | 内置 schema 历史、L0-L3/Job 建表和作用域/恢复队列索引，初始化时事务化执行。 |
 | 规划前记忆召回 | 已接入 | [`LlmAgentPlanner`](../agentos-planner/src/main/java/com/github/agentos/planner/LlmAgentPlanner.java) | 初始规划和重规划前调用 `MemoryService.recall()`。 |
 | 成功后记忆捕获 | 已接入 | [`MainAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/MainAgent.java) | Agent 执行成功后保存本轮输入、输出和工具结果。 |
-| Spring 运行配置 | 已接入 | [`AgentOsConfiguration`](../agentos-server/src/main/java/com/github/agentos/server/AgentOsConfiguration.java) | 支持 `memory` 和本地文件两种运行模式。 |
+| Spring 运行配置 | 已接入 | [`AgentOsConfiguration`](../agentos-server/src/main/java/com/github/agentos/server/config/AgentOsConfiguration.java) | 支持 `memory`、`file` 和 `sqlite` 三种运行模式。 |
 
 ## 5. 已实现能力的类级入口
 
@@ -151,7 +155,7 @@ LlmAgentPlanner.createPlan()/replan()
   -> PlanningRequest
 ```
 
-`MemoryStore` 当前有 `InMemoryMemoryStore` 和 `FileMemoryStore` 两种实现，召回主链路
+`MemoryStore` 当前有 `InMemoryMemoryStore`、`FileMemoryStore` 和 `JdbcMemoryStore`/`SqliteMemoryStore` 实现，召回主链路
 依赖存储接口，不固定绑定某一个实现类。
 
 ### 5.3 默认实例创建入口
@@ -159,6 +163,7 @@ LlmAgentPlanner.createPlan()/replan()
 ```java
 MemoryService.inMemory()
 MemoryService.persistent(Path directory)
+MemoryService.sqlite(Path databaseFile)
 ```
 
 两个工厂方法当前默认组装：
@@ -167,7 +172,7 @@ MemoryService.persistent(Path directory)
 RuleBasedMemoryModel
 + HashingMemoryEmbedding
 + MemoryRecallPolicy.defaults()
-+ InMemoryMemoryStore 或 FileMemoryStore
++ InMemoryMemoryStore、FileMemoryStore 或 SqliteMemoryStore
 ```
 
 ## 6. 尚未实现的上游能力
@@ -198,25 +203,17 @@ RuleBasedMemoryModel
 | OpenAPI 文档 | 未实现 | SpringDoc/OpenAPI 配置与接口注解 |
 | Java SDK | 未实现 | 独立 `agentos-memory-sdk` 模块 |
 | OpenClaw/Hermes/Claude Code 适配器 | 未实现 | 独立适配器模块 |
-| SQLite/JDBC 数据库持久化 | 未实现 | JDBC/JPA/MyBatis Repository 实现 |
-| 数据库版本迁移 | 未实现 | Flyway 或 Liquibase 迁移脚本 |
 | Memory Hub 管理面板 | 未实现 | 管理前端、鉴权及写操作 API |
 | Proxy 服务和模型绑定 | 未实现 | `MemoryProxyService`、`LlmBindingService` |
 | 生产部署、健康检查和可观测性 | 未实现 | Actuator、指标、Trace、Docker 部署配置 |
 
 表格中的建议类名仅用于规划，不代表这些类已经存在。
 
-## 7. 旧版类说明
+## 7. 旧版 API 迁移
 
-以下类属于项目早期的短期/长期记忆实现：
-
-- [`MemoryEntry`](src/main/java/com/github/agentos/memory/MemoryEntry.java)
-- [`ShortMemory`](src/main/java/com/github/agentos/memory/ShortMemory.java)
-- [`LongMemory`](src/main/java/com/github/agentos/memory/LongMemory.java)
-
-它们目前没有接入新的 `MemoryService`、`MemoryPipeline` 和 `MemoryStore` 主链路。
-现有 [`agentos-memory/ReadMe.md`](ReadMe.md) 仍主要描述这套旧 API，
-其中的构造示例与当前 `MemoryService` 已不一致，应当在后续重构中更新或删除。
+未接入主链路的 `MemoryEntry`、`ShortMemory` 和 `LongMemory` 已在阶段一删除。
+旧调用方应迁移到 `CompletedTurn`、`MemoryService` 和 `MemoryStore`；完整映射见
+[`agentos-memory/ReadMe.md`](ReadMe.md) 的“兼容性说明”。
 
 ## 8. 测试状态
 
@@ -231,18 +228,12 @@ mvn -pl agentos-memory test
 结果：
 
 ```text
-Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 19, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
-对应测试类：
-
-- [`MemoryServiceTest`](src/test/java/com/github/agentos/memory/MemoryServiceTest.java)
-
-当前仅验证：
-
-- L0 可以在同一会话召回，L1-L3 可以在同一用户和 Agent 范围内跨会话召回。
-- 文件持久化后可以重新加载 L0-L3 状态。
+测试覆盖服务主链路、混合召回、存储契约、作用域边界、失败恢复、并发幂等、
+OpenAI-compatible 模型契约、SQLite 迁移/索引/重载、异常降级和性能回归预算。
 
 ### 8.2 全项目测试
 
@@ -255,32 +246,21 @@ mvn test
 当前规划器测试使用与已保存记忆相关的查询验证 L0 召回，不再假设无相关性的输入必须命中 L1。
 完整构建结果以项目根目录最近一次 `mvn clean test` 为准。
 
-### 8.3 尚缺测试
+### 8.3 后续测试深化
 
-至少还需要补充：
-
-- Pipeline 各阶段失败、退避重试和达到最大次数后的状态测试。
-- 服务重启时对 `PENDING`、`RUNNING`、`FAILED` Job 的恢复测试。
-- 同一轮次重复提交的幂等测试。
-- 多线程写入、读取和文件持久化一致性测试。
-- 损坏文件、截断文件和未知格式版本测试。
-- team/user/agent/session/task 作用域隔离边界测试。
-- BM25、向量召回和 RRF 排序的确定性测试。
-- 字符预算、单条截断和召回超时降级测试。
-- 记忆抽取误判、冲突事实和版本演进测试。
-- Agent 运行失败时不写入 L0 的集成测试。
-- 真实 Embedding 和真实 LLM MemoryModel 的契约测试。
+阶段一已建立上述主干回归测试。进入生产验收前仍应按目标硬件和真实供应商补充长时间
+压力测试、模型质量评测、限流/网络抖动演练、数据库备份恢复以及多进程写竞争测试。
 
 ## 9. 完成完整 Java 化所需的建议阶段
 
-### 阶段一：稳定现有 Chat Memory
+### 阶段一：稳定现有 Chat Memory（已完成）
 
-1. 持续补充召回相关性、失败恢复和作用域边界测试。
-2. 清理或迁移 `ShortMemory`、`LongMemory` 和 `MemoryEntry` 旧实现。
-3. 更新 `agentos-memory/ReadMe.md`，使其与当前 API 一致。
-4. 增加真实 LLM `MemoryModel` 实现和真实 Embedding 适配器。
-5. 增加 JDBC/SQLite 存储、索引和数据库迁移。
-6. 补齐异常恢复、并发、幂等和性能测试。
+1. [x] 补充召回相关性、失败恢复和作用域边界测试。
+2. [x] 删除未接入主链路的 `ShortMemory`、`LongMemory` 和 `MemoryEntry`。
+3. [x] 更新 `agentos-memory/ReadMe.md`，使其与当前 API 一致。
+4. [x] 增加真实 LLM `MemoryModel` 实现和真实 Embedding 适配器。
+5. [x] 增加 JDBC/SQLite 存储、索引和数据库迁移。
+6. [x] 补齐异常恢复、并发、幂等和性能回归测试。
 
 ### 阶段二：实现 Memory Asset 与治理
 

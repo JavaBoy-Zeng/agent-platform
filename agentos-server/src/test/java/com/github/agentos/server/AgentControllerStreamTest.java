@@ -68,6 +68,7 @@ class AgentControllerStreamTest {
                                     """))
                     .andExpect(request().asyncStarted())
                     .andReturn();
+            started.getAsyncResult(2_000);
 
             mockMvc.perform(asyncDispatch(started))
                     .andExpect(status().isOk())

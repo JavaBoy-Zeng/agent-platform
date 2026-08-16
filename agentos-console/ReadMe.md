@@ -5,7 +5,8 @@
 ## 主要职责
 
 - 创建和切换 Agent 会话。
-- 向 `POST /api/agents/runs/stream` 提交任务指令并解析 SSE 响应。
+- 向 `POST /api/agent-runs` 创建后台任务，并通过 GET SSE 按事件游标持续订阅。
+- 页面刷新后按 `runId` 查询快照、补播缺失事件并恢复实时展示。
 - 实时展示 Plan、Tool、Observation、Decision、最终输出和失败信息。
 - 可视化 MainAgent、Planner、Tool、Observation、Decision 执行管线。
 - 将最近 20 个会话及消息保存在浏览器 `localStorage` 中。
@@ -70,4 +71,4 @@ npm run build
 
 ## 数据边界
 
-浏览器中的会话消息只用于控制台展示，不等同于后端 `MemoryService`。刷新页面后本地会话仍然存在，但切换浏览器或清理站点数据会丢失。后端运行状态以 AgentOS API 返回结果为准。
+浏览器中的会话消息只用于控制台展示，不等同于后端 `MemoryService`。运行中的 `runId` 和最后消费的事件序号会随会话一并保存，因此刷新页面不会取消任务；控制台会补播缺失事件并继续订阅。切换浏览器、清理站点数据或重启后端仍会丢失相应的本地或进程内恢复信息。

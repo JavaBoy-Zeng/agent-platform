@@ -41,13 +41,13 @@ flowchart LR
     runtime --> model[OpenAI-compatible<br/>模型服务]
     runtime --> fs[本地文件系统]
     runtime --> weather[第三方天气 API]
-    runtime --> memory[(.agentos/memory/<br/>memory-state.bin)]
+    runtime --> memory[(SQLite / binary file /<br/>JVM memory)]
 
     server -. 扩展点 .-> approval[外部审批系统]
     server -. 扩展点 .-> stores[(数据库 / Redis /<br/>向量存储)]
 ```
 
-当前系统没有数据库、消息队列或服务注册中心。除模型和天气接口外，默认运行所需数据均位于单个 JVM 和本地文件系统中。
+当前系统可选用本地 SQLite 数据库，但没有外部数据库、消息队列或服务注册中心。除模型和天气接口外，默认运行所需数据均位于单个 JVM 和本地文件系统中。
 
 ## 4. 模块划分与依赖
 
@@ -86,7 +86,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | `agentos-kernel` | 请求、上下文、状态、事件和会话级运行入口 | `AgentRequest`、`AgentContext`、`AgentState`、`AgentRuntime`、`AgentRunEvent` | 无其他 AgentOS 模块 |
 | `agentos-tool` | 工具协议、注册、执行、失败分类和文件探索能力 | `AgentTool`、`ToolRegistry`、`ToolExecutor`、`ToolResult` | `agentos-kernel` |
-| `agentos-memory` | L0–L3 记忆、异步加工、混合召回和本地持久化 | `MemoryService`、`MemoryPipeline`、`MemoryStore`、`HybridMemoryRetriever` | 无其他 AgentOS 模块 |
+| `agentos-memory` | L0–L3 记忆、异步加工、混合召回、HTTP 模型适配和本地持久化 | `MemoryService`、`MemoryPipeline`、`MemoryStore`、`HybridMemoryRetriever` | 无其他 AgentOS 模块 |
 | `agentos-hitl` | 工具风险策略和人工审批端口 | `RiskPolicy`、`ApprovalService` | `agentos-kernel`、`agentos-tool` |
 | `agentos-planner` | 模型规划、计划校验、工具步骤执行、观察和失败决策 | `LlmAgentPlanner`、`PlanValidator`、`PlanExecutor` | kernel、tool、memory、hitl |
 | `agentos-agent` | 串联规划、执行、决策、终结和记忆写入 | `MainAgent`、`AgentFinalizer` | kernel、planner、memory |
@@ -304,7 +304,7 @@ flowchart TD
 
     query[下一次用户输入] --> recall[MemoryService.recall]
     l0 --> recall
-    l1 --> hybrid[BM25 + Hashing Vector + RRF]
+    l1 --> hybrid[BM25 + 可替换 Vector + RRF]
     hybrid --> recall
     l2 --> recall
     l3 --> recall
@@ -320,7 +320,7 @@ flowchart TD
 2. 保存可恢复的 `PipelineJob`；
 3. 单线程后台管线依次执行 L1、L2、L3；
 4. 失败任务采用退避重试，最多 6 次；
-5. 文件模式下，任务状态与记忆数据一起持久化，重启后恢复未完成任务。
+5. 文件或 SQLite 模式下，任务状态与记忆数据一起持久化，重启后恢复未完成任务。
 
 记忆写入采用 fail-open：记忆加工异常不会把已经成功的 Agent 运行改成失败。
 
@@ -329,7 +329,7 @@ flowchart TD
 | 层级 | 召回范围 | 当前策略 |
 | --- | --- | --- |
 | L0 | 同 team、user、agent、session | 最近完成轮次 |
-| L1 | 同 team、user、agent，按兼容 task；可跨 session | BM25 + Hashing 向量 + RRF |
+| L1 | 同 team、user、agent，按兼容 task；可跨 session | BM25 + 可替换向量 + RRF |
 | L2 | 同 team、user、agent，按兼容 task；可跨 session | 最近场景摘要 |
 | L3 | 同 team、user、agent | 单一画像 |
 
@@ -337,11 +337,12 @@ flowchart TD
 
 ### 9.4 默认实现与遗留代码
 
-- `MemoryStore` 默认有 JVM 内存和本地文件两种实现。
+- `MemoryStore` 有 JVM 内存、本地二进制文件和 JDBC/SQLite 三种实现。
 - 文件模式将全部状态写入 `.agentos/memory/memory-state.bin`，使用版本化二进制格式、临时文件和原子替换。
-- `MemoryModel` 默认是规则模型，不是真实 LLM 记忆抽取器。
-- `MemoryEmbedding` 默认是本地 Hashing 向量，不是真实语义 Embedding。
-- `ShortMemory`、`LongMemory`、`MemoryEntry` 属于早期实现，未接入当前 `MemoryService → MemoryPipeline → MemoryStore` 主链路。
+- SQLite 模式使用事务化 schema 迁移、作用域索引、版本保护和持久化恢复队列。
+- `MemoryModel` 默认是规则模型，也可替换为 `OpenAiCompatibleMemoryModel`。
+- `MemoryEmbedding` 默认是本地 Hashing 向量，也可替换为 `OpenAiCompatibleMemoryEmbedding`。
+- 早期未接入主链路的 `ShortMemory`、`LongMemory`、`MemoryEntry` 已删除。
 
 ## 10. 服务端 API
 
@@ -351,6 +352,10 @@ flowchart TD
 | `POST` | `/api/agents/runs/stream` | 通过 POST 请求启动 SSE 阶段流 | 命名事件 + 最终 `state` |
 | `POST` | `/api/agents/{sessionId}/stop` | 中断该会话已注册的流式任务 | 是否发出中断 + 当前状态 |
 | `GET` | `/api/agents/{sessionId}/state` | 查询 JVM 内最新会话状态 | `AgentState` 或 `404` |
+| `POST` | `/api/agent-runs` | 创建与客户端连接解耦的后台运行 | `202` + runId + 运行快照 |
+| `GET` | `/api/agent-runs/{runId}` | 查询后台运行快照 | 状态、结果、pendingAction、lastSequence |
+| `GET` | `/api/agent-runs/{runId}/events?after=N` | 补播游标后的事件并继续 SSE 订阅 | 带 `id` 和 `sequence` 的事件信封 |
+| `POST` | `/api/agent-runs/{runId}/cancel` | 显式取消后台运行 | 是否发出中断 + 运行快照 |
 | `GET` | `/api/memories` | 按作用域查询 L0–L3 当前快照 | 计数及实际记忆数据 |
 
 SSE 主要事件顺序为：
@@ -367,7 +372,7 @@ run_started
   → state
 ```
 
-SSE 使用 Spring `SseEmitter`，服务端通过虚拟线程执行 Agent。`AgentRunTaskRegistry` 限制同一 `sessionId` 同时只能注册一个流式任务，并通过 `Thread.interrupt()` 协作取消。客户端断开也会触发取消请求。
+SSE 使用 Spring `SseEmitter`，服务端通过虚拟线程执行 Agent。`AgentRunTaskRegistry` 限制同一 `sessionId` 同时只能注册一个任务，并通过 `Thread.interrupt()` 协作取消。后台运行由 `AgentRunCoordinator` 管理：客户端断开只移除订阅者，任务继续执行；只有显式取消接口会请求中断。
 
 ## 11. 前端架构
 
@@ -382,12 +387,12 @@ App.vue
 └── TelemetryRail.vue      运行状态和流水线阶段
 
 useAgentConsole.js         会话状态、执行流程和 localStorage
-agentApi.js                REST 调用与 POST SSE 流解析
+agentApi.js                REST 调用、后台运行与可恢复 SSE 流解析
 ```
 
-由于浏览器原生 `EventSource` 只支持 GET，前端使用 `fetch()` 发送 POST，再直接解析 `ReadableStream` 中的 SSE 数据块。
+控制台先通过 `POST /api/agent-runs` 获得 `runId`，再使用 GET SSE 订阅事件。每个事件都有递增 `sequence`；前端持续保存 `activeRunId` 和 `lastSequence`，刷新后先查询快照，再以 `after=lastSequence` 补播缺失事件并继续订阅。
 
-浏览器最多保存最近 20 个会话及展示消息，键为 `agentos.console.sessions.v1`。这些本地消息不等同于后端记忆；切换浏览器或清理站点数据会丢失。前端切换会话时会查询后端最新状态，但目前没有调用停止接口的 UI 流程。
+浏览器最多保存最近 20 个会话及展示消息，键为 `agentos.console.sessions.v1`，并单独保存刷新前选中的会话。事件使用 `runId:sequence` 去重，最终回答使用稳定消息标识覆盖流式草稿。运行中的停止按钮调用显式取消接口。这些本地消息不等同于后端记忆；切换浏览器或清理站点数据会丢失。
 
 开发环境由 Vite 将 `/api` 代理到 `http://localhost:8080`。生产构建产物位于 `agentos-console/dist`，需要独立静态托管并把 `/api` 反向代理到后端。
 
@@ -395,10 +400,10 @@ agentApi.js                REST 调用与 POST SSE 流解析
 
 - 同一 JVM 内，`AgentRuntime` 按 `sessionId` 串行化运行状态更新。
 - 不同 session 可以并行；流式运行使用“一任务一虚拟线程”。
-- `AgentRunTaskRegistry` 只登记流式任务；同步接口不进入该注册表，但仍受 `AgentRuntime` 的 session 串行化约束。
+- `AgentRunTaskRegistry` 登记兼容流式任务和后台任务；同步接口不进入该注册表，但仍受 `AgentRuntime` 的 session 串行化约束。
 - `AgentRuntime` 在一次 `compute` 结束时才提交新快照，因此运行期间调用状态查询可能看到上一轮终态或 `404`；实时进度应以本次 SSE 事件为准。
 - 取消依靠线程中断。`MainAgent`、计划执行边界和模型客户端会检查或传播中断，但具体工具仍需要正确响应中断才能及时停止。
-- 会话状态与运行任务均为进程内数据，无法跨实例协调，也无法在重启后恢复正在执行的任务。
+- 会话状态、后台运行和可补播事件目前均为进程内数据；可以应对页面刷新和网络闪断，但不能跨实例协调，也不能在服务重启后恢复。
 - 记忆后台管线使用单个守护调度线程，保证简单的顺序加工，但吞吐能力有限。
 
 ## 13. 配置、构建与部署
@@ -427,8 +432,9 @@ Spring 支持以下核心配置；当前运行值见 `agentos-server/src/main/re
 
 - `agentos.runtime.*`：累计运行预算和 Observation 长度；
 - `agentos.model.*`：模型 ID、端点、API Key、响应格式、超时和 prompt 上限；
-- `agentos.memory.mode`：`file` 或 `memory`；
+- `agentos.memory.mode`：`sqlite`、`file` 或 `memory`；
 - `agentos.memory.data-dir`：文件记忆目录；
+- `agentos.memory.database-file`：SQLite 数据库文件；
 - `logging.*`：日志级别和可选文件滚动策略。
 
 生产环境应通过环境变量或外部配置注入模型密钥，不应把密钥提交到仓库。
@@ -447,9 +453,9 @@ Spring 支持以下核心配置；当前运行值见 `agentos-server/src/main/re
 | 新增工具 | `AgentTool` | 实现接口并注册为 Spring Bean |
 | 调整失败策略 | `FailureClassifier` | 替换分类器 Bean |
 | 接入人工审批 | `ApprovalService.ApprovalHandler` | 对接审批页面、消息队列或工作流 |
-| 更换记忆存储 | `MemoryStore` | 实现 JDBC、Redis、对象存储或向量库适配器 |
-| 更换记忆抽取 | `MemoryModel` | 接入真正的 LLM 抽取、摘要和画像模型 |
-| 更换向量实现 | `MemoryEmbedding` | 接入 Embedding 服务并配套向量索引 |
+| 更换记忆存储 | `MemoryStore` | 使用内置 SQLite 或实现 Redis、对象存储、向量库适配器 |
+| 更换记忆抽取 | `MemoryModel` | 使用 OpenAI-compatible 适配器或实现其他 LLM 适配器 |
+| 更换向量实现 | `MemoryEmbedding` | 使用 OpenAI-compatible Embedding 或实现其他向量服务适配器 |
 | 自定义 Agent | `AgentLoop` 或组合 `MainAgent` 依赖 | 通过 `AgentRuntime` 暴露统一运行入口 |
 | 新增事件消费者 | `AgentEventSink` | 接入审计、消息总线或可观测系统 |
 
@@ -465,22 +471,20 @@ Spring 支持以下核心配置；当前运行值见 `agentos-server/src/main/re
 ### 15.2 生产化限制
 
 - `AgentRuntime` 状态和流式任务注册均为单 JVM 内存，不能水平扩展或故障恢复。
-- 默认文件存储在每次变更时重写单个二进制状态文件，适合小规模原型，不适合高并发或大数据量。
-- 文件存储没有数据库级事务、查询索引、备份迁移工具或多进程锁。
-- 默认 L1–L3 由规则模型和 Hashing 向量生成，语义质量与真正的 LLM/Embedding 有明显差距。
+- 默认文件存储在每次变更时重写单个二进制状态文件，适合小规模原型；单实例部署可切换 SQLite，但仍未解决跨节点协调和独立向量索引。
+- 默认 L1–L3 由规则模型和 Hashing 向量生成；已经提供真实 HTTP 适配器，但需要显式装配、真实供应商契约测试和质量评测。
 - HITL 是同步布尔审批，尚无等待、恢复、超时、审批 UI 和审批审计闭环。
 - 内置工具全部标为低风险，当前风险门禁对这些工具没有实际拦截效果。
 - 前端未接入 `/stop` 接口，用户无法从控制台显式停止任务。
 - 天气工具没有显式配置请求超时，外部服务异常可能延长步骤执行时间。
 - 当前只有日志和 SSE 事件，没有统一的指标、Trace、健康检查和持久化审计。
-- 旧版记忆类和过期 README 与新主链路并存，会增加维护认知成本。
 
 ## 16. 测试结构
 
 | 模块 | 当前测试重点 |
 | --- | --- |
 | `agentos-tool` | 文件探索、文件读取与边界行为 |
-| `agentos-memory` | L0–L3 召回、文件持久化 |
+| `agentos-memory` | L0–L3 召回、存储契约、失败恢复、模型适配、SQLite 迁移/索引/性能 |
 | `agentos-planner` | 计划校验、执行、失败策略、Observation、LLM 规划 |
 | `agentos-server` | 运行时集成、模型配置、同步/流式 API、记忆 API |
 

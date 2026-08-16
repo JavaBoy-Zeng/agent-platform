@@ -15,6 +15,7 @@ import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.planner.*;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
+import com.github.agentos.server.run.AgentRunCoordinator;
 import com.github.agentos.tool.AgentTool;
 import com.github.agentos.tool.FileReaderFactory;
 import com.github.agentos.tool.ToolExecutor;
@@ -147,17 +148,23 @@ public class AgentOsConfiguration {
     /**
      * 创建统一记忆服务。
      *
-     * @param mode          存储模式：{@code memory} 或 {@code file}
+     * @param mode          存储模式：{@code memory}、{@code file} 或 {@code sqlite}
      * @param dataDirectory 文件模式的数据目录
+     * @param databaseFile  SQLite 模式的数据库文件
      * @return 记忆服务
      */
     @Bean(destroyMethod = "close")
     MemoryService memoryService(
             @Value("${agentos.memory.mode:file}") String mode,
-            @Value("${agentos.memory.data-dir:.agentos/memory}") String dataDirectory) {
-        return "memory".equalsIgnoreCase(mode)
-                ? MemoryService.inMemory()
-                : MemoryService.persistent(Path.of(dataDirectory));
+            @Value("${agentos.memory.data-dir:.agentos/memory}") String dataDirectory,
+            @Value("${agentos.memory.database-file:.agentos/memory/memory.sqlite}") String databaseFile) {
+        return switch (mode.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "memory" -> MemoryService.inMemory();
+            case "file" -> MemoryService.persistent(Path.of(dataDirectory));
+            case "sqlite" -> MemoryService.sqlite(Path.of(databaseFile));
+            default -> throw new IllegalArgumentException(
+                    "agentos.memory.mode must be one of: memory, file, sqlite");
+        };
     }
 
     /**
@@ -300,5 +307,14 @@ public class AgentOsConfiguration {
     @Bean
     AgentRunTaskRegistry agentRunTaskRegistry() {
         return new AgentRunTaskRegistry();
+    }
+
+    /** 创建支持刷新恢复和事件补播的后台运行协调器。 */
+    @Bean
+    AgentRunCoordinator agentRunCoordinator(
+            AgentRuntime runtime,
+            ExecutorService agentStreamExecutor,
+            AgentRunTaskRegistry taskRegistry) {
+        return new AgentRunCoordinator(runtime, agentStreamExecutor, taskRegistry);
     }
 }

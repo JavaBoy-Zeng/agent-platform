@@ -5,10 +5,11 @@ const props = defineProps({
   agentId: { type: String, required: true },
   sessionId: { type: String, required: true },
   prompt: { type: String, required: true },
-  busy: { type: Boolean, default: false }
+  busy: { type: Boolean, default: false },
+  canStop: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:agentId', 'update:sessionId', 'update:prompt', 'run'])
+const emit = defineEmits(['update:agentId', 'update:sessionId', 'update:prompt', 'run', 'stop'])
 
 const characterCount = computed(() => String(props.prompt.length).padStart(4, '0'))
 
@@ -39,7 +40,7 @@ function onShortcut(event) {
         <input :value="sessionId" autocomplete="off" aria-label="Session ID"
                @input="$emit('update:sessionId', $event.target.value)">
       </label>
-      <span class="deck-mode">SYNC / DIRECT</span>
+      <span class="deck-mode">BACKGROUND / RESUMABLE</span>
     </div>
 
     <div class="prompt-frame">
@@ -67,8 +68,12 @@ function onShortcut(event) {
           {{ ['分析任务', '汇总结论', '检查风险'][index] }}
         </button>
       </div>
-      <button class="run-button" type="submit" :disabled="busy || !prompt.trim()">
-        <span class="run-label">{{ busy ? '执行中' : '执行任务' }}</span>
+      <button v-if="busy && canStop" class="stop-button" type="button" @click="$emit('stop')">
+        <span class="run-label">停止任务</span>
+        <span class="stop-icon" aria-hidden="true"></span>
+      </button>
+      <button v-else class="run-button" type="submit" :disabled="busy || !prompt.trim()">
+        <span class="run-label">{{ busy ? '处理中' : '执行任务' }}</span>
         <span v-if="!busy" class="run-arrow" aria-hidden="true">↗</span>
         <span v-else class="run-loader" aria-hidden="true"><i></i><i></i><i></i></span>
       </button>

@@ -50,16 +50,10 @@ public final class AgentEventStreamController {
         EventStreamInvocation invocation = normalize(body);
         SseEmitter emitter = new SseEmitter(0L);
         AtomicBoolean connected = new AtomicBoolean(true);
-        AtomicBoolean terminal = new AtomicBoolean(false);
-        Runnable cancel = () -> {
-            connected.set(false);
-            if (!terminal.get()) {
-                taskRegistry.cancel(invocation.request().sessionId());
-            }
-        };
-        emitter.onCompletion(cancel);
-        emitter.onTimeout(cancel);
-        emitter.onError(ignored -> cancel.run());
+        Runnable disconnect = () -> connected.set(false);
+        emitter.onCompletion(disconnect);
+        emitter.onTimeout(disconnect);
+        emitter.onError(ignored -> disconnect.run());
 
         boolean started = taskRegistry.start(invocation.request().sessionId(), executor, () -> {
             try {
@@ -67,14 +61,12 @@ public final class AgentEventStreamController {
                         invocation.request(), invocation.context(),
                         event -> sendLegacy(emitter, connected, event),
                         event -> sendDomain(emitter, connected, event));
-                terminal.set(true);
                 send(emitter, connected, "state", new EventStreamResponse(
                         invocation.request().sessionId(), state));
                 if (connected.get()) {
                     emitter.complete();
                 }
             } catch (RuntimeException exception) {
-                terminal.set(true);
                 send(emitter, connected, "stream-error", Map.of(
                         "sessionId", invocation.request().sessionId(),
                         "detail", exception.getMessage() == null

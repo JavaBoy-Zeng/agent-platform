@@ -33,18 +33,54 @@ export async function runAgent(payload) {
 
 function parseEventBlock(block) {
   let event = 'message'
+  let id = ''
   const dataLines = []
   for (const line of block.split('\n')) {
     if (line.startsWith('event:')) event = line.slice(6).trim()
+    if (line.startsWith('id:')) id = line.slice(3).trim()
     if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
   }
   if (!dataLines.length) return null
   const text = dataLines.join('\n')
   try {
-    return { event, data: JSON.parse(text) }
+    return { event, id, data: JSON.parse(text) }
   } catch {
-    return { event, data: text }
+    return { event, id, data: text }
   }
+}
+
+async function consumeEventStream(response, onEvent, finalValue) {
+  if (!response.body) {
+    throw new AgentApiError('浏览器未提供可读取的 SSE 响应体', response.status)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalResponse = null
+
+  const consume = (parsed) => {
+    if (!parsed) return
+    onEvent(parsed)
+    const value = finalValue(parsed)
+    if (value) finalResponse = value
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      .replace(/\r\n/g, '\n')
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      consume(parseEventBlock(buffer.slice(0, boundary)))
+      buffer = buffer.slice(boundary + 2)
+      boundary = buffer.indexOf('\n\n')
+    }
+    if (done) break
+  }
+
+  consume(parseEventBlock(buffer.trim()))
+  return finalResponse
 }
 
 /**
@@ -65,41 +101,70 @@ export async function runAgentStream(payload, onEvent = () => {}) {
     const body = await readBody(response)
     throw new AgentApiError(body?.detail || 'Agent 流式运行请求失败', response.status)
   }
-  if (!response.body) {
-    throw new AgentApiError('浏览器未提供可读取的 SSE 响应体', response.status)
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let finalResponse = null
-
-  while (true) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-      .replace(/\r\n/g, '\n')
-    let boundary = buffer.indexOf('\n\n')
-    while (boundary >= 0) {
-      const parsed = parseEventBlock(buffer.slice(0, boundary))
-      buffer = buffer.slice(boundary + 2)
-      if (parsed) {
-        onEvent(parsed)
-        if (parsed.event === 'state') finalResponse = parsed.data
-      }
-      boundary = buffer.indexOf('\n\n')
-    }
-    if (done) break
-  }
-
-  const trailing = parseEventBlock(buffer.trim())
-  if (trailing) {
-    onEvent(trailing)
-    if (trailing.event === 'state') finalResponse = trailing.data
-  }
+  const finalResponse = await consumeEventStream(
+    response, onEvent, parsed => parsed.event === 'state' ? parsed.data : null)
   if (!finalResponse) {
     throw new AgentApiError('SSE 连接结束前未收到 Agent 最终状态', response.status)
   }
   return finalResponse
+}
+
+/** 创建与页面连接解耦的后台 Agent 运行。 */
+export async function createAgentRun(payload) {
+  const response = await fetch('/api/agent-runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  const body = await readBody(response)
+  if (!response.ok) {
+    throw new AgentApiError(body?.detail || '无法创建后台 Agent 运行', response.status)
+  }
+  return body
+}
+
+/** 查询后台运行快照。 */
+export async function getAgentRun(runId) {
+  const response = await fetch(`/api/agent-runs/${encodeURIComponent(runId)}`)
+  const body = await readBody(response)
+  if (!response.ok) {
+    throw new AgentApiError(body?.detail || '无法读取后台 Agent 运行', response.status)
+  }
+  return body
+}
+
+/** 从指定序号之后补播事件，并继续订阅实时事件。 */
+export async function streamAgentRun(runId, afterSequence = 0, onEvent = () => {}) {
+  const query = new URLSearchParams({ after: String(Math.max(0, afterSequence || 0)) })
+  const response = await fetch(
+    `/api/agent-runs/${encodeURIComponent(runId)}/events?${query}`,
+    { headers: { Accept: 'text/event-stream' } }
+  )
+  if (!response.ok) {
+    const body = await readBody(response)
+    throw new AgentApiError(body?.detail || '无法订阅后台 Agent 事件', response.status)
+  }
+  const finalResponse = await consumeEventStream(
+    response,
+    onEvent,
+    parsed => parsed.event === 'state' ? parsed.data?.data : null
+  )
+  if (!finalResponse) {
+    throw new AgentApiError('后台事件流已断开，将尝试恢复', response.status)
+  }
+  return finalResponse
+}
+
+/** 显式取消后台运行。页面断开不会调用该接口。 */
+export async function cancelAgentRun(runId) {
+  const response = await fetch(`/api/agent-runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST'
+  })
+  const body = await readBody(response)
+  if (!response.ok) {
+    throw new AgentApiError(body?.detail || '无法取消后台 Agent 运行', response.status)
+  }
+  return body
 }
 
 export async function getAgentState(sessionId) {

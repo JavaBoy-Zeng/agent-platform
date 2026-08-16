@@ -11,18 +11,50 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
-/** 按 L1、L2、L3 顺序执行并持久化进度的后台记忆管线。 */
+/** 按 L1、L2、L3 顺序执行并持久化进度的后台记忆流水线。 */
 public final class MemoryPipeline implements AutoCloseable {
 
-    private static final int MAX_ATTEMPTS = 6;
+    private static final int DEFAULT_MAX_ATTEMPTS = 6;
+    private static final long DEFAULT_BASE_RETRY_DELAY_MILLIS = 100;
+    private static final long DEFAULT_MAX_RETRY_DELAY_MILLIS = 5_000;
     private final MemoryStore store;
     private final MemoryModel model;
+    private final int maxAttempts;
+    private final long baseRetryDelayMillis;
+    private final long maxRetryDelayMillis;
     private final ScheduledExecutorService executor;
     private final Map<String, Boolean> scheduled = new ConcurrentHashMap<>();
 
+    /**
+     * 使用生产默认重试策略创建记忆流水线。
+     *
+     * @param store L0-L3 记忆和任务状态存储
+     * @param model L1-L3 记忆加工模型
+     */
     public MemoryPipeline(MemoryStore store, MemoryModel model) {
+        this(store, model, DEFAULT_MAX_ATTEMPTS,
+                DEFAULT_BASE_RETRY_DELAY_MILLIS, DEFAULT_MAX_RETRY_DELAY_MILLIS);
+    }
+
+    MemoryPipeline(
+            MemoryStore store,
+            MemoryModel model,
+            int maxAttempts,
+            long baseRetryDelayMillis,
+            long maxRetryDelayMillis) {
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.model = Objects.requireNonNull(model, "model must not be null");
+        if (maxAttempts <= 0) throw new IllegalArgumentException("maxAttempts must be positive");
+        if (baseRetryDelayMillis < 0) {
+            throw new IllegalArgumentException("baseRetryDelayMillis must not be negative");
+        }
+        if (maxRetryDelayMillis < baseRetryDelayMillis) {
+            throw new IllegalArgumentException(
+                    "maxRetryDelayMillis must not be less than baseRetryDelayMillis");
+        }
+        this.maxAttempts = maxAttempts;
+        this.baseRetryDelayMillis = baseRetryDelayMillis;
+        this.maxRetryDelayMillis = maxRetryDelayMillis;
         ThreadFactory factory = runnable -> {
             Thread thread = new Thread(runnable, "agentos-memory-pipeline");
             thread.setDaemon(true);
@@ -32,7 +64,11 @@ public final class MemoryPipeline implements AutoCloseable {
         recover();
     }
 
-    /** 先幂等保存 L0，再创建可恢复的 Pipeline Job。 */
+    /**
+     * 先幂等保存 L0，再创建可恢复的 Pipeline Job。
+     *
+     * @param turn 已成功完成的对话轮次
+     */
     public void capture(CompletedTurn turn) {
         store.saveTurn(turn);
         String jobId = "pipeline:" + turn.id();
@@ -43,13 +79,16 @@ public final class MemoryPipeline implements AutoCloseable {
         schedule(job.id(), 0);
     }
 
-    /** 等待当前已提交任务结束，主要用于测试、关闭和运维检查。 */
+    /**
+     * 等待当前已提交任务结束，主要用于测试、关闭和运维检查。
+     *
+     * @param timeout 最大等待时间
+     * @return 所有任务完成或耗尽重试时返回 {@code true}；超时或中断时返回 {@code false}
+     */
     public boolean awaitIdle(Duration timeout) {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
-            boolean pending = store.listRecoverableJobs(MAX_ATTEMPTS).stream()
-                    .anyMatch(job -> job.status() == PipelineJob.Status.PENDING
-                            || job.status() == PipelineJob.Status.RUNNING);
+            boolean pending = !store.listRecoverableJobs(maxAttempts).isEmpty();
             if (!pending && scheduled.isEmpty()) return true;
             try {
                 Thread.sleep(10);
@@ -62,7 +101,7 @@ public final class MemoryPipeline implements AutoCloseable {
     }
 
     private void recover() {
-        for (PipelineJob job : store.listRecoverableJobs(MAX_ATTEMPTS)) {
+        for (PipelineJob job : store.listRecoverableJobs(maxAttempts)) {
             store.saveJob(job.retry());
             schedule(job.id(), 0);
         }
@@ -81,10 +120,11 @@ public final class MemoryPipeline implements AutoCloseable {
             } finally {
                 scheduled.remove(jobId);
             }
-            if (failed != null && failed.attempts() < MAX_ATTEMPTS) {
+            if (failed != null && failed.attempts() < maxAttempts) {
                 PipelineJob retry = failed.retry();
                 store.saveJob(retry);
-                schedule(retry.id(), Math.min(5_000, 100L << Math.min(5, retry.attempts())));
+                long multiplier = 1L << Math.min(20, retry.attempts());
+                schedule(retry.id(), Math.min(maxRetryDelayMillis, baseRetryDelayMillis * multiplier));
             }
         }, delayMillis, TimeUnit.MILLISECONDS);
     }
