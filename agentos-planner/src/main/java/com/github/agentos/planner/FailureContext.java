@@ -1,6 +1,6 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.api.ToolResult;
 
 import java.util.Objects;
 

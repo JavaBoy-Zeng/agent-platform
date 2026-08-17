@@ -1,6 +1,18 @@
 # agentos-tool
 
-`agentos-tool` 定义 Agent 可调用能力的统一协议、注册表、执行边界和结构化失败类型。
+`agentos-tool` 定义 Agent 可调用能力的统一协议、执行运行时、内置工具和结构化失败类型。
+
+## 包结构
+
+| 包 | 职责 |
+| --- | --- |
+| `com.github.agentos.tool.api` | 对外稳定的工具协议、调用、定义、结果和执行模式。 |
+| `com.github.agentos.tool.runtime` | 工具注册、统一调度、执行上下文和生命周期拦截器。 |
+| `com.github.agentos.tool.builtin` | AgentOS 默认提供的工具实现。 |
+| `com.github.agentos.tool.builtin.file` | 文件工具，以及 access、reader、writer 格式适配器。 |
+| `com.github.agentos.tool.builtin.git` | 本地 Git 工具。 |
+
+`api` 不依赖 `runtime` 或 `builtin`，`runtime` 不依赖 `builtin`，这些边界由 ArchUnit 测试持续校验。
 
 ## 核心类型
 
@@ -11,7 +23,7 @@
 | `ToolCall` | 工具名称和不可变参数 Map。 |
 | `ToolResult` | 成功输出，或带 `ToolFailureType` 的结构化失败。 |
 | `ToolRegistry` | 线程安全地注册、查找和枚举工具。 |
-| `ToolExecutor` | 捕获未处理异常并转换为 `TOOL_INTERNAL_ERROR`。 |
+| `ToolDispatcher` | 统一处理工具解析、拦截器、异常转换、并行调度和事件发布。 |
 | `FileAccessPolicy` | 所有文件工具共用的路径授权抽象。 |
 | `PagedFileReader / PagedReadResult` | 按物理页和页内偏移读取文件，并显式返回续读位置。 |
 

@@ -1,10 +1,10 @@
 package com.github.agentos.hitl;
 
-import com.github.agentos.tool.ToolBeforeResult;
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolExecutionContext;
-import com.github.agentos.tool.ToolInterceptor;
-import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.runtime.ToolBeforeResult;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.runtime.ToolExecutionContext;
+import com.github.agentos.tool.runtime.ToolInterceptor;
+import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionType;
 

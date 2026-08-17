@@ -1,8 +1,8 @@
 package com.github.agentos.hitl;
 
 import com.github.agentos.kernel.AgentContext;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolCall;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolCall;
 
 import java.util.Objects;
 

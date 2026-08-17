@@ -1,9 +1,9 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolDefinition;
-import com.github.agentos.tool.ToolParameter;
-import com.github.agentos.tool.ToolRegistry;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolDefinition;
+import com.github.agentos.tool.api.ToolParameter;
+import com.github.agentos.tool.runtime.ToolRegistry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -85,13 +85,13 @@ public final class PlanValidator {
     }
 
     private void validateStep(AgentPlan plan, PlanStep step, List<String> violations) {
-        for (com.github.agentos.tool.ToolCall call : step.toolCalls()) {
+        for (com.github.agentos.tool.api.ToolCall call : step.toolCalls()) {
             validateToolCall(plan, step, call, violations);
         }
     }
 
     private void validateToolCall(
-            AgentPlan plan, PlanStep step, com.github.agentos.tool.ToolCall call,
+            AgentPlan plan, PlanStep step, com.github.agentos.tool.api.ToolCall call,
             List<String> violations) {
         String toolName = call.toolName();
         AgentTool tool = toolRegistry.find(toolName).orElse(null);

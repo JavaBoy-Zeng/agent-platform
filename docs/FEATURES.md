@@ -40,7 +40,8 @@ AgentOS 是一个基于 Java 21、Maven 多模块与 Spring Boot 的模块化 Ag
 
 ### 2.3 `agentos-tool`（工具协议与内置工具）
 
-- 协议层：`AgentTool`、`ToolParameter` / `ToolDefinition`、`ToolCall`、`ToolResult`（含 `ToolFailureType`）、`ToolRegistry`、`ToolExecutor`。
+- 分包边界：`api` 提供工具协议，`runtime` 提供注册与统一调度，`builtin` 提供默认文件、Git、回显和天气工具；ArchUnit 自动守护依赖方向。
+- 核心类型：`AgentTool`、`ToolParameter` / `ToolDefinition`、`ToolCall`、`ToolResult`（含 `ToolFailureType`）、`ToolRegistry`、`ToolDispatcher`。
 - 文件访问：`FileAccessPolicy` 抽象；当前服务端装配 `AllowAllReadableFileAccessPolicy`。
 - 分页读取：`PagedFileReader` / `PagedReadResult` 支持按物理页和页内偏移读取（含 PDF），并显式返回 `hasMore` / `nextPage` / `nextOffset` / `truncated`。
 - 内置工具：
@@ -50,7 +51,7 @@ AgentOS 是一个基于 Java 21、Maven 多模块与 Spring Boot 的模块化 Ag
   - `echo`：仅用于调用链测试。
   - `weather`：调用外部天气接口（默认风险等级 MEDIUM）。
 - 结构化失败类型：`INVALID_ARGUMENT / NOT_FOUND / TRANSIENT / ACCESS_DENIED / PERMISSION_DENIED / SECURITY_DENIED / TOOL_INTERNAL_ERROR / UNKNOWN`。
-- 默认 `ToolExecutor` 捕获未处理异常并转换为 `TOOL_INTERNAL_ERROR`。
+- `ToolDispatcher` 统一完成工具解析、拦截器生命周期、异常转换、并行安全降级和事件发布。
 
 ### 2.4 `agentos-memory`（L0–L3 记忆）
 
@@ -131,8 +132,8 @@ MainAgent
         │       ├── ModelClient (OpenAI-compatible)
         │       └── PlanValidator 校验
         ├── PlanExecutor.execute
-        │       ├── RiskPolicy / ApprovalService (HITL 风险门禁)
-        │       ├── ToolRegistry + ToolExecutor
+        │       ├── ToolDispatcher + ToolRegistry
+        │       ├── ApprovalToolInterceptor / RiskPolicy / ApprovalService
         │       └── 失败 → FailureClassifier → REPLAN / SKIP / ABORT
         ├── AgentPlanner.replan (受累计预算限制)
         └── AgentFinalizer.finish (仅 EXECUTION / COMPLETE)

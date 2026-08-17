@@ -1,7 +1,7 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolExecutionMode;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolExecutionMode;
 
 import java.util.List;
 import java.util.Objects;

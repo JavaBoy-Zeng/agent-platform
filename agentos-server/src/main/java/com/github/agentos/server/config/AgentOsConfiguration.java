@@ -16,18 +16,23 @@ import com.github.agentos.memory.MemoryService;
 import com.github.agentos.planner.*;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.AgentRunCoordinator;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.FileReaderFactory;
-import com.github.agentos.tool.ToolExecutor;
-import com.github.agentos.tool.ToolDispatcher;
-import com.github.agentos.tool.ToolInterceptor;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.file.AllowAllFileAccessPolicy;
-import com.github.agentos.tool.file.FileAccessPolicy;
-import com.github.agentos.tool.reader.DocxFileReader;
-import com.github.agentos.tool.reader.PdfFileReader;
-import com.github.agentos.tool.reader.TextFileReader;
-import com.github.agentos.tool.tools.*;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.builtin.file.reader.FileReaderFactory;
+import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolInterceptor;
+import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.builtin.file.access.AllowAllFileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
+import com.github.agentos.tool.builtin.file.reader.DocxFileReader;
+import com.github.agentos.tool.builtin.file.reader.PdfFileReader;
+import com.github.agentos.tool.builtin.file.reader.TextFileReader;
+import com.github.agentos.tool.builtin.EchoTool;
+import com.github.agentos.tool.builtin.WeatherTool;
+import com.github.agentos.tool.builtin.file.DirectoryListTool;
+import com.github.agentos.tool.builtin.file.FileReadTool;
+import com.github.agentos.tool.builtin.file.FileSearchTool;
+import com.github.agentos.tool.builtin.file.FileWriteTool;
+import com.github.agentos.tool.builtin.git.GitCommitTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -118,17 +123,6 @@ public class AgentOsConfiguration {
     @Bean
     ToolRegistry toolRegistry(List<AgentTool> tools) {
         return new ToolRegistry(tools);
-    }
-
-    /**
-     * 创建工具执行器。
-     *
-     * @param toolRegistry 工具注册表
-     * @return 工具执行器
-     */
-    @Bean
-    ToolExecutor toolExecutor(ToolRegistry toolRegistry) {
-        return new ToolExecutor(toolRegistry);
     }
 
     /** 创建将 HITL 审批纳入工具生命周期的前置拦截器。 */

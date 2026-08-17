@@ -6,9 +6,9 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.memory.MemoryContext;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolRegistry;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.runtime.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -123,7 +123,7 @@ public final class LlmAgentPlanner implements AgentPlanner {
                 previousPlan,
                 snapshot,
                 toolRegistry.definitions(),
-                Math.min(planValidator.maxSteps(), Math.max(0, remainingSteps)));
+                Math.clamp(remainingSteps, 0, planValidator.maxSteps()));
 
         ModelPlan modelPlan = Objects.requireNonNull(
                 modelClient.generatePlan(planningRequest),

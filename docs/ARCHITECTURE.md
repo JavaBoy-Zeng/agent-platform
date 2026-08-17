@@ -69,8 +69,6 @@ flowchart TD
     planner --> kernel
     planner --> tool
     planner --> memory
-    planner --> hitl
-
     hitl --> kernel
     hitl --> tool
     tool --> kernel
@@ -85,10 +83,10 @@ flowchart TD
 | 模块 | 核心职责 | 关键类型 | 运行时依赖 |
 | --- | --- | --- | --- |
 | `agentos-kernel` | 请求、上下文、状态、事件和会话级运行入口 | `AgentRequest`、`AgentContext`、`AgentState`、`AgentRuntime`、`AgentRunEvent` | 无其他 AgentOS 模块 |
-| `agentos-tool` | 工具协议、注册、执行、失败分类和文件探索能力 | `AgentTool`、`ToolRegistry`、`ToolExecutor`、`ToolResult` | `agentos-kernel` |
+| `agentos-tool` | 工具协议、统一调度、失败分类和内置工具 | `AgentTool`、`ToolRegistry`、`ToolDispatcher`、`ToolResult` | `agentos-kernel` |
 | `agentos-memory` | L0–L3 记忆、异步加工、混合召回、HTTP 模型适配和本地持久化 | `MemoryService`、`MemoryPipeline`、`MemoryStore`、`HybridMemoryRetriever` | 无其他 AgentOS 模块 |
 | `agentos-hitl` | 工具风险策略和人工审批端口 | `RiskPolicy`、`ApprovalService` | `agentos-kernel`、`agentos-tool` |
-| `agentos-planner` | 模型规划、计划校验、工具步骤执行、观察和失败决策 | `LlmAgentPlanner`、`PlanValidator`、`PlanExecutor` | kernel、tool、memory、hitl |
+| `agentos-planner` | 模型规划、计划校验、工具步骤执行、观察和失败决策 | `LlmAgentPlanner`、`PlanValidator`、`PlanExecutor` | kernel、tool、memory |
 | `agentos-agent` | 串联规划、执行、决策、终结和记忆写入 | `MainAgent`、`AgentFinalizer` | kernel、planner、memory |
 | `agentos-server` | Spring 装配、模型适配、REST/SSE API 和集成测试 | `AgentOsConfiguration`、`AgentController`、`OpenAiCompatibleModelClient` | 所有后端模块 |
 | `agentos-console` | 会话操作、SSE 消费、运行轨迹和状态展示 | `useAgentConsole`、`agentApi`、Vue 组件 | 仅通过 HTTP 依赖 server |
@@ -215,7 +213,7 @@ stateDiagram-v2
 
 ### 6.3 执行与失败策略
 
-`PlanExecutor` 顺序执行计划步骤。每一步先查找工具，再进行风险审批，最后通过 `ToolExecutor` 调用工具并把未捕获异常转换成结构化失败。
+`PlanExecutor` 顺序执行计划步骤，并把调用交给 `ToolDispatcher`。Dispatcher 通过注册表解析工具，依次执行审批等生命周期拦截器，统一调用工具，并把未捕获异常转换成结构化失败。
 
 | 工具失败类型 | 必选步骤 | 可选步骤 |
 | --- | --- | --- |

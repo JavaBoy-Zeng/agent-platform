@@ -15,10 +15,10 @@ import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.ReplanReason;
 import com.github.agentos.planner.StepResult;
 import com.github.agentos.planner.StepStatus;
-import com.github.agentos.tool.ToolDispatcher;
-import com.github.agentos.tool.ToolExecutionContext;
-import com.github.agentos.tool.ToolFailureType;
-import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolExecutionContext;
+import com.github.agentos.tool.api.ToolFailureType;
+import com.github.agentos.tool.api.ToolResult;
 
 import java.util.ArrayList;
 import java.util.List;

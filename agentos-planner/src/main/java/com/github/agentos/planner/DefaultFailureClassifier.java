@@ -1,6 +1,6 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.tool.ToolFailureType;
+import com.github.agentos.tool.api.ToolFailureType;
 
 import java.util.Objects;
 

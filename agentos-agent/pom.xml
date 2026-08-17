@@ -37,5 +37,10 @@
             <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.github.agentos</groupId>
+            <artifactId>agentos-hitl</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

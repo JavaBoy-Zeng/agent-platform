@@ -1,6 +1,6 @@
 # agentos-hitl
 
-`agentos-hitl` 提供 Human-in-the-Loop（人在回路）能力，在高风险工具真正执行前插入风险判断和人工审批。
+`agentos-hitl` 提供 Human-in-the-Loop（人在回路）能力，通过 `ToolInterceptor` 在高风险工具真正执行前插入风险判断和人工审批。
 
 ## 主要职责
 
@@ -29,16 +29,11 @@
 
 ```text
 PlanExecutor
-    │
-    ├── RiskPolicy.requiresApproval(...)
-    │           │
-    │           └── 无需审批 ──────────────┐
-    │                                      │
-    └── ApprovalService.requestApproval(...)│
-                ├── true ──────────────────┤
-                └── false ──► REJECTED     │
-                                               ▼
-                                         ToolExecutor
+    └── ToolDispatcher
+        ├── ApprovalToolInterceptor
+        │   ├── 无需审批或已消费批准结果 ──► 继续
+        │   └── 需要审批 ──► PendingAction(HUMAN_APPROVAL)
+        └── AgentTool.execute(...)
 ```
 
 ## 默认安全策略

@@ -1,19 +1,13 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.hitl.ApprovalService;
-import com.github.agentos.hitl.ApprovalToolInterceptor;
-import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.tool.ToolDispatcher;
-import com.github.agentos.tool.ToolExecutionContext;
-import com.github.agentos.tool.ToolExecutor;
-import com.github.agentos.tool.ToolFailureType;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolExecutionContext;
+import com.github.agentos.tool.api.ToolResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,20 +24,6 @@ public final class PlanExecutor {
 
     private final ToolDispatcher toolDispatcher;
     private final FailureClassifier failureClassifier;
-
-    public PlanExecutor(
-            ToolRegistry toolRegistry,
-            ToolExecutor toolExecutor,
-            RiskPolicy riskPolicy,
-            ApprovalService approvalService,
-            FailureClassifier failureClassifier) {
-        Objects.requireNonNull(toolExecutor, "toolExecutor must not be null");
-        this.toolDispatcher = new ToolDispatcher(
-                Objects.requireNonNull(toolRegistry, "toolRegistry must not be null"),
-                List.of(new ApprovalToolInterceptor(riskPolicy, approvalService)));
-        this.failureClassifier = Objects.requireNonNull(
-                failureClassifier, "failureClassifier must not be null");
-    }
 
     /** 创建使用统一 ToolDispatcher 的计划执行器。 */
     public PlanExecutor(ToolDispatcher toolDispatcher, FailureClassifier failureClassifier) {

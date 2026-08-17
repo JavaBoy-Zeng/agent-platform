@@ -8,7 +8,7 @@ import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.PlanValidator;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.OpenAiCompatibleModelClient;
-import com.github.agentos.tool.ToolRegistry;
+import com.github.agentos.tool.runtime.ToolRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;

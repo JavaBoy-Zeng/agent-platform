@@ -1,6 +1,7 @@
 package com.github.agentos.agent;
 
 import com.github.agentos.hitl.ApprovalService;
+import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
@@ -19,11 +20,11 @@ import com.github.agentos.planner.PlanOrigin;
 import com.github.agentos.planner.PlanOutcome;
 import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.PlanType;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolExecutor;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.api.ToolResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -60,10 +61,11 @@ class MainAgentApprovalResumeTest {
         };
         ToolRegistry registry = new ToolRegistry(List.of(writeTool, commitTool));
         PlanExecutor executor = new PlanExecutor(
-                registry,
-                new ToolExecutor(registry),
-                new RiskPolicy(AgentTool.RiskLevel.HIGH),
-                new ApprovalService(request -> false),
+                new ToolDispatcher(
+                        registry,
+                        List.of(new ApprovalToolInterceptor(
+                                new RiskPolicy(AgentTool.RiskLevel.HIGH),
+                                new ApprovalService(request -> false)))),
                 new DefaultFailureClassifier());
         AgentPlanner planner = new AgentPlanner() {
             @Override public AgentPlan createPlan(AgentRequest request, AgentContext context) {

@@ -35,10 +35,9 @@ AgentRuntime
         │   └── LlmAgentPlanner ──► ModelClient
         ├── PlanExecutor
         │   ├── FailureClassifier
-        │   ├── ToolRegistry ──► directory_list / file_search / file_read / ...
-        │   ├── ToolExecutor
-        │   ├── RiskPolicy
-        │   └── ApprovalService
+        │   └── ToolDispatcher
+        │       ├── ToolRegistry ──► directory_list / file_search / file_read / ...
+        │       └── ApprovalToolInterceptor ──► RiskPolicy / ApprovalService
         ├── AgentFinalizer
         └── MemoryService
             ├── MemoryStore (memory / file / sqlite)

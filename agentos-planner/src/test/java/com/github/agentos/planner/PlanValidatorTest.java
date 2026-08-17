@@ -1,8 +1,8 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.tools.EchoTool;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.builtin.EchoTool;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

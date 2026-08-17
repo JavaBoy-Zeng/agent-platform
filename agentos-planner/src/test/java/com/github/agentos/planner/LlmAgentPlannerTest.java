@@ -6,12 +6,12 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.memory.CompletedTurn;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolFailureType;
-import com.github.agentos.tool.ToolResult;
-import com.github.agentos.tool.tools.EchoTool;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolFailureType;
+import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.builtin.EchoTool;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;

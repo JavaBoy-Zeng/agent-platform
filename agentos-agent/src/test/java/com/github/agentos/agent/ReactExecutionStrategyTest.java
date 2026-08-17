@@ -12,11 +12,11 @@ import com.github.agentos.planner.PlanOrigin;
 import com.github.agentos.planner.PlanOutcome;
 import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.PlanType;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolDispatcher;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.ToolResult;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.api.ToolResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

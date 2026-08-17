@@ -23,7 +23,6 @@ flowchart LR
     agent --> memory[agentos-memory]
     planner --> kernel
     planner --> tool
-    planner --> hitl
     planner --> memory
     hitl --> kernel
     hitl --> tool
@@ -80,7 +79,8 @@ flowchart LR
 
 ### 2.4 agentos-tool（工具协议）
 
-- 核心类型：`AgentTool`、`ToolParameter / ToolDefinition`、`ToolCall`、`ToolResult`、`ToolRegistry`、`ToolExecutor`、`FileAccessPolicy`、`PagedFileReader / PagedReadResult`。
+- 包结构：`api` 为公开协议，`runtime` 为统一调度，`builtin` 为默认工具实现；ArchUnit 自动校验依赖方向。
+- 核心类型：`AgentTool`、`ToolParameter / ToolDefinition`、`ToolCall`、`ToolResult`、`ToolRegistry`、`ToolDispatcher`、`FileAccessPolicy`、`PagedFileReader / PagedReadResult`。
 - 内置工具：
   - `directory_list`：有界列目录（深度默认 2 / 最大 5，条目默认 200 / 最大 500，不跟随符号链接）。
   - `file_search`：`NAME` glob 或 `CONTENT` 字面量搜索（深度默认 8 / 最大 12，结果默认 100 / 最大 500，最多扫描 20,000 个文件；内容搜索跳过符号链接 / 二进制 / 不可读 / > 1 MiB 文件，并返回带行号的匹配）。
@@ -112,11 +112,9 @@ flowchart LR
 - `ApprovalService` 创建 `ApprovalRequest`（会话、Agent、工具说明、调用参数、请求时间）并交给 `ApprovalHandler` 获取布尔结果。
 - 调用流程：
   ```text
-  PlanExecutor → RiskPolicy.requiresApproval →
-    无需审批 ──► ToolExecutor
-    需要审批 ──► ApprovalService.requestApproval
-      通过 ──► ToolExecutor
-      拒绝 ──► REJECTED
+  PlanExecutor → ToolDispatcher → ApprovalToolInterceptor
+    无需审批或已批准 ──► AgentTool.execute
+    需要审批 ──► PendingAction(HUMAN_APPROVAL)
   ```
 - 默认安全策略：`agentos-server` 将审批阈值设为 `MEDIUM`，使用默认拒绝型 `ApprovalHandler`，因此低风险工具可执行，中高风险工具在接入真实审批渠道前保持阻断。
 - 生产可替换：实现自定义 `ApprovalHandler` 接入管理后台、IM 或工作流系统；后续可扩展为持久化审批单 + 异步恢复。
@@ -125,7 +123,7 @@ flowchart LR
 
 - 启动 Spring Boot Web 应用并装配所有模块为 Bean。
 - 核心类型：`AgentOsApplication`、`AgentOsConfiguration`、`LlmPlannerConfiguration`、`AgentController`、`MemoryController`、`AgentExceptionHandler`、`AgentRuntimeIntegrationTest`。
-- 默认装配：`AgentRuntime → MainAgent → AgentPlanner(LlmAgentPlanner + ModelClient) / PlanExecutor(FailureClassifier / ToolRegistry / ToolExecutor / RiskPolicy / ApprovalService) / AgentFinalizer / MemoryService(MemoryStore + MemoryModel + MemoryEmbedding)`。
+- 默认装配：`AgentRuntime → MainAgent → AgentPlanner(LlmAgentPlanner + ModelClient) / PlanExecutor(FailureClassifier / ToolDispatcher(ToolRegistry + ApprovalToolInterceptor)) / AgentFinalizer / MemoryService(MemoryStore + MemoryModel + MemoryEmbedding)`。
 - 对外 HTTP API：
   - `POST /api/agents/runs`：创建一次运行。
   - `GET  /api/agents/{sessionId}/state`：查询会话状态（不存在返回 404）。

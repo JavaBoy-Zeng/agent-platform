@@ -3,7 +3,7 @@ package com.github.agentos.planner;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.memory.MemoryContext;
-import com.github.agentos.tool.ToolDefinition;
+import com.github.agentos.tool.api.ToolDefinition;
 
 import java.util.List;
 import java.util.Objects;

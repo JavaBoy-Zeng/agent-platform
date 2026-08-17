@@ -15,7 +15,6 @@ flowchart LR
     agent --> memory[agentos-memory]
     planner --> kernel
     planner --> tool
-    planner --> hitl
     planner --> memory
     hitl --> kernel
     hitl --> tool
@@ -25,7 +24,7 @@ flowchart LR
 - [`agentos-kernel`](agentos-kernel/ReadMe.md)：运行入口、Agent 循环、上下文与状态机。
 - [`agentos-agent`](agentos-agent/ReadMe.md)：主 Agent 编排，连接规划、执行和记忆。
 - [`agentos-planner`](agentos-planner/ReadMe.md)：迭代规划、失败分类、计划模型和执行器。
-- [`agentos-tool`](agentos-tool/ReadMe.md)：工具协议、结构化失败以及文件探索工具。
+- [`agentos-tool`](agentos-tool/ReadMe.md)：工具 API、统一调度运行时、结构化失败和内置工具。
 - [`agentos-memory`](agentos-memory/ReadMe.md)：L0–L3 分层记忆、混合召回、持久化 Pipeline 与统一服务。
 - [`agentos-hitl`](agentos-hitl/ReadMe.md)：风险策略与人工审批端口；默认拒绝需要审批的操作。
 - [`agentos-console`](agentos-console/ReadMe.md)：基于 Vue 3 的独立 Agent 操作控制台。

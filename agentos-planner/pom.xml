@@ -21,10 +21,6 @@
         </dependency>
         <dependency>
             <groupId>com.github.agentos</groupId>
-            <artifactId>agentos-hitl</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.github.agentos</groupId>
             <artifactId>agentos-memory</artifactId>
         </dependency>
         <dependency>

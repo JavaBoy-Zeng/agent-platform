@@ -1,16 +1,18 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.hitl.ApprovalService;
-import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRequest;
-import com.github.agentos.tool.AgentTool;
-import com.github.agentos.tool.ToolCall;
-import com.github.agentos.tool.ToolExecutor;
-import com.github.agentos.tool.ToolFailureType;
-import com.github.agentos.tool.ToolRegistry;
-import com.github.agentos.tool.ToolResult;
-import com.github.agentos.tool.ToolExecutionMode;
+import com.github.agentos.kernel.PendingAction;
+import com.github.agentos.kernel.PendingActionType;
+import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolFailureType;
+import com.github.agentos.tool.runtime.ToolBeforeResult;
+import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolInterceptor;
+import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.api.ToolExecutionMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -94,7 +96,7 @@ class PlanExecutorTest {
     }
 
     @Test
-    void waitsWhenRiskyToolRequiresHumanApproval() {
+    void waitsWhenDispatcherReturnsPendingAction() {
         AgentTool risky = new AgentTool() {
             @Override public String name() { return "risky"; }
             @Override public String description() { return "write external state"; }
@@ -103,7 +105,24 @@ class PlanExecutorTest {
                 return ToolResult.success("must not execute");
             }
         };
-        PlanExecutor executor = executor(risky);
+        ToolRegistry registry = new ToolRegistry(List.of(risky));
+        ToolInterceptor pendingInterceptor = new ToolInterceptor() {
+            @Override
+            public ToolBeforeResult beforeExecute(
+                    ToolCall call,
+                    com.github.agentos.tool.runtime.ToolExecutionContext context) {
+                PendingAction action = new PendingAction(
+                        "approval-1",
+                        PendingActionType.HUMAN_APPROVAL,
+                        "Approve risky tool",
+                        "write external state",
+                        Map.of("toolName", call.toolName()));
+                return ToolBeforeResult.shortCircuit(ToolResult.pending(action));
+            }
+        };
+        PlanExecutor executor = new PlanExecutor(
+                new ToolDispatcher(registry, List.of(pendingInterceptor)),
+                new DefaultFailureClassifier());
 
         PlanExecutor.ExecutionResult result = executor.execute(
                 AgentRequest.of("session-1", "write"),
@@ -145,11 +164,7 @@ class PlanExecutorTest {
     private static PlanExecutor executor(AgentTool... tools) {
         ToolRegistry registry = new ToolRegistry(List.of(tools));
         return new PlanExecutor(
-                registry,
-                new ToolExecutor(registry),
-                new RiskPolicy(AgentTool.RiskLevel.MEDIUM),
-                new ApprovalService(request -> false),
-                new DefaultFailureClassifier());
+                new ToolDispatcher(registry), new DefaultFailureClassifier());
     }
 
     private static AgentPlan plan(String toolName, boolean optional) {
