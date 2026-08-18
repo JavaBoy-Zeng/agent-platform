@@ -36,6 +36,8 @@ import com.github.agentos.tool.builtin.file.FileSearchTool;
 import com.github.agentos.tool.builtin.file.FileWriteTool;
 import com.github.agentos.tool.builtin.git.GitCommitTool;
 import com.github.agentos.tool.builtin.shell.RunCommandTool;
+import com.github.agentos.tool.builtin.web.WebFetchTool;
+import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -139,6 +141,31 @@ public class AgentOsConfiguration {
         return new RunCommandTool(Path.of(workDir), timeoutSeconds, maxOutputChars);
     }
 
+
+    /** 创建网页抓取工具，限制响应大小并转为纯文本。 */
+    @Bean
+    WebFetchTool webFetchTool(
+            @Value("${agentos.tools.web-fetch.timeout-seconds:20}") long timeoutSeconds,
+            @Value("${agentos.tools.web-fetch.max-chars:12000}") int maxChars) {
+        return new WebFetchTool(
+                java.net.http.HttpClient.newBuilder().followRedirects(
+                        java.net.http.HttpClient.Redirect.NORMAL).build(),
+                java.time.Duration.ofSeconds(timeoutSeconds), maxChars);
+    }
+
+    /** 仅在配置了搜索 API Key 时注册 Tavily 网页搜索工具。 */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "!'${agentos.tools.web-search.api-key:}'.isBlank()")
+    WebSearchTool webSearchTool(
+            tools.jackson.databind.ObjectMapper objectMapper,
+            @Value("${agentos.tools.web-search.endpoint:https://api.tavily.com/search}") String endpoint,
+            @Value("${agentos.tools.web-search.api-key:}") String apiKey,
+            @Value("${agentos.tools.web-search.timeout-seconds:20}") long timeoutSeconds) {
+        return new WebSearchTool(
+                java.net.http.HttpClient.newHttpClient(), objectMapper, endpoint,
+                apiKey, java.time.Duration.ofSeconds(timeoutSeconds));
+    }
 
     /**
      * 创建工具注册表，并注册 Spring 容器中的全部工具。

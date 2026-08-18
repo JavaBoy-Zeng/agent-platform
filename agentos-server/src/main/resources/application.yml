@@ -13,6 +13,16 @@ agentos:
       timeout-seconds: "${AGENTOS_RUN_COMMAND_TIMEOUT_SECONDS:60}"
       # 输出截断上限，防止 token 爆炸。
       max-output-chars: "${AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS:20000}"
+    web-fetch:
+      # 单次抓取超时秒数。
+      timeout-seconds: "${AGENTOS_WEB_FETCH_TIMEOUT_SECONDS:20}"
+      # 正文截断上限。
+      max-chars: "${AGENTOS_WEB_FETCH_MAX_CHARS:12000}"
+    web-search:
+      # Tavily API Key（https://tavily.com）；留空不注册 web_search 工具。
+      api-key: "${AGENTOS_WEB_SEARCH_API_KEY:}"
+      endpoint: "${AGENTOS_WEB_SEARCH_ENDPOINT:https://api.tavily.com/search}"
+      timeout-seconds: "${AGENTOS_WEB_SEARCH_TIMEOUT_SECONDS:20}"
   runtime:
     max-replan-count: 6
     max-step-count: 30
