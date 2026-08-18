@@ -210,6 +210,8 @@ public final class MainAgent implements AgentLoop, Agent {
             }
 
             while (true) {
+                // 协作取消检查点：每轮迭代前响应中断，避免取消请求被长循环吞掉。
+                requireNotCancelled();
                 if (plan.outcome() == PlanOutcome.COMPLETE) {
                     requireNotCancelled();
                     String finalAnswer = finalizer.finish(request, context, plan);

@@ -1,4 +1,8 @@
 agentos:
+  security:
+    # REST 接口鉴权密钥（X-API-Key 请求头）；留空关闭鉴权，便于本地开发。
+    # 上线 run_command 等高危工具前必须配置。
+    api-key: "${AGENTOS_API_KEY:}"
   runtime:
     max-replan-count: 6
     max-step-count: 30
