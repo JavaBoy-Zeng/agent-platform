@@ -1,0 +1,161 @@
+package com.github.agentos.server.model;
+
+import com.github.agentos.planner.ChatClient;
+import com.github.agentos.planner.ModelUsage;
+import com.github.agentos.planner.ModelUsageListener;
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
+
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** 直答客户端流式路径测试（本地 SSE mock）。 */
+class OpenAiCompatibleChatClientStreamTest {
+
+    private HttpServer server;
+    private OpenAiCompatibleChatClient client;
+    private ModelClientProperties properties;
+    private String sseBody;
+    private String jsonBody;
+
+    @BeforeEach
+    void startServer() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/chat", exchange -> {
+            boolean streamMode = jsonBody == null;
+            byte[] body = (streamMode ? sseBody : jsonBody).getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type",
+                    streamMode ? "text/event-stream" : "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
+        server.start();
+        properties = new ModelClientProperties();
+        properties.setEndpoint(
+                java.net.URI.create("http://localhost:" + server.getAddress().getPort() + "/chat"));
+        properties.setApiKey("test-key");
+        properties.setModel("test-model");
+    }
+
+    @AfterEach
+    void stopServer() {
+        server.stop(0);
+    }
+
+    private void serve(String chunksJson) {
+        StringBuilder body = new StringBuilder();
+        for (String chunk : chunksJson.split("\n")) {
+            body.append("data: ").append(chunk).append("\n\n");
+        }
+        body.append("data: [DONE]\n\n");
+        sseBody = body.toString();
+    }
+
+    @Test
+    void streamsDeltasAndFiltersThinkBlock() {
+        serve("""
+                {"choices":[{"delta":{"content":"<think>推理过程"}}]}
+                {"choices":[{"delta":{"content":"应当被过滤</think>"}}]}
+                {"choices":[{"delta":{"content":"JVM 是"}}]}
+                {"choices":[{"delta":{"content":"Java 虚拟机。"}}]}
+                {"usage":{"prompt_tokens":10,"completion_tokens":6}}
+                """);
+        List<String> deltas = new ArrayList<>();
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        ChatClient.ChatResponse response = client.chatStream("s1", "什么是JVM", deltas::add);
+
+        assertThat(response.answer()).isEqualTo("JVM 是Java 虚拟机。");
+        assertThat(deltas).containsExactly("JVM 是", "Java 虚拟机。");
+        assertThat(response.usage()).isNotNull();
+        assertThat(response.usage().totalTokens()).isEqualTo(16);
+    }
+
+    @Test
+    void notifiesUsageListenerOncePerCall() {
+        serve("""
+                {"choices":[{"delta":{"content":"ok"}}]}
+                {"usage":{"prompt_tokens":3,"completion_tokens":2}}
+                """);
+        AtomicReference<ModelUsage> recorded = new AtomicReference<>();
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties,
+                (sessionId, usage) -> recorded.set(usage));
+
+        client.chatStream("s1", "hi", delta -> { });
+
+        assertThat(recorded.get()).isNotNull();
+        assertThat(recorded.get().promptTokens()).isEqualTo(3);
+        assertThat(recorded.get().completionTokens()).isEqualTo(2);
+    }
+
+    @Test
+    void parsesUsageInNonStreamingDetails() {
+        jsonBody = "{\"choices\":[{\"message\":{\"content\":\"你好\"}}],"
+                + "\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4}}";
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        ChatClient.ChatResponse response = client.chatDetails("s1", "你好");
+
+        assertThat(response.answer()).isEqualTo("你好");
+        assertThat(response.usage().totalTokens()).isEqualTo(9);
+    }
+
+    @Test
+    void requestsStreamUsageOption() {
+        List<String> bodies = new ArrayList<>();
+        server.createContext("/chat-usage", exchange -> {
+            bodies.add(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8));
+            byte[] body = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
+        properties.setEndpoint(java.net.URI.create(
+                "http://localhost:" + server.getAddress().getPort() + "/chat-usage"));
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        client.chatStream("s1", "hi", delta -> { });
+
+        assertThat(bodies).hasSize(1);
+        assertThat(bodies.get(0))
+                .contains("\"stream\":true")
+                .contains("include_usage");
+    }
+
+    @Test
+    void thinkOnlyStreamFailsExplicitly() {
+        serve("""
+                {"choices":[{"delta":{"content":"<think>only reasoning"}}]}
+                {"choices":[{"delta":{"content":"still thinking</think>"}}]}
+                """);
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> client.chatStream("s1", "hi", delta -> { }))
+                .isInstanceOf(ModelClientException.class)
+                .hasMessageContaining("no content");
+    }
+}

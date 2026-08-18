@@ -47,12 +47,15 @@ public class RoutingConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ChatClient.class)
-    ChatClient chatClient(ModelClientProperties properties, ObjectMapper objectMapper) {
+    ChatClient chatClient(
+            ModelClientProperties properties,
+            ObjectMapper objectMapper,
+            com.github.agentos.planner.ModelUsageListener usageListener) {
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.getConnectTimeout())
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
-        return new OpenAiCompatibleChatClient(httpClient, objectMapper, properties);
+        return new OpenAiCompatibleChatClient(httpClient, objectMapper, properties, usageListener);
     }
 
     /**

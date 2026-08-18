@@ -212,18 +212,33 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final ModelClientProperties properties;
+    private final com.github.agentos.planner.ModelUsageListener usageListener;
 
     /**
-     * Creates an OpenAI-compatible model client.
+     * Creates an OpenAI-compatible model client without usage listener.
      *
      * @param httpClient   configured synchronous HTTP client
      * @param objectMapper application JSON mapper
      * @param properties   endpoint, model and timeout settings
      */
     public OpenAiCompatibleModelClient(HttpClient httpClient, ObjectMapper objectMapper, ModelClientProperties properties) {
+        this(httpClient, objectMapper, properties, null);
+    }
+
+    /**
+     * Creates an OpenAI-compatible model client with a usage listener.
+     *
+     * @param usageListener optional callback invoked after each successful call
+     */
+    public OpenAiCompatibleModelClient(
+            HttpClient httpClient,
+            ObjectMapper objectMapper,
+            ModelClientProperties properties,
+            com.github.agentos.planner.ModelUsageListener usageListener) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
+        this.usageListener = usageListener;
         properties.validate();
     }
 
@@ -245,6 +260,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 throw new ModelClientException("Model endpoint returned HTTP " + response.statusCode() + errorDetail(response.body()));
             }
             ModelPlan plan = parseResponse(response.body());
+            notifyUsage(request, response.body());
             LOGGER.info("[model-call] finished sessionId={} model={} status={} type={} outcome={} stepCount={} durationMs={}",
                     request.agentRequest().sessionId(), properties.getModel(), response.statusCode(),
                     plan.type(), plan.outcome(), plan.steps() == null ? 0 : plan.steps().size(),
@@ -255,6 +271,24 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             throw new ModelClientException("Model request was interrupted", exception);
         } catch (IOException exception) {
             throw new ModelClientException("Model endpoint request failed: " + exception.getMessage(), exception);
+        }
+    }
+
+    private void notifyUsage(PlanningRequest request, String responseBody) {
+        if (usageListener == null) {
+            return;
+        }
+        try {
+            JsonNode usage = objectMapper.readTree(responseBody).path("usage");
+            long prompt = usage.path("prompt_tokens").asLong(0);
+            long completion = usage.path("completion_tokens").asLong(0);
+            if (prompt > 0 || completion > 0) {
+                usageListener.onUsage(request.agentRequest().sessionId(),
+                        new com.github.agentos.planner.ModelUsage(
+                                properties.getModel(), prompt, completion));
+            }
+        } catch (RuntimeException exception) {
+            LOGGER.debug("[model-call] usage parsing skipped: {}", exception.getMessage());
         }
     }
 

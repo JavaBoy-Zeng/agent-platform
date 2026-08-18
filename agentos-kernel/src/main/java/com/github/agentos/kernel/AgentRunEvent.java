@@ -46,6 +46,7 @@ public record AgentRunEvent(
         OBSERVATION,
         DECISION,
         REPLAN,
+        USAGE,
         OUTPUT_DELTA,
         RUN_COMPLETED,
         RUN_CANCELLED,

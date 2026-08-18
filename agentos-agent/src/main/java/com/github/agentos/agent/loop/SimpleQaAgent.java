@@ -79,7 +79,28 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
                 request.objective(),
                 Map.of("agentId", ID, "router", "direct-chat")));
         try {
-            String answer = chatClient.chat(request.sessionId(), request.objective());
+            java.util.concurrent.atomic.AtomicInteger deltaSequence = new java.util.concurrent.atomic.AtomicInteger();
+            ChatClient.ChatResponse response = chatClient.chatStream(
+                    request.sessionId(),
+                    request.objective(),
+                    delta -> eventSink.emit(AgentRunEvent.of(
+                            AgentRunEvent.Type.OUTPUT_DELTA,
+                            request.sessionId(),
+                            delta,
+                            Map.of("agentId", ID, "sequence", deltaSequence.incrementAndGet()))));
+            String answer = response.answer();
+            if (response.usage() != null) {
+                eventSink.emit(AgentRunEvent.of(
+                        AgentRunEvent.Type.USAGE,
+                        request.sessionId(),
+                        "模型用量",
+                        Map.of(
+                                "agentId", ID,
+                                "model", response.usage().model(),
+                                "promptTokens", response.usage().promptTokens(),
+                                "completionTokens", response.usage().completionTokens(),
+                                "totalTokens", response.usage().totalTokens())));
+            }
             LOGGER.info("[simple-qa] finished sessionId={} answerChars={} durationMs={}",
                     request.sessionId(), answer.length(), (System.nanoTime() - started) / 1_000_000);
             eventSink.emit(AgentRunEvent.of(

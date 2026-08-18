@@ -46,12 +46,13 @@ public class LlmPlannerConfiguration {
     @ConditionalOnMissingBean(ModelClient.class)
     ModelClient openAiCompatibleModelClient(
             ModelClientProperties properties,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            com.github.agentos.planner.ModelUsageListener usageListener) {
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.getConnectTimeout())
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
-        return new OpenAiCompatibleModelClient(httpClient, objectMapper, properties);
+        return new OpenAiCompatibleModelClient(httpClient, objectMapper, properties, usageListener);
     }
 
     /**

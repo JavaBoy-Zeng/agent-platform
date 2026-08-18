@@ -37,10 +37,13 @@ class SimpleQaAgentTest {
         assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
         assertThat(result.output()).isEqualTo("JVM 是 Java 虚拟机。");
         assertThat(chatCalls.get()).isEqualTo(1);
+        // 非流式客户端走默认 chatStream：单次整段 OUTPUT_DELTA。
         assertThat(events).extracting(AgentRunEvent::type).containsExactly(
-                AgentRunEvent.Type.RUN_STARTED, AgentRunEvent.Type.RUN_COMPLETED);
-        assertThat(events.get(1).message()).isEqualTo("JVM 是 Java 虚拟机。");
-        assertThat(events.get(1).data()).containsEntry("router", "direct-chat");
+                AgentRunEvent.Type.RUN_STARTED,
+                AgentRunEvent.Type.OUTPUT_DELTA,
+                AgentRunEvent.Type.RUN_COMPLETED);
+        assertThat(events.get(2).message()).isEqualTo("JVM 是 Java 虚拟机。");
+        assertThat(events.get(2).data()).containsEntry("router", "direct-chat");
     }
 
     @Test
@@ -84,5 +87,67 @@ class SimpleQaAgentTest {
     @Test
     void exposesStableIdForRouting() {
         assertThat(new SimpleQaAgent((s, m) -> "x").id()).isEqualTo("simple-qa-agent");
+    }
+
+    @Test
+    void streamsDeltasAndEmitsUsageWhenClientSupportsIt() {
+        List<AgentRunEvent> events = new ArrayList<>();
+        ChatClient streamingClient = new ChatClient() {
+            @Override
+            public String chat(String sessionId, String userMessage) {
+                return "Java 是一门语言。";
+            }
+
+            @Override
+            public ChatResponse chatStream(
+                    String sessionId, String userMessage,
+                    java.util.function.Consumer<String> onDelta) {
+                onDelta.accept("Java ");
+                onDelta.accept("是一门语言。");
+                return new ChatResponse(
+                        "Java 是一门语言。",
+                        new com.github.agentos.planner.ModelUsage("test-model", 12, 8));
+            }
+        };
+        SimpleQaAgent agent = new SimpleQaAgent(streamingClient);
+
+        AgentState result = agent.run(
+                new AgentRequest("s1", "什么是 Java", Map.of()),
+                AgentContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                events::add);
+
+        assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
+        assertThat(events).extracting(AgentRunEvent::type).containsExactly(
+                AgentRunEvent.Type.RUN_STARTED,
+                AgentRunEvent.Type.OUTPUT_DELTA,
+                AgentRunEvent.Type.OUTPUT_DELTA,
+                AgentRunEvent.Type.USAGE,
+                AgentRunEvent.Type.RUN_COMPLETED);
+        AgentRunEvent usageEvent = events.get(3);
+        assertThat(usageEvent.data())
+                .containsEntry("totalTokens", 20L)
+                .containsEntry("model", "test-model");
+        List<AgentRunEvent> deltas = events.stream()
+                .filter(event -> event.type() == AgentRunEvent.Type.OUTPUT_DELTA).toList();
+        assertThat(deltas).extracting(AgentRunEvent::message)
+                .containsExactly("Java ", "是一门语言。");
+        assertThat(deltas.get(0).data()).containsEntry("sequence", 1);
+        assertThat(deltas.get(1).data()).containsEntry("sequence", 2);
+    }
+
+    @Test
+    void omitsUsageEventWhenClientDoesNotReportIt() {
+        List<AgentRunEvent> events = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, m) -> "ok");
+
+        agent.run(
+                new AgentRequest("s1", "hi", Map.of()),
+                AgentContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                events::add);
+
+        assertThat(events).extracting(AgentRunEvent::type)
+                .doesNotContain(AgentRunEvent.Type.USAGE);
     }
 }
