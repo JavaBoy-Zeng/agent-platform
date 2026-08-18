@@ -1,5 +1,8 @@
-package com.github.agentos.agent;
+package com.github.agentos.agent.loop;
 
+import com.github.agentos.agent.Agent;
+import com.github.agentos.agent.AgentExecutionResult;
+import com.github.agentos.agent.finalize.AgentFinalizer;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;

@@ -1,4 +1,6 @@
-package com.github.agentos.agent;
+package com.github.agentos.agent.registry;
+
+import com.github.agentos.agent.Agent;
 
 import java.util.Optional;
 

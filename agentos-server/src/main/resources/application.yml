@@ -6,9 +6,23 @@ agentos:
     max-model-calls: 10
     max-observation-chars: 4000
     max-observation-total-chars: 24000
+  router:
+    short-circuit:
+      # 触发短路的请求文本长度上限；0 表示关闭短路。
+      # 严格白名单策略下白名单条目最长为 16 字符（"thank you"），默认值取 16 即可。
+      max-chars: 16
+      # 短路时直接返回的 canned answer，避免任何 LLM/工具调用。
+      message: "收到，我已记录你的输入。"
+    simple-qa:
+      # 简单问答分级的文本长度上限；0 表示关闭该分级（全部走 MainAgent 规划）。
+      # 命中后派发到 simple-qa-agent 单次直答，不携带工具定义、不进入规划循环；
+      # 含任务信号词（查询/文件/天气等）的请求不受此长度影响，始终走复杂任务链路。
+      max-chars: 64
   model:
     # 本地开发可以直接填写模型 ID；生产环境建议使用同名环境变量覆盖。
     model: "${AGENTOS_MODEL_MODEL:MiniMax-M3}"
+    # 简单问答直答路径使用的模型；留空复用上面的主模型，可指定更小更快的模型。
+    chat-model: "${AGENTOS_MODEL_CHAT_MODEL:}"
     # 不建议把真实 API Key 提交到 Git。
     api-key: "${AGENTOS_MODEL_API_KEY:}"
     endpoint: "${AGENTOS_MODEL_ENDPOINT:https://api.minimaxi.com/v1/chat/completions}"

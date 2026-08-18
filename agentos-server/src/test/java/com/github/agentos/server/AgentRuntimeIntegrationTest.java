@@ -1,5 +1,7 @@
 package com.github.agentos.server;
 
+import com.github.agentos.agent.routing.IntentClassification;
+import com.github.agentos.agent.routing.IntentClassifier;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventStore;
@@ -21,6 +23,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Duration;
 import java.util.List;
@@ -42,8 +45,22 @@ class AgentRuntimeIntegrationTest {
     @Autowired
     private AgentEventStore eventStore;
 
+    /**
+     * 强制让路由层走 fallback，专注于 Runtime + MainAgent + 模型脚本之间的协作。
+     *
+     * <p>输入 {@code "I prefer Java"}（12 字符、无工具关键词）默认会被
+     * {@code HeuristicIntentClassifier} 短路返回 canned answer，从而绕过 LLM 调用；
+     * 这里 mock 出固定的 fallback，让既有对完整 plan-and-execute 周期的断言仍然成立。</p>
+     */
+    @MockitoBean
+    private IntentClassifier intentClassifier;
+
     @Test
     void replansAfterExecutionThenFinalizesAndCapturesOnlyCompletedTurn() {
+        org.mockito.Mockito.when(intentClassifier.classify(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(IntentClassification.fallback("integration-test"));
         AgentRequest request = AgentRequest.of("session-1", "I prefer Java");
         AgentContext context = AgentContext.of("main-agent");
 

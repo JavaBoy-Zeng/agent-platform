@@ -1,5 +1,7 @@
-package com.github.agentos.agent;
+package com.github.agentos.agent.registry;
 
+import com.github.agentos.agent.Agent;
+import com.github.agentos.agent.AgentExecutionResult;
 import com.github.agentos.kernel.AgentExecutionContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;

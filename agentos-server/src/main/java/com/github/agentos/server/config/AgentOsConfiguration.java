@@ -1,8 +1,9 @@
 package com.github.agentos.server.config;
 
-import com.github.agentos.agent.AgentFinalizer;
-import com.github.agentos.agent.DefaultAgentFinalizer;
-import com.github.agentos.agent.MainAgent;
+import com.github.agentos.agent.finalize.AgentFinalizer;
+import com.github.agentos.agent.finalize.DefaultAgentFinalizer;
+import com.github.agentos.agent.loop.MainAgent;
+import com.github.agentos.agent.routing.RoutingAgentLoop;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;
@@ -27,6 +28,7 @@ import com.github.agentos.tool.builtin.file.reader.DocxFileReader;
 import com.github.agentos.tool.builtin.file.reader.PdfFileReader;
 import com.github.agentos.tool.builtin.file.reader.TextFileReader;
 import com.github.agentos.tool.builtin.EchoTool;
+import com.github.agentos.tool.builtin.TodayTool;
 import com.github.agentos.tool.builtin.WeatherTool;
 import com.github.agentos.tool.builtin.file.DirectoryListTool;
 import com.github.agentos.tool.builtin.file.FileReadTool;
@@ -70,6 +72,12 @@ public class AgentOsConfiguration {
     @Bean
     WeatherTool weatherTool() {
         return new WeatherTool();
+    }
+
+    /** 创建返回当前日期（年月日+星期）的内置工具。 */
+    @Bean
+    TodayTool todayTool() {
+        return new TodayTool();
     }
 
     @Bean
@@ -264,15 +272,15 @@ public class AgentOsConfiguration {
     /**
      * 创建面向 REST 接口的 Agent 运行时。
      *
-     * @param mainAgent 主 Agent 循环
+     * @param routingAgentLoop 意图路由 Agent 循环；具体行为见 {@link RoutingAgentLoop}
      * @return Agent 运行时
      */
     @Bean
     AgentRuntime agentRuntime(
-            MainAgent mainAgent,
+            RoutingAgentLoop routingAgentLoop,
             AgentEventPublisher agentEventPublisher,
             AgentEventStore agentEventStore) {
-        return new AgentRuntime(mainAgent, agentEventPublisher, agentEventStore);
+        return new AgentRuntime(routingAgentLoop, agentEventPublisher, agentEventStore);
     }
 
     /** 创建进程内领域事件发布器，后续可注册审计或遥测监听器。 */

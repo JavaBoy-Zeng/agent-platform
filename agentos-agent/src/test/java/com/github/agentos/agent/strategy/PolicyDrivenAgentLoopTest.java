@@ -1,4 +1,4 @@
-package com.github.agentos.agent;
+package com.github.agentos.agent.strategy;
 
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;

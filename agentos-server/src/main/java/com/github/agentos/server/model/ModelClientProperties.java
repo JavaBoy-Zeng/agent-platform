@@ -17,6 +17,7 @@ public class ModelClientProperties {
     private URI endpoint = URI.create("https://api.openai.com/v1/chat/completions");
     private String apiKey = "";
     private String model = "";
+    private String chatModel = "";
     private ResponseFormat responseFormat = ResponseFormat.JSON_SCHEMA;
     private boolean reasoningSplit;
     private Duration connectTimeout = Duration.ofSeconds(10);
@@ -51,6 +52,24 @@ public class ModelClientProperties {
     /** Sets the provider model identifier. */
     public void setModel(String model) {
         this.model = model;
+    }
+
+    /**
+     * Returns the provider model identifier used by the lightweight direct-chat path,
+     * falling back to the main model when unset.
+     */
+    public String getEffectiveChatModel() {
+        return chatModel == null || chatModel.isBlank() ? model : chatModel;
+    }
+
+    /** Returns the configured direct-chat model identifier (may be blank). */
+    public String getChatModel() {
+        return chatModel;
+    }
+
+    /** Sets the optional lighter/faster model used for direct chat answers. */
+    public void setChatModel(String chatModel) {
+        this.chatModel = chatModel;
     }
 
     /** Returns the requested structured-output mode. */

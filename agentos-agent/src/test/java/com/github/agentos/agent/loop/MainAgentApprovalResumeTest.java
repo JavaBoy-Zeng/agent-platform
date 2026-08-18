@@ -1,5 +1,6 @@
-package com.github.agentos.agent;
+package com.github.agentos.agent.loop;
 
+import com.github.agentos.agent.finalize.DefaultAgentFinalizer;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;

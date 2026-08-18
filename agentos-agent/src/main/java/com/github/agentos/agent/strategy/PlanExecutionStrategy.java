@@ -1,4 +1,4 @@
-package com.github.agentos.agent;
+package com.github.agentos.agent.strategy;
 
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
@@ -8,13 +8,13 @@ import com.github.agentos.kernel.AgentState;
 
 import java.util.Objects;
 
-/** 将现有 MainAgent 的完整 Plan-and-Execute 流程提升为可路由执行策略。 */
+/** 将既有 Plan-and-Execute 流程（如 MainAgent）提升为可路由执行策略。 */
 public final class PlanExecutionStrategy implements AgentLoop {
 
-    private final MainAgent delegate;
+    private final AgentLoop delegate;
 
     /** 创建保留既有 Planner、Replan 与 Finalizer 行为的 PLAN 策略。 */
-    public PlanExecutionStrategy(MainAgent delegate) {
+    public PlanExecutionStrategy(AgentLoop delegate) {
         this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
     }
 
