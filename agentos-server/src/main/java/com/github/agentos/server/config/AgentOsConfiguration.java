@@ -35,6 +35,7 @@ import com.github.agentos.tool.builtin.file.FileReadTool;
 import com.github.agentos.tool.builtin.file.FileSearchTool;
 import com.github.agentos.tool.builtin.file.FileWriteTool;
 import com.github.agentos.tool.builtin.git.GitCommitTool;
+import com.github.agentos.tool.builtin.shell.RunCommandTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -121,6 +122,23 @@ public class AgentOsConfiguration {
         return new GitCommitTool();
     }
 
+    /**
+     * 创建受限工作目录内的 shell 执行工具。
+     *
+     * <p>整体 HIGH 风险；只读命令（ls/grep/mvn test 等）由
+     * {@link com.github.agentos.hitl.CommandRiskPolicy} 免审批放行，
+     * 其余命令仍需人工审批。可用 {@code agentos.tools.run-command.enabled=false} 关闭。</p>
+     */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+            name = "agentos.tools.run-command.enabled", havingValue = "true", matchIfMissing = true)
+    RunCommandTool runCommandTool(
+            @Value("${agentos.tools.run-command.work-dir:${user.dir}}") String workDir,
+            @Value("${agentos.tools.run-command.timeout-seconds:60}") long timeoutSeconds,
+            @Value("${agentos.tools.run-command.max-output-chars:20000}") int maxOutputChars) {
+        return new RunCommandTool(Path.of(workDir), timeoutSeconds, maxOutputChars);
+    }
+
 
     /**
      * 创建工具注册表，并注册 Spring 容器中的全部工具。
@@ -170,13 +188,16 @@ public class AgentOsConfiguration {
     }
 
     /**
-     * 创建默认风险策略，中风险及以上工具需要人工审批。
+     * 创建内容级风险策略，中风险及以上工具需要人工审批。
+     *
+     * <p>{@code run_command} 按命令文本判定：只读白名单命令免审批，
+     * 其余命令一律审批；其他工具仍按声明等级判定。</p>
      *
      * @return 风险策略
      */
     @Bean
     RiskPolicy riskPolicy() {
-        return new RiskPolicy(AgentTool.RiskLevel.MEDIUM);
+        return new com.github.agentos.hitl.CommandRiskPolicy(AgentTool.RiskLevel.MEDIUM);
     }
 
     /**

@@ -14,7 +14,7 @@ public final class DefaultFailureClassifier implements FailureClassifier {
         return switch (type) {
             case ACCESS_DENIED, PERMISSION_DENIED, SECURITY_DENIED,
                     TOOL_INTERNAL_ERROR, UNKNOWN, NONE -> FailureDecision.abort();
-            case TRANSIENT -> context.priorRetries() == 0
+            case TRANSIENT, TIMEOUT -> context.priorRetries() == 0
                     ? FailureDecision.retry()
                     : optionalOrReplan(context, ReplanReason.RECOVERABLE_FAILURE);
             case NOT_FOUND -> optionalOrReplan(context, ReplanReason.INVALID_ASSUMPTION);

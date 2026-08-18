@@ -3,6 +3,16 @@ agentos:
     # REST 接口鉴权密钥（X-API-Key 请求头）；留空关闭鉴权，便于本地开发。
     # 上线 run_command 等高危工具前必须配置。
     api-key: "${AGENTOS_API_KEY:}"
+  tools:
+    run-command:
+      # 设为 false 可完全禁用 shell 执行工具。
+      enabled: "${AGENTOS_RUN_COMMAND_ENABLED:true}"
+      # 命令工作目录；默认服务进程当前目录。
+      work-dir: "${AGENTOS_RUN_COMMAND_WORK_DIR:${user.dir}}"
+      # 单条命令超时秒数。
+      timeout-seconds: "${AGENTOS_RUN_COMMAND_TIMEOUT_SECONDS:60}"
+      # 输出截断上限，防止 token 爆炸。
+      max-output-chars: "${AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS:20000}"
   runtime:
     max-replan-count: 6
     max-step-count: 30

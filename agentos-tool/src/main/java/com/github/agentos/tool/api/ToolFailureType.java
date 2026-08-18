@@ -12,6 +12,8 @@ public enum ToolFailureType {
     NOT_FOUND,
     /** 可能通过短暂重试恢复的失败。 */
     TRANSIENT,
+    /** 操作超过时间限制被终止。 */
+    TIMEOUT,
     /** 目标不可访问。 */
     ACCESS_DENIED,
     /** 操作系统或资源权限不足。 */

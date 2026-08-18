@@ -9,9 +9,10 @@ import java.util.Objects;
 /**
  * 判断工具调用是否需要人工审批的风险策略。
  *
- * <p>当工具声明的风险等级大于或等于审批阈值时，该调用必须先通过人工审批。</p>
+ * <p>当工具声明的风险等级大于或等于审批阈值时，该调用必须先通过人工审批。
+ * 可继承扩展为内容级策略（如按命令文本判定风险）。</p>
  */
-public final class RiskPolicy {
+public class RiskPolicy {
 
     private final AgentTool.RiskLevel approvalThreshold;
 
