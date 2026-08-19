@@ -30,6 +30,85 @@ flowchart LR
 - [`agentos-console`](agentos-console/ReadMe.md)：基于 Vue 3 的独立 Agent 操作控制台。
 - [`agentos-server`](agentos-server/ReadMe.md)：Spring Boot 依赖注入、REST API（运行/事件流/产物/用量/记忆）、持久化与鉴权。
 
+## 代码流转
+
+一次请求从 HTTP 入口到最终回答的端到端链路（类名后标注所属模块）：
+
+```text
+HTTP POST /api/agents/runs | /api/agent-runs | /api/agents/runs/stream
+    │
+    ▼
+AgentController / BackgroundAgentRunController（server）
+    │   创建 AgentRequest；后台模式由 AgentRunCoordinator 派发虚拟线程
+    ▼
+AgentRunner.run()（kernel）
+    │   bind 注入执行预算、事件发布器、取消令牌、产物存储
+    │   加载会话状态，串行同一 sessionId
+    ▼
+SessionHistoryService（server）
+    │   从 AgentEventStore 回放最近 5 轮对话，注入多轮上下文
+    ▼
+RoutingAgentLoop（agent·routing）三级路由
+    ├─ 问候白名单（≤16 字符）──────► 固定应答，不调用模型 ──────► 返回
+    ├─ 简单 QA（≤64 字符且无任务信号）
+    │     └─► SimpleQaAgent（agent·loop）
+    │             └─► LlmFlow 组装请求（planner·flow）
+    │                     └─► ChatClient 单轮直答（server）────► 返回
+    └─ 任务请求 ──► MainAgent 规划循环（agent·loop）
+                      │
+                      ▼
+              ┌── 规划 ────────────────────────────┐
+              │ LlmAgentPlanner（planner）           │
+              │   ├─ MemoryService.recall() 召回记忆 │
+              │   ├─ LlmFlow 组装 prompt             │
+              │   ├─ ModelClient（server）调模型     │
+              │   └─ PlanValidator 校验计划          │
+              └───────────────┬────────────────────┘
+                              ▼
+              ┌── 执行 ────────────────────────────┐
+              │ PlanExecutor（planner）逐步骤执行    │
+              │   └─ ToolDispatcher（tool）          │
+              │       ├─ ApprovalToolInterceptor    │
+              │       │   （hitl）风险判断：          │
+              │       │   只读白名单→直接执行；       │
+              │       │   破坏性命令→Checkpoint 暂停，│
+              │       │   批准或重启后恢复            │
+              │       └─ AgentTool.execute()         │
+              │           写入类工具成功后经           │
+              │           ArtifactService 登记产物    │
+              └───────────────┬────────────────────┘
+                              ▼
+              Observation 摘要 ──► Decision（planner）
+                  ├─ 信息充分 ──► COMPLETE
+                  └─ 信息不足 ──► REPLAN ──► 回到「规划」（受预算限制）
+                              ▼
+              AgentFinalizer 收口最终回答（agent·finalize）
+                  └─► MemoryService.capture() 写入记忆（fail-open）
+                              ▼
+                        最终 AgentState 返回
+
+横切能力（贯穿全程）：
+─ AgentEventPublisher（kernel）    发布阶段事件 → SSE 推送 + AgentEventStore 持久化
+─ AgentPluginManager（kernel）     模型回调点记账 token 用量 → /api/usage
+─ ArtifactService（kernel）        产物下载 → /api/artifacts，不暴露本地路径
+─ CancellationToken（kernel）      /api/agent-runs/{id}/cancel 协作式取消
+```
+
+分阶段说明：
+
+| 阶段 | 关键类 | 说明 |
+| --- | --- | --- |
+| 接入 | `AgentController` / `BackgroundAgentRunController` / `AgentRunCoordinator` | 同步、SSE 流式与后台三种入口；后台模式与连接解耦，支持断线补播 |
+| 运行装配 | `AgentRunner` | 组装 `InvocationContext`（身份、预算、事件、取消、产物），按会话串行 |
+| 多轮上下文 | `SessionHistoryService` | 回放最近轮次注入 prompt，使 "那明天呢" 这类指代可解析 |
+| 意图路由 | `RoutingAgentLoop` → `HeuristicIntentClassifier` | 规则三级分类；简单 QA 不带工具定义，节省 token |
+| 规划 | `LlmAgentPlanner` → `ModelClient` | 记忆召回 + LlmFlow 组装 + 模型生成计划 + 校验 |
+| 执行 | `PlanExecutor` → `ToolDispatcher` | 失败分类器决定重试/跳过/重规划/终止；拦截器先做风险判断 |
+| 审批 | `ApprovalToolInterceptor` → `CommandRiskPolicy` | 内容级风险策略；等待审批的运行保存 Checkpoint，重启可恢复 |
+| 产物 | `FileWriteTool` → `ArtifactService` | 写入成功自动登记，`artifactId` 随工具结果返回 |
+| 收口 | `AgentFinalizer` → `MemoryService.capture()` | 只有成功运行写入记忆，记忆失败不影响运行结果（fail-open） |
+| 事件与用量 | `AgentEventPublisher` / `AgentPluginManager` | 事件持久化支撑状态查询与补播；用量插件汇成 `/api/usage` 账本 |
+
 ## 启动
 
 ```bash
