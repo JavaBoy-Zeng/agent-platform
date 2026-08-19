@@ -3,6 +3,8 @@ package com.github.agentos.server.model;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.planner.ModelUsage;
 import com.github.agentos.planner.ModelUsageListener;
+import com.github.agentos.planner.flow.LlmMessage;
+import com.github.agentos.planner.flow.LlmRequest;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,7 +80,8 @@ class OpenAiCompatibleChatClientStreamTest {
         client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), new ObjectMapper(), properties);
 
-        ChatClient.ChatResponse response = client.chatStream("s1", "什么是JVM", deltas::add);
+        ChatClient.ChatResponse response = client.chatStream(
+                "s1", LlmRequest.of("什么是JVM"), deltas::add);
 
         assertThat(response.answer()).isEqualTo("JVM 是Java 虚拟机。");
         assertThat(deltas).containsExactly("JVM 是", "Java 虚拟机。");
@@ -97,7 +100,7 @@ class OpenAiCompatibleChatClientStreamTest {
                 HttpClient.newHttpClient(), new ObjectMapper(), properties,
                 (sessionId, usage) -> recorded.set(usage));
 
-        client.chatStream("s1", "hi", delta -> { });
+        client.chatStream("s1", LlmRequest.of("hi"), delta -> { });
 
         assertThat(recorded.get()).isNotNull();
         assertThat(recorded.get().promptTokens()).isEqualTo(3);
@@ -111,7 +114,7 @@ class OpenAiCompatibleChatClientStreamTest {
         client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), new ObjectMapper(), properties);
 
-        ChatClient.ChatResponse response = client.chatDetails("s1", "你好");
+        ChatClient.ChatResponse response = client.chatDetails("s1", LlmRequest.of("你好"));
 
         assertThat(response.answer()).isEqualTo("你好");
         assertThat(response.usage().totalTokens()).isEqualTo(9);
@@ -136,12 +139,48 @@ class OpenAiCompatibleChatClientStreamTest {
         client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), new ObjectMapper(), properties);
 
-        client.chatStream("s1", "hi", delta -> { });
+        client.chatStream("s1", LlmRequest.of("hi"), delta -> { });
 
         assertThat(bodies).hasSize(1);
         assertThat(bodies.get(0))
                 .contains("\"stream\":true")
                 .contains("include_usage");
+    }
+
+    @Test
+    void serializesInstructionAndHistoryIntoRequestMessages() {
+        List<String> bodies = new ArrayList<>();
+        server.createContext("/chat-messages", exchange -> {
+            bodies.add(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8));
+            byte[] body = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
+        properties.setEndpoint(java.net.URI.create(
+                "http://localhost:" + server.getAddress().getPort() + "/chat-messages"));
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        LlmRequest request = new LlmRequest(
+                "你是测试助手",
+                List.of(
+                        LlmMessage.user("今天几号"),
+                        LlmMessage.assistant("8月19日"),
+                        LlmMessage.user("那明天呢")))
+                .withSystemInstruction("你是测试助手");
+        client.chatStream("s1", request, delta -> { });
+
+        assertThat(bodies).hasSize(1);
+        assertThat(bodies.get(0))
+                .contains("\"role\":\"system\",\"content\":\"你是测试助手\"")
+                .contains("\"role\":\"user\",\"content\":\"今天几号\"")
+                .contains("\"role\":\"assistant\",\"content\":\"8月19日\"")
+                .contains("\"role\":\"user\",\"content\":\"那明天呢\"");
     }
 
     @Test
@@ -154,7 +193,7 @@ class OpenAiCompatibleChatClientStreamTest {
                 HttpClient.newHttpClient(), new ObjectMapper(), properties);
 
         org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> client.chatStream("s1", "hi", delta -> { }))
+                        () -> client.chatStream("s1", LlmRequest.of("hi"), delta -> { }))
                 .isInstanceOf(ModelClientException.class)
                 .hasMessageContaining("no content");
     }

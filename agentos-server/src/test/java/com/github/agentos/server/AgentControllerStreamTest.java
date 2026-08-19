@@ -188,9 +188,11 @@ class AgentControllerStreamTest {
             org.junit.jupiter.api.Assertions.assertEquals(2, seenRequests.size());
             org.junit.jupiter.api.Assertions.assertFalse(
                     seenRequests.get(0).attributes().containsKey(
-                            SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE));
+                            com.github.agentos.planner.flow.HistoryProcessor
+                                    .CONVERSATION_HISTORY_ATTRIBUTE));
             Object history = seenRequests.get(1).attributes()
-                    .get(SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE);
+                    .get(com.github.agentos.planner.flow.HistoryProcessor
+                            .CONVERSATION_HISTORY_ATTRIBUTE);
             org.junit.jupiter.api.Assertions.assertTrue(history instanceof String text
                     && text.contains("用户：第一轮问题")
                     && text.contains("助手：answer-1"));

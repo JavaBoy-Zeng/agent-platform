@@ -1,6 +1,7 @@
 package com.github.agentos.server.model;
 
 import com.github.agentos.planner.ChatClient;
+import com.github.agentos.planner.flow.LlmRequest;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -52,7 +53,9 @@ class OpenAiCompatibleChatClientTest {
         ModelClientProperties properties = properties("test-model", "test-chat-model");
         ChatClient client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), objectMapper, properties);
-        String answer = client.chat("s1", "什么是 JVM");
+        LlmRequest request = LlmRequest.of("什么是 JVM")
+                .withSystemInstruction("你是直答助手");
+        String answer = client.chat("s1", request);
 
         assertThat(answer).isEqualTo("JVM 是 Java 虚拟机。");
         assertThat(authorization.get()).isEqualTo("Bearer test-key");
@@ -60,6 +63,8 @@ class OpenAiCompatibleChatClientTest {
         JsonNode sent = objectMapper.readTree(requestBody.get());
         assertThat(sent.path("model").stringValue()).isEqualTo("test-chat-model");
         assertThat(sent.path("messages").path(0).path("role").stringValue()).isEqualTo("system");
+        assertThat(sent.path("messages").path(0).path("content").stringValue())
+                .isEqualTo("你是直答助手");
         assertThat(sent.path("messages").path(1).path("role").stringValue()).isEqualTo("user");
         assertThat(sent.path("messages").path(1).path("content").stringValue())
                 .isEqualTo("什么是 JVM");
@@ -87,14 +92,14 @@ class OpenAiCompatibleChatClientTest {
         ModelClientProperties properties = properties("test-model", "");
         ChatClient client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), objectMapper, properties);
-        client.chat("s1", "hi");
+        client.chat("s1", LlmRequest.of("hi"));
 
         assertThat(objectMapper.readTree(requestBody.get())
                 .path("model").stringValue()).isEqualTo("test-model");
     }
 
     @Test
-    void rejectsBlankUserMessage() {
+    void rejectsRequestWithoutMessages() {
         // 参数校验发生在 HTTP 请求之前，无需启动 mock server。
         ModelClientProperties properties = new ModelClientProperties();
         properties.setEndpoint(URI.create("http://127.0.0.1:1/v1/chat/completions"));
@@ -102,7 +107,7 @@ class OpenAiCompatibleChatClientTest {
         ChatClient client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), new ObjectMapper(), properties);
 
-        assertThatThrownBy(() -> client.chat("s1", " "))
+        assertThatThrownBy(() -> client.chat("s1", new LlmRequest(null, java.util.List.of())))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -118,7 +123,7 @@ class OpenAiCompatibleChatClientTest {
         ChatClient client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), objectMapper, properties);
 
-        assertThatThrownBy(() -> client.chat("s1", "hi"))
+        assertThatThrownBy(() -> client.chat("s1", LlmRequest.of("hi")))
                 .isInstanceOf(ModelClientException.class)
                 .hasMessageContaining("500")
                 .hasMessageContaining("boom");

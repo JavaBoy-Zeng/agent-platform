@@ -6,6 +6,9 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.planner.ChatClient;
+import com.github.agentos.planner.flow.HistoryProcessor;
+import com.github.agentos.planner.flow.LlmMessage;
+import com.github.agentos.planner.flow.LlmRequest;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -22,7 +25,7 @@ class SimpleQaAgentTest {
     void answersWithSingleChatCallAndEmitsEvents() {
         AtomicInteger chatCalls = new AtomicInteger();
         List<AgentRunEvent> events = new ArrayList<>();
-        ChatClient chatClient = (sessionId, message) -> {
+        ChatClient chatClient = (sessionId, request) -> {
             chatCalls.incrementAndGet();
             return "JVM 是 Java 虚拟机。";
         };
@@ -47,10 +50,10 @@ class SimpleQaAgentTest {
     }
 
     @Test
-    void passesObjectiveToChatClient() {
-        List<String> messages = new ArrayList<>();
-        ChatClient chatClient = (sessionId, message) -> {
-            messages.add(sessionId + ":" + message);
+    void passesObjectiveAndInstructionToChatClient() {
+        List<LlmRequest> requests = new ArrayList<>();
+        ChatClient chatClient = (sessionId, request) -> {
+            requests.add(request);
             return "ok";
         };
         SimpleQaAgent agent = new SimpleQaAgent(chatClient);
@@ -61,13 +64,18 @@ class SimpleQaAgentTest {
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 
-        assertThat(messages).containsExactly("session-9:1+1 等于几");
+        assertThat(requests).singleElement().satisfies(request -> {
+            assertThat(request.messages())
+                    .containsExactly(LlmMessage.user("1+1 等于几"));
+            assertThat(request.instruction()).isPresent();
+            assertThat(request.instruction().orElseThrow()).contains("中文助手");
+        });
     }
 
     @Test
     void failsWithTerminalStateWhenChatClientErrors() {
         List<AgentRunEvent> events = new ArrayList<>();
-        ChatClient chatClient = (sessionId, message) -> {
+        ChatClient chatClient = (sessionId, request) -> {
             throw new IllegalStateException("endpoint unavailable");
         };
         SimpleQaAgent agent = new SimpleQaAgent(chatClient);
@@ -86,7 +94,7 @@ class SimpleQaAgentTest {
 
     @Test
     void exposesStableIdForRouting() {
-        assertThat(new SimpleQaAgent((s, m) -> "x").id()).isEqualTo("simple-qa-agent");
+        assertThat(new SimpleQaAgent((s, r) -> "x").id()).isEqualTo("simple-qa-agent");
     }
 
     @Test
@@ -94,13 +102,13 @@ class SimpleQaAgentTest {
         List<AgentRunEvent> events = new ArrayList<>();
         ChatClient streamingClient = new ChatClient() {
             @Override
-            public String chat(String sessionId, String userMessage) {
+            public String chat(String sessionId, LlmRequest request) {
                 return "Java 是一门语言。";
             }
 
             @Override
             public ChatResponse chatStream(
-                    String sessionId, String userMessage,
+                    String sessionId, LlmRequest request,
                     java.util.function.Consumer<String> onDelta) {
                 onDelta.accept("Java ");
                 onDelta.accept("是一门语言。");
@@ -139,7 +147,7 @@ class SimpleQaAgentTest {
     @Test
     void omitsUsageEventWhenClientDoesNotReportIt() {
         List<AgentRunEvent> events = new ArrayList<>();
-        SimpleQaAgent agent = new SimpleQaAgent((s, m) -> "ok");
+        SimpleQaAgent agent = new SimpleQaAgent((s, r) -> "ok");
 
         agent.run(
                 new AgentRequest("s1", "hi", Map.of()),
@@ -152,43 +160,46 @@ class SimpleQaAgentTest {
     }
 
     @Test
-    void prependsConversationHistoryWhenAttributePresent() {
-        List<String> prompts = new ArrayList<>();
-        SimpleQaAgent agent = new SimpleQaAgent((s, m) -> {
-            prompts.add(m);
+    void expandsConversationHistoryIntoNativeMessages() {
+        List<LlmRequest> requests = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, request) -> {
+            requests.add(request);
             return "ok";
         });
 
         agent.run(
                 new AgentRequest("s1", "那明天呢", Map.of(
-                        SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE,
+                        HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
                         "用户：今天几号\n助手：今天是 2026-08-19 星期三")),
                 InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 
-        assertThat(prompts).singleElement().satisfies(prompt -> {
-            assertThat(prompt).contains("用户：今天几号");
-            assertThat(prompt).contains("助手：今天是 2026-08-19 星期三");
-            assertThat(prompt).endsWith("当前问题：那明天呢");
-        });
+        // 历史展开为真正的 user/assistant 消息，当前输入保持在末尾。
+        assertThat(requests).singleElement().satisfies(request ->
+                assertThat(request.messages()).containsExactly(
+                        LlmMessage.user("今天几号"),
+                        LlmMessage.assistant("今天是 2026-08-19 星期三"),
+                        LlmMessage.user("那明天呢")));
     }
 
     @Test
     void keepsPlainObjectiveWithoutHistoryAttribute() {
-        List<String> prompts = new ArrayList<>();
-        SimpleQaAgent agent = new SimpleQaAgent((s, m) -> {
-            prompts.add(m);
+        List<LlmRequest> requests = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, request) -> {
+            requests.add(request);
             return "ok";
         });
 
         agent.run(
                 new AgentRequest("s1", "1+1 等于几", Map.of(
-                        SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE, "  ")),
+                        HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, "  ")),
                 InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 
-        assertThat(prompts).containsExactly("1+1 等于几");
+        assertThat(requests).singleElement()
+                .satisfies(request -> assertThat(request.messages())
+                        .containsExactly(LlmMessage.user("1+1 等于几")));
     }
 }

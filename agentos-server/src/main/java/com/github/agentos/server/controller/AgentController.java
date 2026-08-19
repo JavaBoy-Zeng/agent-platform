@@ -10,7 +10,7 @@ import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRunStatus;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
-import com.github.agentos.agent.loop.SimpleQaAgent;
+import com.github.agentos.planner.flow.HistoryProcessor;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.ResponseEntity;
@@ -177,7 +177,7 @@ public class AgentController {
                 request.attributes() == null ? Map.of() : request.attributes());
         // 注入会话历史：直答路径据此理解指代，规划路径随 attributes 进入规划上下文。
         sessionHistoryService.history(sessionId).ifPresent(history -> attributes.put(
-                SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE, history));
+                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, history));
         return new RunInvocation(
                 new AgentRequest(sessionId, request.input(), attributes),
                 new InvocationContext(teamId, userId, agentId, taskId));

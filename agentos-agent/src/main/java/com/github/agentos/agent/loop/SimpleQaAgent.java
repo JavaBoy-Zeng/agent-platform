@@ -9,9 +9,14 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.planner.ChatClient;
+import com.github.agentos.planner.flow.HistoryProcessor;
+import com.github.agentos.planner.flow.InstructionProcessor;
+import com.github.agentos.planner.flow.LlmFlow;
+import com.github.agentos.planner.flow.LlmRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -22,27 +27,42 @@ import java.util.Objects;
  * simple-qa 的请求派发到这里：单次轻量模型调用直接生成回答，
  * 不携带工具定义、不进入规划循环、不写记忆，最大限度降低首响延迟与 token 成本。
  * 出现失败时直接以失败状态结束，不降级回主 Agent。</p>
+ *
+ * <p>请求构造委托 {@link LlmFlow} 处理器链：指令注入与会话历史展开
+ * 各自独立可插拔，Agent 本身不再拼接 prompt。</p>
  */
 public final class SimpleQaAgent implements Agent, AgentLoop {
 
     /** 注册到 AgentRegistry 的稳定标识，供路由决策引用。 */
     public static final String ID = "simple-qa-agent";
 
-    /**
-     * {@link AgentRequest#attributes()} 中携带会话历史的键。
-     *
-     * <p>值为从早到晚排列的“用户/助手”多行文本；直答路径用它理解
-     * “那明天呢”这类依赖上一轮的指代。服务端在进入运行时前注入。</p>
-     */
-    public static final String CONVERSATION_HISTORY_ATTRIBUTE = "conversationHistory";
+    /** 直答路径的默认系统指令。 */
+    private static final String DEFAULT_INSTRUCTION = """
+            你是一个高效的中文助手。直接、准确地回答用户问题，不要编造事实。
+            如果问题需要实时信息、文件操作或外部工具才能回答，请明确说明你无法获取这类信息，
+            并建议用户描述完整任务后重试。
+            """;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SimpleQaAgent.class);
 
     private final ChatClient chatClient;
+    private final LlmFlow llmFlow;
 
-    /** 创建简单问答 Agent。 */
+    /** 创建使用默认指令与历史处理器的简单问答 Agent。 */
     public SimpleQaAgent(ChatClient chatClient) {
+        this(chatClient, defaultFlow());
+    }
+
+    /** 创建使用自定义请求构造链的简单问答 Agent。 */
+    public SimpleQaAgent(ChatClient chatClient, LlmFlow llmFlow) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
+        this.llmFlow = Objects.requireNonNull(llmFlow, "llmFlow must not be null");
+    }
+
+    private static LlmFlow defaultFlow() {
+        return new LlmFlow(List.of(
+                new InstructionProcessor(DEFAULT_INSTRUCTION),
+                new HistoryProcessor()));
     }
 
     @Override
@@ -85,10 +105,11 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
                 request.objective(),
                 Map.of("agentId", ID, "router", "direct-chat")));
         try {
+            LlmRequest llmRequest = llmFlow.build(request);
             java.util.concurrent.atomic.AtomicInteger deltaSequence = new java.util.concurrent.atomic.AtomicInteger();
             ChatClient.ChatResponse response = chatClient.chatStream(
                     request.sessionId(),
-                    directAnswerPrompt(request),
+                    llmRequest,
                     delta -> eventSink.emit(AgentRunEvent.of(
                             AgentRunEvent.Type.OUTPUT_DELTA,
                             request.sessionId(),
@@ -137,20 +158,5 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
                     Map.of("agentId", ID, "router", "direct-chat")));
             return runningState.fail(message);
         }
-    }
-
-    /**
-     * 构造直答 prompt：携带会话历史时把历史与当前问题拼接成单条用户消息，
-     * 让轻量直答模型也能解析上一轮的指代；无历史时保持原样，零额外 token。
-     */
-    private static String directAnswerPrompt(AgentRequest request) {
-        Object history = request.attributes().get(CONVERSATION_HISTORY_ATTRIBUTE);
-        if (history instanceof String text && !text.isBlank()) {
-            return "以下是当前会话之前的对话记录（从早到晚）：\n"
-                    + text
-                    + "\n\n请结合以上对话记录理解当前问题中的指代并直接回答。\n当前问题："
-                    + request.objective();
-        }
-        return request.objective();
     }
 }

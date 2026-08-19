@@ -3,6 +3,8 @@ package com.github.agentos.server.model;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.planner.ModelUsage;
 import com.github.agentos.planner.ModelUsageListener;
+import com.github.agentos.planner.flow.LlmMessage;
+import com.github.agentos.planner.flow.LlmRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -14,6 +16,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,21 +28,16 @@ import java.util.stream.Stream;
 /**
  * {@link ChatClient} adapter for OpenAI-compatible Chat Completions endpoints.
  *
- * <p>Unlike {@link OpenAiCompatibleModelClient}, this adapter sends a single
- * system-plus-user message pair without tool definitions or structured-output
- * constraints, so it is suited to the lightweight direct-answer path chosen by
- * intent routing. Supports SSE token streaming, usage parsing and an optional
- * {@link ModelUsageListener} for accounting.</p>
+ * <p>Unlike {@link OpenAiCompatibleModelClient}, this adapter sends the message
+ * sequence carried by {@link LlmRequest} without tool definitions or
+ * structured-output constraints, so it is suited to the lightweight direct-answer
+ * path chosen by intent routing. The system instruction comes from the request
+ * (agent identity), not from this client. Supports SSE token streaming, usage
+ * parsing and an optional {@link ModelUsageListener} for accounting.</p>
  */
 public final class OpenAiCompatibleChatClient implements ChatClient {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OpenAiCompatibleChatClient.class);
-
-    private static final String SYSTEM_PROMPT = """
-            你是一个高效的中文助手。直接、准确地回答用户问题，不要编造事实。
-            如果问题需要实时信息、文件操作或外部工具才能回答，请明确说明你无法获取这类信息，
-            并建议用户描述完整任务后重试。
-            """;
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -76,17 +74,15 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     }
 
     @Override
-    public String chat(String sessionId, String userMessage) {
-        return chatDetails(sessionId, userMessage).answer();
+    public String chat(String sessionId, LlmRequest request) {
+        return chatDetails(sessionId, request).answer();
     }
 
     @Override
-    public ChatResponse chatDetails(String sessionId, String userMessage) {
+    public ChatResponse chatDetails(String sessionId, LlmRequest request) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
-        if (userMessage == null || userMessage.isBlank()) {
-            throw new IllegalArgumentException("userMessage must not be blank");
-        }
-        HttpRequest httpRequest = createHttpRequest(sessionId, userMessage, false);
+        validateRequest(request);
+        HttpRequest httpRequest = createHttpRequest(sessionId, request, false);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-call] started sessionId={} model={} endpoint={}",
                 sessionId, properties.getEffectiveChatModel(), properties.getEndpoint());
@@ -118,13 +114,11 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
 
     @Override
     public ChatResponse chatStream(
-            String sessionId, String userMessage, Consumer<String> onDelta) {
+            String sessionId, LlmRequest request, Consumer<String> onDelta) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         Objects.requireNonNull(onDelta, "onDelta must not be null");
-        if (userMessage == null || userMessage.isBlank()) {
-            throw new IllegalArgumentException("userMessage must not be blank");
-        }
-        HttpRequest httpRequest = createHttpRequest(sessionId, userMessage, true);
+        validateRequest(request);
+        HttpRequest httpRequest = createHttpRequest(sessionId, request, true);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-stream] started sessionId={} model={}",
                 sessionId, properties.getEffectiveChatModel());
@@ -259,13 +253,18 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         }
     }
 
+    private static void validateRequest(LlmRequest request) {
+        Objects.requireNonNull(request, "request must not be null");
+        if (request.messages().isEmpty()) {
+            throw new IllegalArgumentException("request must contain at least one message");
+        }
+    }
+
     private HttpRequest createHttpRequest(
-            String sessionId, String userMessage, boolean stream) {
+            String sessionId, LlmRequest request, boolean stream) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", properties.getEffectiveChatModel());
-        body.put("messages", List.of(
-                Map.of("role", "system", "content", SYSTEM_PROMPT),
-                Map.of("role", "user", "content", userMessage)));
+        body.put("messages", requestMessages(request));
         if (stream) {
             body.put("stream", true);
             // 请求厂商在最后一个 SSE 块返回 usage；不支持的厂商会忽略该选项。
@@ -287,6 +286,20 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             builder.header("Authorization", "Bearer " + properties.getApiKey().trim());
         }
         return builder.build();
+    }
+
+    /** 把 LlmRequest 展开为厂商消息数组：可选 system 指令 + user/assistant 序列。 */
+    private static List<Map<String, Object>> requestMessages(LlmRequest request) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        request.instruction().ifPresent(instruction -> messages.add(
+                Map.of("role", "system", "content", instruction)));
+        for (LlmMessage message : request.messages()) {
+            messages.add(Map.of(
+                    "role", message.role().name().toLowerCase(
+                            java.util.Locale.ROOT),
+                    "content", message.content()));
+        }
+        return messages;
     }
 
     private JsonNode parseJson(String responseBody) {
