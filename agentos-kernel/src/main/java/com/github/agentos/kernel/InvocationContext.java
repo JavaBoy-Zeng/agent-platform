@@ -70,6 +70,14 @@ public record InvocationContext(
                 budget, invocation, eventPublisher);
     }
 
+    /** 返回切换执行 Agent 标识后的新上下文，供 Workflow Agent 派生子 Agent 作用域。 */
+    public InvocationContext withAgentId(String value) {
+        return new InvocationContext(teamId, userId,
+                Objects.requireNonNull(
+                        requireText(value, "agentId"), "agentId must not be null"),
+                taskId, session, budget, invocation, eventPublisher);
+    }
+
     /** 返回替换执行预算后的新上下文。 */
     public InvocationContext withBudget(AgentExecutionLimits value) {
         return new InvocationContext(teamId, userId, agentId, taskId,
