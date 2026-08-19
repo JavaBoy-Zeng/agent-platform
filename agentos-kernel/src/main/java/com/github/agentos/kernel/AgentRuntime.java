@@ -18,6 +18,7 @@ public final class AgentRuntime {
     private final AgentLoop agentLoop;
     private final AgentEventPublisher eventPublisher;
     private final CheckpointStore checkpointStore;
+    private final SessionService sessionService;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
@@ -41,28 +42,51 @@ public final class AgentRuntime {
     public AgentRuntime(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             CheckpointStore checkpointStore) {
-        this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
-        this.eventPublisher = Objects.requireNonNull(
-                eventPublisher, "eventPublisher must not be null");
-        this.checkpointStore = Objects.requireNonNull(
-                checkpointStore, "checkpointStore must not be null");
+        this(agentLoop, eventPublisher, checkpointStore, new InMemorySessionService());
     }
 
     /** 创建将事件同时发布给监听器并写入存储的 Agent 运行时。 */
     public AgentRuntime(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher, AgentEventStore eventStore) {
-        this(agentLoop, new CompositeAgentEventPublisher(java.util.List.of(
-                Objects.requireNonNull(eventPublisher, "eventPublisher must not be null"),
-                new StoringAgentEventPublisher(eventStore))), new InMemoryCheckpointStore());
+        this(agentLoop, eventPublisher, eventStore, new InMemoryCheckpointStore());
     }
 
     /** 创建同时使用 EventStore 与 CheckpointStore 的完整运行时。 */
     public AgentRuntime(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             AgentEventStore eventStore, CheckpointStore checkpointStore) {
-        this(agentLoop, new CompositeAgentEventPublisher(java.util.List.of(
+        this(agentLoop, eventPublisher, eventStore, checkpointStore,
+                new InMemorySessionService());
+    }
+
+    /** 创建使用指定会话服务的完整运行时；事件携带的状态增量会合并进会话状态。 */
+    public AgentRuntime(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore,
+            SessionService sessionService) {
+        this(agentLoop, storingPublisher(eventPublisher, eventStore),
+                checkpointStore, sessionService);
+    }
+
+    /** 规范构造：事件发布器已就绪（含落库通道），会话服务负责消费状态增量。 */
+    public AgentRuntime(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore, SessionService sessionService) {
+        this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
+        this.eventPublisher = Objects.requireNonNull(
+                eventPublisher, "eventPublisher must not be null");
+        this.checkpointStore = Objects.requireNonNull(
+                checkpointStore, "checkpointStore must not be null");
+        this.sessionService = Objects.requireNonNull(
+                sessionService, "sessionService must not be null");
+    }
+
+    private static AgentEventPublisher storingPublisher(
+            AgentEventPublisher eventPublisher, AgentEventStore eventStore) {
+        return new CompositeAgentEventPublisher(java.util.List.of(
                 Objects.requireNonNull(eventPublisher, "eventPublisher must not be null"),
-                new StoringAgentEventPublisher(eventStore))), checkpointStore);
+                new StoringAgentEventPublisher(Objects.requireNonNull(
+                        eventStore, "eventStore must not be null"))));
     }
 
     /**
@@ -111,8 +135,10 @@ public final class AgentRuntime {
                 context.taskId(), Instant.now());
         invocations.put(invocation.invocationId(), invocation);
         latestInvocationIds.put(request.sessionId(), invocation.invocationId());
-        AgentEventPublisher runPublisher = new CompositeAgentEventPublisher(java.util.List.of(
-                eventPublisher, invocationEventPublisher));
+        AgentEventPublisher runPublisher = new StateMergingEventPublisher(
+                new CompositeAgentEventPublisher(java.util.List.of(
+                        eventPublisher, invocationEventPublisher)),
+                sessionService);
         AgentContext invocationContext = context.withRuntime(invocation, runPublisher);
         return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
@@ -138,7 +164,8 @@ public final class AgentRuntime {
                 } else {
                     checkpointStore.delete(invocation.invocationId());
                 }
-                publishTerminal(invocationContext, result);
+                publishTerminal(invocationContext, result, terminalDelta(
+                        request, context.userId(), result.status()));
                 return result;
             } catch (RuntimeException exception) {
                 String message = exception.getMessage() == null
@@ -148,12 +175,14 @@ public final class AgentRuntime {
                         || exception instanceof java.util.concurrent.CancellationException) {
                     AgentState cancelled = running.cancel(message);
                     invocation.finish(cancelled);
-                    publishTerminal(invocationContext, cancelled);
+                    publishTerminal(invocationContext, cancelled, terminalDelta(
+                            request, context.userId(), cancelled.status()));
                     return cancelled;
                 }
                 AgentState failed = running.fail(message);
                 invocation.fail(exception);
-                publishTerminal(invocationContext, failed);
+                publishTerminal(invocationContext, failed, terminalDelta(
+                        request, context.userId(), failed.status()));
                 return failed;
             }
         });
@@ -205,10 +234,12 @@ public final class AgentRuntime {
             invocation.waitFor(pending);
         }
         invocation.resolve(resolution);
+        AgentEventPublisher resumePublisher = new StateMergingEventPublisher(
+                eventPublisher, sessionService);
         AgentContext context = new AgentContext(
                 checkpoint.teamId(), checkpoint.userId(), checkpoint.agentId(),
-                checkpoint.taskId()).withRuntime(invocation, eventPublisher);
-        publish(DefaultAgentEvent.of(
+                checkpoint.taskId()).withRuntime(invocation, resumePublisher);
+        publish(resumePublisher, DefaultAgentEvent.of(
                 context, AgentEventType.HUMAN_ACTION_RESOLVED,
                 resolution.approved() ? "人工操作已批准" : "人工操作已拒绝",
                 java.util.Map.of(
@@ -221,7 +252,9 @@ public final class AgentRuntime {
             invocation.finish(rejected);
             agentLoop.discard(checkpoint);
             checkpointStore.delete(invocationId);
-            publishTerminal(context, rejected);
+            publishTerminal(context, rejected, java.util.Map.of(
+                    "lastObjective", checkpoint.objective(),
+                    "lastStatus", rejected.status().name()));
             return rejected;
         }
         AgentRequest request = AgentRequest.of(checkpoint.sessionId(), checkpoint.objective());
@@ -239,7 +272,8 @@ public final class AgentRuntime {
                 saveCheckpoint(context, request, invocation);
             } else {
                 checkpointStore.delete(invocationId);
-                publishTerminal(context, result);
+                publishTerminal(context, result, terminalDelta(
+                        request, checkpoint.userId(), result.status()));
             }
             return result;
         });
@@ -280,7 +314,8 @@ public final class AgentRuntime {
                 DefaultAgentEvent.of(context, type, event.message(), event.data()));
     }
 
-    private void publishTerminal(AgentContext context, AgentState state) {
+    private void publishTerminal(
+            AgentContext context, AgentState state, java.util.Map<String, Object> stateDelta) {
         if (state.status() == AgentState.Status.WAITING) {
             return;
         }
@@ -288,7 +323,29 @@ public final class AgentRuntime {
                 ? AgentEventType.AGENT_COMPLETED : AgentEventType.AGENT_FAILED;
         String message = state.status() == AgentState.Status.COMPLETED ? state.output() : state.error();
         publish(context.eventPublisher(), DefaultAgentEvent.of(
-                context, type, message, java.util.Map.of("status", state.status().name())));
+                context, type, message, java.util.Map.of("status", state.status().name()),
+                EventActions.stateDelta(stateDelta)));
+    }
+
+    /**
+     * 构造一次用户请求轮次的终态增量：记录最近目标、最近状态与累计轮次。
+     *
+     * <p>轮次以“用户请求完成一个完整轮回”为单位计数，审批恢复不重复计数。
+     * 会话服务属于 Runtime 的观察面，读取失败时降级为不含轮次的增量。</p>
+     */
+    private java.util.Map<String, Object> terminalDelta(
+            AgentRequest request, String userId, AgentState.Status status) {
+        java.util.Map<String, Object> delta = new java.util.LinkedHashMap<>();
+        delta.put("lastObjective", request.objective());
+        delta.put("lastStatus", status.name());
+        try {
+            long turnCount = sessionService.getOrCreate(request.sessionId(), userId)
+                    .state().longValue("turnCount", 0) + 1;
+            delta.put("turnCount", turnCount);
+        } catch (RuntimeException ignored) {
+            // 会话状态不可用不影响运行结果本身。
+        }
+        return delta;
     }
 
     private void publish(AgentEvent event) {

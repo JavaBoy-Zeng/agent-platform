@@ -13,4 +13,9 @@ public interface AgentEvent {
     AgentEventType type();
     String message();
     Map<String, Object> data();
+
+    /** 事件附带的状态变更指令；默认无指令。 */
+    default EventActions actions() {
+        return EventActions.NONE;
+    }
 }

@@ -331,9 +331,11 @@ public class AgentOsConfiguration {
             RoutingAgentLoop routingAgentLoop,
             AgentEventPublisher agentEventPublisher,
             AgentEventStore agentEventStore,
-            CheckpointStore checkpointStore) {
+            CheckpointStore checkpointStore,
+            com.github.agentos.kernel.SessionService sessionService) {
         return new AgentRuntime(
-                routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore);
+                routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore,
+                sessionService);
     }
 
     /** 创建进程内领域事件发布器，后续可注册审计或遥测监听器。 */

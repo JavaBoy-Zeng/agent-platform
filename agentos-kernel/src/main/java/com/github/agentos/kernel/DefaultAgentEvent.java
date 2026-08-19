@@ -14,7 +14,22 @@ public record DefaultAgentEvent(
         Instant timestamp,
         AgentEventType type,
         String message,
-        Map<String, Object> data) implements AgentEvent {
+        Map<String, Object> data,
+        EventActions actions) implements AgentEvent {
+
+    /** 兼容不带动作的九字段构造。 */
+    public DefaultAgentEvent(
+            String eventId,
+            String sessionId,
+            String invocationId,
+            String agentId,
+            Instant timestamp,
+            AgentEventType type,
+            String message,
+            Map<String, Object> data) {
+        this(eventId, sessionId, invocationId, agentId, timestamp, type, message, data,
+                EventActions.NONE);
+    }
 
     /** 复制并校验事件字段。 */
     public DefaultAgentEvent {
@@ -26,18 +41,26 @@ public record DefaultAgentEvent(
         type = Objects.requireNonNull(type, "type must not be null");
         message = message == null ? "" : message;
         data = data == null ? Map.of() : Map.copyOf(data);
+        actions = actions == null ? EventActions.NONE : actions;
     }
 
-    /** 使用当前时间和随机事件标识创建领域事件。 */
+    /** 使用当前时间和随机事件标识创建无指令领域事件。 */
     public static DefaultAgentEvent of(
             AgentContext context, AgentEventType type, String message, Map<String, Object> data) {
+        return of(context, type, message, data, EventActions.NONE);
+    }
+
+    /** 使用当前时间和随机事件标识创建携带动作的领域事件。 */
+    public static DefaultAgentEvent of(
+            AgentContext context, AgentEventType type, String message,
+            Map<String, Object> data, EventActions actions) {
         Objects.requireNonNull(context, "context must not be null");
         if (context.invocation() == null) {
             throw new IllegalArgumentException("context must be bound to an invocation");
         }
         return new DefaultAgentEvent(
                 UUID.randomUUID().toString(), context.sessionId(), context.invocationId(),
-                context.agentId(), Instant.now(), type, message, data);
+                context.agentId(), Instant.now(), type, message, data, actions);
     }
 
     private static String requireText(String value, String field) {

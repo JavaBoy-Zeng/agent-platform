@@ -5,9 +5,12 @@ import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.CheckpointStore;
 import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.kernel.InMemoryCheckpointStore;
+import com.github.agentos.kernel.InMemorySessionService;
+import com.github.agentos.kernel.SessionService;
 import com.github.agentos.server.persistence.SqliteAgentEventStore;
 import com.github.agentos.server.persistence.SqliteCheckpointStore;
 import com.github.agentos.server.persistence.SqliteContinuationStore;
+import com.github.agentos.server.persistence.SqliteSessionService;
 import com.github.agentos.server.persistence.SqliteUsageStore;
 import com.github.agentos.server.usage.UsageStore;
 import org.slf4j.Logger;
@@ -97,6 +100,18 @@ public class PersistenceConfiguration {
             return new SqliteUsageStore(dataSource.getObject());
         }
         return new UsageStore.InMemoryUsageStore();
+    }
+
+    /** 会话服务：sqlite 落库，memory 留在进程内。 */
+    @Bean
+    SessionService sessionService(
+            @Value("${agentos.persistence.mode:memory}") String mode,
+            ObjectProvider<DataSource> dataSource,
+            ObjectMapper objectMapper) {
+        if (isSqlite(mode)) {
+            return new SqliteSessionService(dataSource.getObject(), objectMapper);
+        }
+        return new InMemorySessionService();
     }
 
     private static boolean isSqlite(String mode) {

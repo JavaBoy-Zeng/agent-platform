@@ -4,6 +4,7 @@ import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentEventType;
 import com.github.agentos.kernel.DefaultAgentEvent;
+import com.github.agentos.kernel.EventActions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -48,7 +49,8 @@ public final class SqliteAgentEventStore implements AgentEventStore {
                 PreparedStatement statement = connection.prepareStatement(
                         "INSERT OR REPLACE INTO agent_events "
                                 + "(event_id, session_id, invocation_id, agent_id, timestamp_ms, "
-                                + "type, message, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+                                + "type, message, data, actions) "
+                                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
             statement.setString(1, event.eventId());
             statement.setString(2, event.sessionId());
             statement.setString(3, event.invocationId());
@@ -57,6 +59,7 @@ public final class SqliteAgentEventStore implements AgentEventStore {
             statement.setString(6, event.type().name());
             statement.setString(7, event.message());
             statement.setString(8, objectMapper.writeValueAsString(event.data()));
+            statement.setString(9, objectMapper.writeValueAsString(event.actions()));
             statement.executeUpdate();
         } catch (SQLException | JacksonException exception) {
             LOGGER.warn("[event-store] append failed type={} eventId={} error={}",
@@ -79,7 +82,7 @@ public final class SqliteAgentEventStore implements AgentEventStore {
             throw new IllegalArgumentException(column + " must not be blank");
         }
         String sql = "SELECT event_id, session_id, invocation_id, agent_id, timestamp_ms, "
-                + "type, message, data FROM agent_events WHERE " + column
+                + "type, message, data, actions FROM agent_events WHERE " + column
                 + " = ? ORDER BY timestamp_ms, rowid";
         List<AgentEvent> events = new ArrayList<>();
         try (Connection connection = SqliteSupport.open(dataSource);
@@ -97,7 +100,8 @@ public final class SqliteAgentEventStore implements AgentEventStore {
                             result.getString(7),
                             objectMapper.readValue(
                                     result.getString(8),
-                                    new TypeReference<Map<String, Object>>() { })));
+                                    new TypeReference<Map<String, Object>>() { }),
+                            readActions(result.getString(9))));
                 }
             }
             return List.copyOf(events);
@@ -108,5 +112,12 @@ public final class SqliteAgentEventStore implements AgentEventStore {
                     "sqlite persistence failed while decoding event data: "
                             + exception.getMessage(), exception);
         }
+    }
+
+    private EventActions readActions(String json) throws JacksonException {
+        if (json == null || json.isBlank()) {
+            return EventActions.NONE;
+        }
+        return objectMapper.readValue(json, EventActions.class);
     }
 }

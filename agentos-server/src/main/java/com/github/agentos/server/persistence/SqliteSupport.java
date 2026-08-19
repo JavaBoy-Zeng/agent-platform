@@ -45,7 +45,8 @@ final class SqliteSupport {
                     timestamp_ms INTEGER NOT NULL,
                     type TEXT NOT NULL,
                     message TEXT NOT NULL,
-                    data TEXT NOT NULL
+                    data TEXT NOT NULL,
+                    actions TEXT NOT NULL DEFAULT '{}'
                 )
                 """,
                 "CREATE INDEX IF NOT EXISTS idx_agent_events_session "
@@ -73,6 +74,15 @@ final class SqliteSupport {
                     prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     completion_tokens INTEGER NOT NULL DEFAULT 0
                 )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    last_active_at_ms INTEGER NOT NULL
+                )
                 """
         };
         try (Connection connection = open(dataSource);
@@ -81,8 +91,18 @@ final class SqliteSupport {
             for (String sql : ddl) {
                 statement.execute(sql);
             }
+            upgradeLegacyEventTable(statement);
         } catch (SQLException exception) {
             throw failure("initializing schema", exception);
+        }
+    }
+
+    /** 为旧库的 agent_events 补充 actions 列；列已存在时忽略报错。 */
+    private static void upgradeLegacyEventTable(Statement statement) {
+        try {
+            statement.execute("ALTER TABLE agent_events ADD COLUMN actions TEXT NOT NULL DEFAULT '{}'");
+        } catch (SQLException ignored) {
+            // 列已存在或表为新建结构，无需升级。
         }
     }
 }
