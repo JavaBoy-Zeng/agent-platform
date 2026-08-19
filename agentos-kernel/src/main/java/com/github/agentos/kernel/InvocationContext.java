@@ -6,8 +6,9 @@ import java.util.Objects;
  * 一次 Agent Invocation 的运行环境。
  *
  * <p>Runner 在执行边界负责组装该上下文：绑定 {@link Session} 快照、执行预算
- * {@link AgentExecutionLimits}、{@link AgentInvocation} 与领域事件发布器；
- * 执行链（策略、规划器、工具）统一从这里读取运行世界，而不是各自接收散参。</p>
+ * {@link AgentExecutionLimits}、{@link AgentInvocation}、领域事件发布器与
+ * {@link CancellationToken}；执行链（策略、规划器、工具）统一从这里读取运行世界，
+ * 而不是各自接收散参。</p>
  *
  * <p>用户目标、会话标识和请求属性属于 {@link AgentRequest}，不在上下文中重复保存。</p>
  *
@@ -19,6 +20,7 @@ import java.util.Objects;
  * @param budget 本次运行的累计资源预算
  * @param invocation 本次运行记录；Runner 注入前为 {@code null}
  * @param eventPublisher 领域事件发布器
+ * @param cancellation 本次运行的协作式取消令牌
  */
 public record InvocationContext(
         String teamId,
@@ -28,11 +30,27 @@ public record InvocationContext(
         Session session,
         AgentExecutionLimits budget,
         AgentInvocation invocation,
-        AgentEventPublisher eventPublisher) {
+        AgentEventPublisher eventPublisher,
+        CancellationToken cancellation) {
+
+    /** 兼容无令牌构造：创建一个永不取消的令牌。 */
+    public InvocationContext(
+            String teamId,
+            String userId,
+            String agentId,
+            String taskId,
+            Session session,
+            AgentExecutionLimits budget,
+            AgentInvocation invocation,
+            AgentEventPublisher eventPublisher) {
+        this(teamId, userId, agentId, taskId, session, budget, invocation, eventPublisher,
+                CancellationToken.notCancelled());
+    }
 
     /** 调用方仅提供身份作用域，会话、预算与 Invocation 由 Runner 在执行边界注入。 */
     public InvocationContext(String teamId, String userId, String agentId, String taskId) {
-        this(teamId, userId, agentId, taskId, null, null, null, AgentEventPublisher.NOOP);
+        this(teamId, userId, agentId, taskId, null, null, null, AgentEventPublisher.NOOP,
+                CancellationToken.notCancelled());
     }
 
     /**
@@ -47,6 +65,7 @@ public record InvocationContext(
         taskId = taskId == null ? "" : taskId.trim();
         budget = budget == null ? AgentExecutionLimits.defaults() : budget;
         eventPublisher = eventPublisher == null ? AgentEventPublisher.NOOP : eventPublisher;
+        cancellation = cancellation == null ? CancellationToken.notCancelled() : cancellation;
     }
 
     /** 创建默认团队和用户作用域下的 Invocation 上下文。 */
@@ -67,7 +86,7 @@ public record InvocationContext(
     public InvocationContext withSession(Session value) {
         return new InvocationContext(teamId, userId, agentId, taskId,
                 Objects.requireNonNull(value, "session must not be null"),
-                budget, invocation, eventPublisher);
+                budget, invocation, eventPublisher, cancellation);
     }
 
     /** 返回切换执行 Agent 标识后的新上下文，供 Workflow Agent 派生子 Agent 作用域。 */
@@ -75,7 +94,7 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId,
                 Objects.requireNonNull(
                         requireText(value, "agentId"), "agentId must not be null"),
-                taskId, session, budget, invocation, eventPublisher);
+                taskId, session, budget, invocation, eventPublisher, cancellation);
     }
 
     /** 返回替换执行预算后的新上下文。 */
@@ -83,7 +102,7 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId, agentId, taskId,
                 session,
                 Objects.requireNonNull(value, "budget must not be null"),
-                invocation, eventPublisher);
+                invocation, eventPublisher, cancellation);
     }
 
     /** 返回同时绑定 Invocation 与 Runner 领域事件发布器的新上下文。 */
@@ -92,7 +111,8 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId, agentId, taskId,
                 session, budget,
                 Objects.requireNonNull(value, "invocation must not be null"),
-                Objects.requireNonNull(publisher, "publisher must not be null"));
+                Objects.requireNonNull(publisher, "publisher must not be null"),
+                cancellation);
     }
 
     /** 返回绑定指定 Invocation 的新上下文。 */
@@ -100,7 +120,14 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId, agentId, taskId,
                 session, budget,
                 Objects.requireNonNull(value, "invocation must not be null"),
-                eventPublisher);
+                eventPublisher, cancellation);
+    }
+
+    /** 返回绑定指定取消令牌的新上下文。 */
+    public InvocationContext withCancellation(CancellationToken value) {
+        return new InvocationContext(teamId, userId, agentId, taskId,
+                session, budget, invocation, eventPublisher,
+                Objects.requireNonNull(value, "cancellation must not be null"));
     }
 
     /** 返回 Runner 注入的 Invocation 标识，未进入 Runner 时返回空字符串。 */
@@ -116,6 +143,16 @@ public record InvocationContext(
     /** 返回本次运行的结构化会话状态；会话未注入时返回空状态。 */
     public SessionState sessionState() {
         return session == null ? SessionState.empty() : session.state();
+    }
+
+    /** 已请求取消时抛出 {@link java.util.concurrent.CancellationException}。 */
+    public void throwIfCancelled() {
+        cancellation.throwIfCancelled();
+    }
+
+    /** 返回是否已请求取消本次运行。 */
+    public boolean isCancelled() {
+        return cancellation.isCancelled();
     }
 
     private static String requireText(String value, String field) {

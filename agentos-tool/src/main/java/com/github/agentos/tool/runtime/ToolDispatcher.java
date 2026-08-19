@@ -50,6 +50,13 @@ public final class ToolDispatcher {
         }
         ToolContext context = contextFactory.create(tool);
         publish(context, AgentEventType.TOOL_CALL_STARTED, "工具调用开始", call, null, EventActions.NONE);
+        if (context.invocation().cancellation().isCancelled()) {
+            // 已取消的运行不再启动工具；发布失败事件保持事件流成对出现。
+            String reason = context.invocation().cancellation().reason()
+                    .map(text -> ": " + text).orElse("");
+            return publishResult(context, call, ToolResult.failure(
+                    ToolFailureType.CANCELLED, "run cancelled" + reason));
+        }
         try {
             for (ToolInterceptor interceptor : interceptors) {
                 ToolBeforeResult before = Objects.requireNonNull(

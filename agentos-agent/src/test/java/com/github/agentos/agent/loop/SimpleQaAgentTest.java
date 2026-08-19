@@ -114,7 +114,7 @@ class SimpleQaAgentTest {
                 onDelta.accept("是一门语言。");
                 return new ChatResponse(
                         "Java 是一门语言。",
-                        new com.github.agentos.planner.ModelUsage("test-model", 12, 8));
+                        new com.github.agentos.kernel.ModelUsage("test-model", 12, 8));
             }
         };
         SimpleQaAgent agent = new SimpleQaAgent(streamingClient);

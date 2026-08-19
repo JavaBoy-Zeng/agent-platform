@@ -13,7 +13,7 @@ public final class DefaultFailureClassifier implements FailureClassifier {
         ToolFailureType type = context.failure().failureType();
         return switch (type) {
             case ACCESS_DENIED, PERMISSION_DENIED, SECURITY_DENIED,
-                    TOOL_INTERNAL_ERROR, UNKNOWN, NONE -> FailureDecision.abort();
+                    TOOL_INTERNAL_ERROR, UNKNOWN, NONE, CANCELLED -> FailureDecision.abort();
             case TRANSIENT, TIMEOUT -> context.priorRetries() == 0
                     ? FailureDecision.retry()
                     : optionalOrReplan(context, ReplanReason.RECOVERABLE_FAILURE);

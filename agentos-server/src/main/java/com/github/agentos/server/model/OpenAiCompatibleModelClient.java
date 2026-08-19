@@ -283,7 +283,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             long completion = usage.path("completion_tokens").asLong(0);
             if (prompt > 0 || completion > 0) {
                 usageListener.onUsage(request.agentRequest().sessionId(),
-                        new com.github.agentos.planner.ModelUsage(
+                        new com.github.agentos.kernel.ModelUsage(
                                 properties.getModel(), prompt, completion));
             }
         } catch (RuntimeException exception) {

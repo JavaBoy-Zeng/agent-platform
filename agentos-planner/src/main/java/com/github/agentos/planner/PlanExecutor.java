@@ -62,7 +62,7 @@ public final class PlanExecutor {
         if (plan.outcome() != PlanOutcome.CONTINUE) {
             throw new IllegalArgumentException("only CONTINUE plan can be executed");
         }
-        if (Thread.currentThread().isInterrupted()) {
+        if (cancelled(context)) {
             return ExecutionResult.cancelled(plan.id(), List.of(), null, null, 0, 0);
         }
         if (remainingStepCount < plan.steps().size()) {
@@ -83,7 +83,7 @@ public final class PlanExecutor {
         StepResult lastResult = null;
 
         for (int index = 0; index < plan.steps().size(); index++) {
-            if (Thread.currentThread().isInterrupted()) {
+            if (cancelled(context)) {
                 return ExecutionResult.cancelled(
                         plan.id(), results, lastStep, lastResult, processedSteps, toolCalls);
             }
@@ -147,7 +147,7 @@ public final class PlanExecutor {
                         context.invocation().incrementToolCalls();
                     }
                 }
-                if (Thread.currentThread().isInterrupted()) {
+                if (cancelled(context)) {
                     return ExecutionResult.cancelled(
                             plan.id(), results, step, lastResult, processedSteps, toolCalls);
                 }
@@ -235,6 +235,11 @@ public final class PlanExecutor {
                 "[agent-step] finished sessionId={} planId={} stepId={} status={} failureType={} attempts={} error={} durationMs={}",
                 request.sessionId(), plan.id(), step.id(), result.status(), result.failureType(),
                 result.attempts(), logValue(result.error()), elapsedMillis(started));
+    }
+
+    /** 协作式取消检查：优先取消令牌，线程中断作为阻塞 I/O 的兜底通道。 */
+    private static boolean cancelled(InvocationContext context) {
+        return context.cancellation().isCancelled() || Thread.currentThread().isInterrupted();
     }
 
     private static void emit(AgentEventSink eventSink, AgentRunEvent event) {

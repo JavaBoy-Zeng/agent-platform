@@ -1,6 +1,6 @@
 package com.github.agentos.server.usage;
 
-import com.github.agentos.planner.ModelUsage;
+import com.github.agentos.kernel.ModelUsage;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,9 +12,9 @@ class UsageRecorderTest {
 
     @Test
     void accumulatesUsagePerSession() {
-        recorder.onUsage("s1", new ModelUsage("model-a", 100, 50));
-        recorder.onUsage("s1", new ModelUsage("model-a", 200, 150));
-        recorder.onUsage("s2", new ModelUsage("model-b", 10, 5));
+        recorder.onModelUsage("s1", new ModelUsage("model-a", 100, 50));
+        recorder.onModelUsage("s1", new ModelUsage("model-a", 200, 150));
+        recorder.onModelUsage("s2", new ModelUsage("model-b", 10, 5));
 
         UsageStore.SessionUsage s1 = recorder.summary("s1");
         assertThat(s1.modelCalls()).isEqualTo(2);
@@ -34,8 +34,8 @@ class UsageRecorderTest {
 
     @Test
     void ignoresBlankSessionId() {
-        recorder.onUsage(null, new ModelUsage("m", 1, 1));
-        recorder.onUsage(" ", new ModelUsage("m", 1, 1));
+        recorder.onModelUsage(null, new ModelUsage("m", 1, 1));
+        recorder.onModelUsage(" ", new ModelUsage("m", 1, 1));
 
         assertThat(recorder.summary(" ")).extracting(
                 UsageStore.SessionUsage::modelCalls).isEqualTo(0L);

@@ -6,6 +6,8 @@ package com.github.agentos.tool.api;
 public enum ToolFailureType {
     /** 没有失败。 */
     NONE,
+    /** 运行已被用户取消，工具未执行或中途终止。 */
+    CANCELLED,
     /** 工具参数不合法。 */
     INVALID_ARGUMENT,
     /** 目标资源不存在。 */

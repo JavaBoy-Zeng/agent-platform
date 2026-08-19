@@ -1,5 +1,7 @@
 package com.github.agentos.planner;
 
+import com.github.agentos.kernel.ModelUsage;
+
 /**
  * 模型用量监听器。
  *

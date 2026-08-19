@@ -97,6 +97,8 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
             AgentEventSink eventSink) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(eventSink, "eventSink must not be null");
+        // 直答路径唯一的协作点：调用模型前感知取消，交给 catch 收敛为 CANCELLED。
+        context.cancellation().throwIfCancelled();
         long started = System.nanoTime();
         LOGGER.info("[simple-qa] started sessionId={}", request.sessionId());
         eventSink.emit(AgentRunEvent.of(
@@ -139,7 +141,8 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();
-            if (Thread.currentThread().isInterrupted()
+            if (context.isCancelled()
+                    || Thread.currentThread().isInterrupted()
                     || exception instanceof java.util.concurrent.CancellationException) {
                 LOGGER.info("[simple-qa] cancelled sessionId={}", request.sessionId());
                 eventSink.emit(AgentRunEvent.of(

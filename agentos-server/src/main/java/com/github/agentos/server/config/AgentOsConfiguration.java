@@ -325,6 +325,7 @@ public class AgentOsConfiguration {
      * @param routingAgentLoop 意图路由 Agent 循环；具体行为见 {@link RoutingAgentLoop}
      * @param checkpointStore 审批恢复 Checkpoint 存储
      * @param agentExecutionLimits 单次运行累计执行预算
+     * @param pluginManager 横切能力插件集合（记账、追踪等）
      * @return Agent 运行器
      */
     @Bean
@@ -334,10 +335,35 @@ public class AgentOsConfiguration {
             AgentEventStore agentEventStore,
             CheckpointStore checkpointStore,
             com.github.agentos.kernel.SessionService sessionService,
-            AgentExecutionLimits agentExecutionLimits) {
+            AgentExecutionLimits agentExecutionLimits,
+            com.github.agentos.kernel.AgentPluginManager pluginManager) {
         return new AgentRunner(
                 routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore,
-                sessionService, agentExecutionLimits);
+                sessionService, agentExecutionLimits, pluginManager);
+    }
+
+    /**
+     * 装配横切能力插件集合。
+     *
+     * <p>容器内全部 {@link com.github.agentos.kernel.AgentPlugin} 按依赖顺序接入，
+     * 在 Runner 执行边界与用量回调点统一分发。</p>
+     */
+    @Bean
+    com.github.agentos.kernel.AgentPluginManager agentPluginManager(
+            java.util.List<com.github.agentos.kernel.AgentPlugin> plugins) {
+        return com.github.agentos.kernel.AgentPluginManager.of(plugins);
+    }
+
+    /**
+     * 把插件集合适配为模型用量监听器，供两个模型客户端注入。
+     *
+     * <p>客户端回调经 {@code AgentPluginManager} 分发到记账等插件，
+     * 单个插件异常被隔离，不影响模型调用链。</p>
+     */
+    @Bean
+    com.github.agentos.planner.ModelUsageListener modelUsageListener(
+            com.github.agentos.kernel.AgentPluginManager pluginManager) {
+        return pluginManager::onModelUsage;
     }
 
     /** 创建进程内领域事件发布器，后续可注册审计或遥测监听器。 */

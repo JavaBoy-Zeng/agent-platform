@@ -11,12 +11,16 @@ import java.util.concurrent.ConcurrentMap;
  * 全系统真正的 Agent 执行入口（Runner）。
  *
  * <p>Runner 在执行边界组装 {@link InvocationContext}：查找或创建 {@link Session}、
- * 绑定执行预算 {@link AgentExecutionLimits} 与 {@link AgentInvocation}，
- * 再交给 {@link AgentLoop} 执行。事件携带的状态增量由
+ * 绑定执行预算 {@link AgentExecutionLimits}、{@link AgentInvocation} 与
+ * {@link CancellationToken}，再交给 {@link AgentLoop} 执行。事件携带的状态增量由
  * {@link StateMergingEventPublisher} 统一合并进会话状态。</p>
  *
  * <p>运行时按 {@code sessionId} 保存最新状态，并通过并发 Map 的原子计算保证同一会话的
  * 状态更新串行执行。业务循环抛出的运行时异常会被转换为失败状态，避免异常越过运行边界。</p>
+ *
+ * <p>横切能力经 {@link AgentPluginManager} 接入：执行边界触发生命周期钩子，
+ * 领域事件发布时通知插件观察。外部通过 {@link #cancel(String, String)} 请求协作式取消，
+ * 令牌随 {@link InvocationContext} 传播到执行链各协作点。</p>
  */
 public final class AgentRunner {
 
@@ -25,9 +29,12 @@ public final class AgentRunner {
     private final CheckpointStore checkpointStore;
     private final SessionService sessionService;
     private final AgentExecutionLimits budget;
+    private final AgentPluginManager plugins;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CancellationToken> activeCancellations =
+            new ConcurrentHashMap<>();
 
     /**
      * 创建 Agent Runner。
@@ -79,7 +86,17 @@ public final class AgentRunner {
             AgentEventStore eventStore, CheckpointStore checkpointStore,
             SessionService sessionService, AgentExecutionLimits budget) {
         this(agentLoop, storingPublisher(eventPublisher, eventStore),
-                checkpointStore, sessionService, budget);
+                checkpointStore, sessionService, budget, AgentPluginManager.empty());
+    }
+
+    /** 创建带事件落库、会话服务、执行预算与插件的完整 Runner。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore,
+            SessionService sessionService, AgentExecutionLimits budget,
+            AgentPluginManager plugins) {
+        this(agentLoop, storingPublisher(eventPublisher, eventStore),
+                checkpointStore, sessionService, budget, plugins);
     }
 
     /** 规范构造：事件发布器已就绪（含落库通道），会话服务负责消费状态增量。 */
@@ -95,6 +112,15 @@ public final class AgentRunner {
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             CheckpointStore checkpointStore, SessionService sessionService,
             AgentExecutionLimits budget) {
+        this(agentLoop, eventPublisher, checkpointStore, sessionService, budget,
+                AgentPluginManager.empty());
+    }
+
+    /** 完整构造：额外指定横切能力插件集合。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore, SessionService sessionService,
+            AgentExecutionLimits budget, AgentPluginManager plugins) {
         this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
         this.eventPublisher = Objects.requireNonNull(
                 eventPublisher, "eventPublisher must not be null");
@@ -103,6 +129,7 @@ public final class AgentRunner {
         this.sessionService = Objects.requireNonNull(
                 sessionService, "sessionService must not be null");
         this.budget = Objects.requireNonNull(budget, "budget must not be null");
+        this.plugins = Objects.requireNonNull(plugins, "plugins must not be null");
     }
 
     private static AgentEventPublisher storingPublisher(
@@ -159,58 +186,71 @@ public final class AgentRunner {
                 context.taskId(), Instant.now());
         invocations.put(invocation.invocationId(), invocation);
         latestInvocationIds.put(request.sessionId(), invocation.invocationId());
+        CancellationToken token = CancellationToken.notCancelled();
         AgentEventPublisher runPublisher = new StateMergingEventPublisher(
                 new CompositeAgentEventPublisher(java.util.List.of(
-                        eventPublisher, invocationEventPublisher)),
+                        eventPublisher, invocationEventPublisher, plugins)),
                 sessionService);
         InvocationContext invocationContext = bind(request, context)
-                .withRuntime(invocation, runPublisher);
-        return states.compute(request.sessionId(), (sessionId, previous) -> {
-            AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
-            invocation.start();
-            publish(runPublisher, DefaultAgentEvent.of(
-                    invocationContext, AgentEventType.AGENT_STARTED, request.objective(),
-                    java.util.Map.of("taskId", context.taskId(), "iteration", running.iteration())));
-            AgentEventSink publishingSink = event -> {
-                eventSink.emit(event);
-                mapLegacyEvent(invocationContext, event)
-                        .ifPresent(domainEvent -> publish(runPublisher, domainEvent));
-            };
-            try {
-                AgentState result = Objects.requireNonNull(
-                        agentLoop.run(request, invocationContext, running, publishingSink),
-                        "agentLoop returned null state");
-                if (result.status() == AgentState.Status.RUNNING) {
-                    result = result.fail("agent loop finished without a terminal state");
+                .withRuntime(invocation, runPublisher)
+                .withCancellation(token);
+        plugins.beforeRun(request, invocationContext);
+        activeCancellations.put(request.sessionId(), token);
+        AgentState result;
+        try {
+            result = states.compute(request.sessionId(), (sessionId, previous) -> {
+                AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
+                invocation.start();
+                publish(runPublisher, DefaultAgentEvent.of(
+                        invocationContext, AgentEventType.AGENT_STARTED, request.objective(),
+                        java.util.Map.of("taskId", context.taskId(), "iteration", running.iteration())));
+                AgentEventSink publishingSink = event -> {
+                    eventSink.emit(event);
+                    mapLegacyEvent(invocationContext, event)
+                            .ifPresent(domainEvent -> publish(runPublisher, domainEvent));
+                };
+                try {
+                    AgentState executed = Objects.requireNonNull(
+                            agentLoop.run(request, invocationContext, running, publishingSink),
+                            "agentLoop returned null state");
+                    if (executed.status() == AgentState.Status.RUNNING) {
+                        executed = executed.fail("agent loop finished without a terminal state");
+                    }
+                    invocation.finish(executed);
+                    if (executed.status() == AgentState.Status.WAITING) {
+                        saveCheckpoint(invocationContext, request, invocation);
+                    } else {
+                        checkpointStore.delete(invocation.invocationId());
+                    }
+                    publishTerminal(invocationContext, executed, terminalDelta(
+                            request, context.userId(), executed.status()));
+                    return executed;
+                } catch (RuntimeException exception) {
+                    String message = exception.getMessage() == null
+                            ? exception.getClass().getSimpleName()
+                            : exception.getMessage();
+                    if (token.isCancelled()
+                            || Thread.currentThread().isInterrupted()
+                            || exception instanceof java.util.concurrent.CancellationException) {
+                        AgentState cancelled = running.cancel(message);
+                        invocation.finish(cancelled);
+                        publishTerminal(invocationContext, cancelled, terminalDelta(
+                                request, context.userId(), cancelled.status()));
+                        return cancelled;
+                    }
+                    plugins.onRunError(request, invocationContext, exception);
+                    AgentState failed = running.fail(message);
+                    invocation.fail(exception);
+                    publishTerminal(invocationContext, failed, terminalDelta(
+                            request, context.userId(), failed.status()));
+                    return failed;
                 }
-                invocation.finish(result);
-                if (result.status() == AgentState.Status.WAITING) {
-                    saveCheckpoint(invocationContext, request, invocation);
-                } else {
-                    checkpointStore.delete(invocation.invocationId());
-                }
-                publishTerminal(invocationContext, result, terminalDelta(
-                        request, context.userId(), result.status()));
-                return result;
-            } catch (RuntimeException exception) {
-                String message = exception.getMessage() == null
-                        ? exception.getClass().getSimpleName()
-                        : exception.getMessage();
-                if (Thread.currentThread().isInterrupted()
-                        || exception instanceof java.util.concurrent.CancellationException) {
-                    AgentState cancelled = running.cancel(message);
-                    invocation.finish(cancelled);
-                    publishTerminal(invocationContext, cancelled, terminalDelta(
-                            request, context.userId(), cancelled.status()));
-                    return cancelled;
-                }
-                AgentState failed = running.fail(message);
-                invocation.fail(exception);
-                publishTerminal(invocationContext, failed, terminalDelta(
-                        request, context.userId(), failed.status()));
-                return failed;
-            }
-        });
+            });
+        } finally {
+            activeCancellations.remove(request.sessionId(), token);
+        }
+        plugins.afterRun(request, invocationContext, result);
+        return result;
     }
 
     /** Runner 在执行边界组装 InvocationContext：注入执行预算与当前会话快照。 */
@@ -275,18 +315,22 @@ public final class AgentRunner {
             invocation.waitFor(pending);
         }
         invocation.resolve(resolution);
+        CancellationToken token = CancellationToken.notCancelled();
         AgentEventPublisher resumePublisher = new StateMergingEventPublisher(
-                eventPublisher, sessionService);
+                new CompositeAgentEventPublisher(java.util.List.of(eventPublisher, plugins)),
+                sessionService);
         AgentRequest request = AgentRequest.of(checkpoint.sessionId(), checkpoint.objective());
         InvocationContext context = bind(request, new InvocationContext(
                 checkpoint.teamId(), checkpoint.userId(), checkpoint.agentId(),
-                checkpoint.taskId())).withRuntime(invocation, resumePublisher);
+                checkpoint.taskId())).withRuntime(invocation, resumePublisher)
+                .withCancellation(token);
         publish(resumePublisher, DefaultAgentEvent.of(
                 context, AgentEventType.HUMAN_ACTION_RESOLVED,
                 resolution.approved() ? "人工操作已批准" : "人工操作已拒绝",
                 java.util.Map.of(
                         "pendingActionId", resolution.pendingActionId(),
                         "approved", resolution.approved())));
+        plugins.beforeRun(request, context);
         if (!resolution.approved()) {
             AgentState rejected = states.getOrDefault(
                     checkpoint.sessionId(), AgentState.ready()).fail("human approval rejected");
@@ -297,27 +341,60 @@ public final class AgentRunner {
             publishTerminal(context, rejected, java.util.Map.of(
                     "lastObjective", checkpoint.objective(),
                     "lastStatus", rejected.status().name()));
+            plugins.afterRun(request, context, rejected);
             return rejected;
         }
-        return states.compute(checkpoint.sessionId(), (sessionId, previous) -> {
-            AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
-            invocation.start();
-            AgentEventSink publishingSink = event -> {
-                eventSink.emit(event);
-                mapLegacyEvent(context, event).ifPresent(this::publish);
-            };
-            AgentState result = agentLoop.resume(
-                    request, context, running, checkpoint, resolution, publishingSink);
-            invocation.finish(result);
-            if (result.status() == AgentState.Status.WAITING) {
-                saveCheckpoint(context, request, invocation);
-            } else {
-                checkpointStore.delete(invocationId);
-                publishTerminal(context, result, terminalDelta(
-                        request, checkpoint.userId(), result.status()));
-            }
-            return result;
-        });
+        activeCancellations.put(checkpoint.sessionId(), token);
+        AgentState result;
+        try {
+            result = states.compute(checkpoint.sessionId(), (sessionId, previous) -> {
+                AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
+                invocation.start();
+                AgentEventSink publishingSink = event -> {
+                    eventSink.emit(event);
+                    mapLegacyEvent(context, event).ifPresent(this::publish);
+                };
+                AgentState resumed = agentLoop.resume(
+                        request, context, running, checkpoint, resolution, publishingSink);
+                invocation.finish(resumed);
+                if (resumed.status() == AgentState.Status.WAITING) {
+                    saveCheckpoint(context, request, invocation);
+                } else {
+                    checkpointStore.delete(invocationId);
+                    publishTerminal(context, resumed, terminalDelta(
+                            request, checkpoint.userId(), resumed.status()));
+                }
+                return resumed;
+            });
+        } catch (RuntimeException exception) {
+            plugins.onRunError(request, context, exception);
+            throw exception;
+        } finally {
+            activeCancellations.remove(checkpoint.sessionId(), token);
+        }
+        plugins.afterRun(request, context, result);
+        return result;
+    }
+
+    /**
+     * 请求取消指定会话当前正在执行的 Invocation。
+     *
+     * <p>设置协作式取消令牌后立即返回，不等待执行链退出；执行链在下一个协作点
+     * （计划步骤边界、工具调用边界、直答调用边界）感知并收敛为 CANCELLED 终态。
+     * 阻塞在 I/O 上的执行仍需调用方配合线程中断。</p>
+     *
+     * @param sessionId 会话标识
+     * @param cancelReason 取消原因
+     * @return 会话确有正在执行的 Invocation 时返回 {@code true}
+     */
+    public boolean cancel(String sessionId, String cancelReason) {
+        Objects.requireNonNull(sessionId, "sessionId must not be null");
+        CancellationToken token = activeCancellations.get(sessionId);
+        if (token == null) {
+            return false;
+        }
+        token.cancel(cancelReason);
+        return true;
     }
 
     /** 按 Invocation 标识查询当前 Checkpoint。 */

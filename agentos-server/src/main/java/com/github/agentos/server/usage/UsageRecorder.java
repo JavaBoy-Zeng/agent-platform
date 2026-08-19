@@ -1,21 +1,21 @@
 package com.github.agentos.server.usage;
 
-import com.github.agentos.planner.ModelUsage;
-import com.github.agentos.planner.ModelUsageListener;
+import com.github.agentos.kernel.AgentPlugin;
+import com.github.agentos.kernel.ModelUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 按会话累计模型 token 用量的记账器。
+ * 按会话累计模型 token 用量的记账插件。
  *
- * <p>同时作为 {@link ModelUsageListener} 接入两个模型客户端，
- * 规划路径与直答路径的用量都汇入同一会话账本，用于量化
- * 意图分级等优化的实际收益。实际累计由可替换的 {@link UsageStore} 完成，
- * 内存或 SQLite 实现均可用。</p>
+ * <p>作为第一个 {@link AgentPlugin} 接入插件体系：模型客户端的用量回调经
+ * {@code AgentPluginManager} 分发到这里，规划路径与直答路径的用量都汇入
+ * 同一会话账本，用于量化意图分级等优化的实际收益。实际累计由可替换的
+ * {@link UsageStore} 完成，内存或 SQLite 实现均可用。</p>
  */
 @Component
-public final class UsageRecorder implements ModelUsageListener {
+public final class UsageRecorder implements AgentPlugin {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(UsageRecorder.class);
 
@@ -26,9 +26,14 @@ public final class UsageRecorder implements ModelUsageListener {
         this.store = java.util.Objects.requireNonNull(store, "store must not be null");
     }
 
+    @Override
+    public String name() {
+        return "usage-recorder";
+    }
+
     /** 记录一次调用并累计到会话账本。 */
     @Override
-    public void onUsage(String sessionId, ModelUsage usage) {
+    public void onModelUsage(String sessionId, ModelUsage usage) {
         if (sessionId == null || sessionId.isBlank() || usage == null) {
             return;
         }

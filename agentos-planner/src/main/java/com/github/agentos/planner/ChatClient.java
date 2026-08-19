@@ -1,5 +1,6 @@
 package com.github.agentos.planner;
 
+import com.github.agentos.kernel.ModelUsage;
 import com.github.agentos.planner.flow.LlmRequest;
 
 import java.util.Objects;

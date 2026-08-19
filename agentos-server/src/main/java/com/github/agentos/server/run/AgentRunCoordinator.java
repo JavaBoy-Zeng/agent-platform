@@ -102,16 +102,23 @@ public final class AgentRunCoordinator {
         return Optional.of(emitter);
     }
 
-    /** 显式请求取消指定 run，不受页面连接状态影响。 */
+    /**
+     * 显式请求取消指定 run，不受页面连接状态影响。
+     *
+     * <p>双通道取消：先设置 Runner 的协作式令牌（步骤/工具边界感知），
+     * 再中断执行线程（唤醒阻塞 I/O）；任一通道命中即视为取消已受理。</p>
+     */
     public Optional<CancelResult> cancel(String runId) {
         ManagedRun run = runs.get(requireText(runId, "runId"));
         if (run == null) {
             return Optional.empty();
         }
+        boolean tokenCancelled = !run.terminal()
+                && runner.cancel(run.sessionId(), "cancelled by user");
         boolean interruptRequested = !run.terminal()
                 && taskRegistry.cancel(run.sessionId());
         return Optional.of(new CancelResult(
-                interruptRequested, run.snapshot(currentInvocation(run))));
+                tokenCancelled || interruptRequested, run.snapshot(currentInvocation(run))));
     }
 
     private void execute(ManagedRun run, AgentRequest request, InvocationContext context) {
