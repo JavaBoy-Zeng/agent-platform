@@ -2,13 +2,13 @@ package com.github.agentos.server;
 
 import com.github.agentos.agent.routing.IntentClassification;
 import com.github.agentos.agent.routing.IntentClassifier;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentEventType;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
@@ -33,11 +33,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(properties = "agentos.memory.mode=memory")
-@Import(AgentRuntimeIntegrationTest.ScriptedModelConfiguration.class)
-class AgentRuntimeIntegrationTest {
+@Import(AgentRunnerIntegrationTest.ScriptedModelConfiguration.class)
+class AgentRunnerIntegrationTest {
 
     @Autowired
-    private AgentRuntime runtime;
+    private AgentRunner runner;
 
     @Autowired
     private MemoryService memoryService;
@@ -46,7 +46,7 @@ class AgentRuntimeIntegrationTest {
     private AgentEventStore eventStore;
 
     /**
-     * 强制让路由层走 fallback，专注于 Runtime + MainAgent + 模型脚本之间的协作。
+     * 强制让路由层走 fallback，专注于 Runner + MainAgent + 模型脚本之间的协作。
      *
      * <p>输入 {@code "I prefer Java"}（12 字符、无工具关键词）默认会被
      * {@code HeuristicIntentClassifier} 短路返回 canned answer，从而绕过 LLM 调用；
@@ -62,10 +62,10 @@ class AgentRuntimeIntegrationTest {
                         org.mockito.ArgumentMatchers.any()))
                 .thenReturn(IntentClassification.fallback("integration-test"));
         AgentRequest request = AgentRequest.of("session-1", "I prefer Java");
-        AgentContext context = AgentContext.of("main-agent");
+        InvocationContext context = InvocationContext.of("main-agent");
 
         List<AgentRunEvent> events = new CopyOnWriteArrayList<>();
-        AgentState result = runtime.run(request, context, events::add);
+        AgentState result = runner.run(request, context, events::add);
 
         assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
         assertThat(result.output()).isEqualTo("I prefer Java");
@@ -86,7 +86,7 @@ class AgentRuntimeIntegrationTest {
         assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.DECISION)
                 .extracting(event -> event.data().get("outcome"))
                 .containsExactly("REPLAN", "COMPLETE");
-        String invocationId = runtime.latestInvocation("session-1").orElseThrow().invocationId();
+        String invocationId = runner.latestInvocation("session-1").orElseThrow().invocationId();
         assertThat(eventStore.findByInvocationId(invocationId))
                 .extracting(AgentEvent::type)
                 .containsSubsequence(
@@ -100,7 +100,7 @@ class AgentRuntimeIntegrationTest {
         assertThat(eventStore.findByInvocationId(invocationId))
                 .extracting(AgentEvent::invocationId)
                 .containsOnly(invocationId);
-        assertThat(runtime.invocation(invocationId).orElseThrow()).satisfies(invocation -> {
+        assertThat(runner.invocation(invocationId).orElseThrow()).satisfies(invocation -> {
             assertThat(invocation.modelCalls()).isEqualTo(3);
             assertThat(invocation.toolCalls()).isEqualTo(2);
             assertThat(invocation.replans()).isEqualTo(1);

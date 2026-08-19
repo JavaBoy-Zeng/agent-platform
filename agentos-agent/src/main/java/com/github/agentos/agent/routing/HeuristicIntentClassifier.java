@@ -1,6 +1,6 @@
 package com.github.agentos.agent.routing;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 
 import java.util.Locale;
@@ -106,7 +106,7 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     }
 
     @Override
-    public IntentClassification classify(AgentRequest request, AgentContext context) {
+    public IntentClassification classify(AgentRequest request, InvocationContext context) {
         Objects.requireNonNull(request, "request must not be null");
         String objective = request.objective();
         if (canShortCircuit(objective)) {

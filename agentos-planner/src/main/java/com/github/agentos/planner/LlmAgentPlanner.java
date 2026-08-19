@@ -1,8 +1,8 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.memory.MemoryContext;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
@@ -56,14 +56,14 @@ public final class LlmAgentPlanner implements AgentPlanner {
     }
 
     @Override
-    public AgentPlan createPlan(AgentRequest request, AgentContext context) {
+    public AgentPlan createPlan(AgentRequest request, InvocationContext context) {
         return generate(request, context, null, null, PlanOrigin.INITIAL);
     }
 
     @Override
     public AgentPlan replan(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentPlan previousPlan,
             PlanExecutionSnapshot snapshot) {
         Objects.requireNonNull(previousPlan, "previousPlan must not be null");
@@ -74,7 +74,7 @@ public final class LlmAgentPlanner implements AgentPlanner {
     @Override
     public AgentDecision decide(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentPlan previousPlan,
             PlanExecutionSnapshot snapshot) {
         Objects.requireNonNull(previousPlan, "previousPlan must not be null");
@@ -85,7 +85,7 @@ public final class LlmAgentPlanner implements AgentPlanner {
 
     private AgentPlan generate(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentPlan previousPlan,
             PlanExecutionSnapshot snapshot,
             PlanOrigin origin) {

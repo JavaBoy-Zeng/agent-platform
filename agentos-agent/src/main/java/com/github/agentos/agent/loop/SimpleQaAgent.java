@@ -2,10 +2,9 @@ package com.github.agentos.agent.loop;
 
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.AgentExecutionResult;
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
-import com.github.agentos.kernel.AgentExecutionContext;
 import com.github.agentos.kernel.AgentLoop;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentState;
@@ -58,8 +57,7 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
 
     /** 通过统一 Agent 抽象执行一次直答。 */
     @Override
-    public AgentExecutionResult run(AgentRequest request, AgentExecutionContext executionContext) {
-        AgentContext context = executionContext.agentContext();
+    public AgentExecutionResult run(AgentRequest request, InvocationContext context) {
         AgentState result = run(
                 request, context, AgentState.ready().startNextIteration(), AgentEventSink.NOOP);
         return AgentExecutionResult.from(
@@ -67,14 +65,14 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
     }
 
     @Override
-    public AgentState run(AgentRequest request, AgentContext context, AgentState runningState) {
+    public AgentState run(AgentRequest request, InvocationContext context, AgentState runningState) {
         return run(request, context, runningState, AgentEventSink.NOOP);
     }
 
     @Override
     public AgentState run(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentState runningState,
             AgentEventSink eventSink) {
         Objects.requireNonNull(request, "request must not be null");

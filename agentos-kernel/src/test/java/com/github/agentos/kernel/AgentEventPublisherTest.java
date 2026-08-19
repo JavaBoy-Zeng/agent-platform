@@ -16,13 +16,13 @@ class AgentEventPublisherTest {
         InMemoryAgentEventPublisher publisher = new InMemoryAgentEventPublisher(List.of(events::add));
         AgentLoop loop = new AgentLoop() {
             @Override
-            public AgentState run(AgentRequest request, AgentContext context, AgentState running) {
+            public AgentState run(AgentRequest request, InvocationContext context, AgentState running) {
                 return running.complete("done");
             }
 
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState running,
+                    AgentRequest request, InvocationContext context, AgentState running,
                     AgentEventSink sink) {
                 sink.emit(AgentRunEvent.of(
                         AgentRunEvent.Type.PLAN_CREATED, request.sessionId(), "plan",
@@ -30,9 +30,9 @@ class AgentEventPublisherTest {
                 return running.complete("done");
             }
         };
-        AgentRuntime runtime = new AgentRuntime(loop, publisher);
+        AgentRunner runner = new AgentRunner(loop, publisher);
 
-        runtime.run(AgentRequest.of("session-1", "test"), AgentContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "test"), InvocationContext.of("main-agent"));
 
         assertThat(events).extracting(AgentEvent::type).containsExactly(
                 AgentEventType.AGENT_STARTED,

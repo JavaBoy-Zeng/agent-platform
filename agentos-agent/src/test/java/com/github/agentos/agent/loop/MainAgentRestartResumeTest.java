@@ -4,10 +4,10 @@ import com.github.agentos.agent.finalize.DefaultAgentFinalizer;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.CheckpointStore;
 import com.github.agentos.kernel.InMemoryCheckpointStore;
@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 模拟进程重启后的审批恢复：新 MainAgent + 新 AgentRuntime，
+ * 模拟进程重启后的审批恢复：新 MainAgent + 新 AgentRunner，
  * 只有 CheckpointStore 与 ContinuationStore 跨“重启”共享。
  */
 class MainAgentRestartResumeTest {
@@ -97,7 +97,7 @@ class MainAgentRestartResumeTest {
                                 new ApprovalService(request -> false)))),
                 new DefaultFailureClassifier());
         AgentPlanner planner = new AgentPlanner() {
-            @Override public AgentPlan createPlan(AgentRequest request, AgentContext context) {
+            @Override public AgentPlan createPlan(AgentRequest request, InvocationContext context) {
                 return AgentPlan.create(
                         PlanType.EXECUTION, PlanOrigin.INITIAL, PlanOutcome.CONTINUE,
                         "write requested file",
@@ -115,13 +115,13 @@ class MainAgentRestartResumeTest {
             }
 
             @Override public AgentPlan replan(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
                 return decide(request, context, previousPlan, snapshot).plan();
             }
 
             @Override public AgentDecision decide(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
                 return AgentDecision.from(AgentPlan.create(
                         PlanType.EXECUTION, PlanOrigin.REPLANNED, PlanOutcome.COMPLETE,
@@ -140,11 +140,11 @@ class MainAgentRestartResumeTest {
                     new AgentExecutionLimits(3, 10, 10, 5),
                     new com.github.agentos.planner.DefaultObservationSummarizer(),
                     continuationStore);
-            AgentRuntime firstRuntime = new AgentRuntime(firstAgent,
+            AgentRunner firstRuntime = new AgentRunner(firstAgent,
                     com.github.agentos.kernel.AgentEventPublisher.NOOP, checkpointStore);
             AgentState waiting = firstRuntime.run(
                     AgentRequest.of("session-restart", "write and commit file"),
-                    AgentContext.of("main-agent"));
+                    InvocationContext.of("main-agent"));
             invocationId = firstRuntime.latestInvocation("session-restart")
                     .orElseThrow().invocationId();
 
@@ -152,7 +152,7 @@ class MainAgentRestartResumeTest {
             assertThat(writes).hasValue(0);
         }
 
-        // 模拟重启：全新 MainAgent 与 AgentRuntime，仅两个 Store 保留数据。
+        // 模拟重启：全新 MainAgent 与 AgentRunner，仅两个 Store 保留数据。
         String pendingActionId = checkpointStore.load(invocationId)
                 .orElseThrow().pendingAction().pendingActionId();
         assertThat(continuationStore.load(invocationId)).isPresent();
@@ -163,7 +163,7 @@ class MainAgentRestartResumeTest {
                     new AgentExecutionLimits(3, 10, 10, 5),
                     new com.github.agentos.planner.DefaultObservationSummarizer(),
                     continuationStore);
-            AgentRuntime secondRuntime = new AgentRuntime(secondAgent,
+            AgentRunner secondRuntime = new AgentRunner(secondAgent,
                     com.github.agentos.kernel.AgentEventPublisher.NOOP, checkpointStore);
 
             AgentState resumed = secondRuntime.resume(

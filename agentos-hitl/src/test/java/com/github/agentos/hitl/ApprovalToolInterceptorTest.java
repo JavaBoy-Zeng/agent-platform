@@ -1,9 +1,9 @@
 package com.github.agentos.hitl;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.PendingActionType;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolResult;
@@ -54,7 +54,7 @@ class ApprovalToolInterceptorTest {
     private static ToolExecutionContext context(AgentTool tool) {
         return new ToolExecutionContext(
                 AgentRequest.of("session-1", "test"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 "plan-1",
                 "step-1",
                 new AgentExecutionLimits(1, 1, 1, 1),

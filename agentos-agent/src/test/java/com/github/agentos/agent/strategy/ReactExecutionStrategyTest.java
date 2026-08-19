@@ -1,7 +1,7 @@
 package com.github.agentos.agent.strategy;
 
 import com.github.agentos.agent.finalize.DefaultAgentFinalizer;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
@@ -34,13 +34,13 @@ class ReactExecutionStrategyTest {
         AtomicInteger toolCalls = new AtomicInteger();
         AgentPlanner planner = new AgentPlanner() {
             @Override
-            public AgentPlan createPlan(AgentRequest request, AgentContext context) {
+            public AgentPlan createPlan(AgentRequest request, InvocationContext context) {
                 return toolPlan();
             }
 
             @Override
             public AgentPlan replan(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
                 assertThat(snapshot.lastResult().output()).isEqualTo("sunny");
                 return finalPlan("It is sunny.");
@@ -48,7 +48,7 @@ class ReactExecutionStrategyTest {
 
             @Override
             public AgentDecision decide(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
                 return AgentDecision.from(replan(request, context, previousPlan, snapshot));
             }
@@ -66,7 +66,7 @@ class ReactExecutionStrategyTest {
                 new DefaultAgentFinalizer(), new AgentExecutionLimits(0, 4, 4, 2));
 
         AgentState result = strategy.run(
-                AgentRequest.of("session-1", "weather"), AgentContext.of("main-agent"),
+                AgentRequest.of("session-1", "weather"), InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration());
 
         assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
@@ -78,9 +78,9 @@ class ReactExecutionStrategyTest {
     void stopsWhenModelCallLimitIsReached() {
         AgentPlanner planner = new AgentPlanner() {
             @Override public AgentPlan createPlan(
-                    AgentRequest request, AgentContext context) { return toolPlan(); }
+                    AgentRequest request, InvocationContext context) { return toolPlan(); }
             @Override public AgentPlan replan(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) { return toolPlan(); }
         };
         AgentTool tool = new AgentTool() {
@@ -93,7 +93,7 @@ class ReactExecutionStrategyTest {
                 new DefaultAgentFinalizer(), new AgentExecutionLimits(0, 4, 4, 1));
 
         AgentState result = strategy.run(
-                AgentRequest.of("session-1", "weather"), AgentContext.of("main-agent"),
+                AgentRequest.of("session-1", "weather"), InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration());
 
         assertThat(result.status()).isEqualTo(AgentState.Status.FAILED);

@@ -3,7 +3,7 @@ package com.github.agentos.agent.routing;
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.registry.AgentRegistry;
 import com.github.agentos.kernel.AgentCheckpoint;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
@@ -48,14 +48,14 @@ public final class RoutingAgentLoop implements AgentLoop {
     }
 
     @Override
-    public AgentState run(AgentRequest request, AgentContext context, AgentState runningState) {
+    public AgentState run(AgentRequest request, InvocationContext context, AgentState runningState) {
         return run(request, context, runningState, AgentEventSink.NOOP);
     }
 
     @Override
     public AgentState run(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentState runningState,
             AgentEventSink eventSink) {
         Objects.requireNonNull(request, "request must not be null");
@@ -80,7 +80,7 @@ public final class RoutingAgentLoop implements AgentLoop {
     @Override
     public AgentState resume(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentState runningState,
             AgentCheckpoint checkpoint,
             PendingActionResolution resolution,
@@ -91,7 +91,7 @@ public final class RoutingAgentLoop implements AgentLoop {
 
     @Override
     public AgentCheckpoint checkpoint(
-            AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
+            AgentRequest request, InvocationContext context, AgentCheckpoint checkpoint) {
         return fallback.checkpoint(request, context, checkpoint);
     }
 
@@ -130,7 +130,7 @@ public final class RoutingAgentLoop implements AgentLoop {
 
     private AgentState dispatch(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             IntentClassification classification,
             AgentState runningState,
             AgentEventSink eventSink) {

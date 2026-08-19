@@ -17,7 +17,7 @@ public final class RuleBasedExecutionPolicy implements ExecutionPolicy {
 
     /** 优先尊重显式属性，再按风险、复杂度和工具规模选择模式。 */
     @Override
-    public ExecutionMode select(AgentRequest request, AgentExecutionContext context) {
+    public ExecutionMode select(AgentRequest request, InvocationContext context) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Object explicit = request.attributes().get("executionMode");

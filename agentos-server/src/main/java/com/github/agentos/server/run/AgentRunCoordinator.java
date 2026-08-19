@@ -1,10 +1,10 @@
 package com.github.agentos.server.run;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
@@ -30,28 +30,28 @@ import java.util.concurrent.ExecutorService;
  */
 public final class AgentRunCoordinator {
 
-    private final AgentRuntime runtime;
+    private final AgentRunner runner;
     private final ExecutorService executor;
     private final AgentRunTaskRegistry taskRegistry;
     private final ConcurrentMap<String, ManagedRun> runs = new ConcurrentHashMap<>();
 
     /** 创建后台运行协调器。 */
     public AgentRunCoordinator(
-            AgentRuntime runtime,
+            AgentRunner runner,
             ExecutorService executor,
             AgentRunTaskRegistry taskRegistry) {
-        this.runtime = Objects.requireNonNull(runtime, "runtime must not be null");
+        this.runner = Objects.requireNonNull(runner, "runner must not be null");
         this.executor = Objects.requireNonNull(executor, "executor must not be null");
         this.taskRegistry = Objects.requireNonNull(
                 taskRegistry, "taskRegistry must not be null");
     }
 
     /** 创建后台任务并立即返回可持久化的运行快照。 */
-    public RunSnapshot start(AgentRequest request, AgentContext context) {
+    public RunSnapshot start(AgentRequest request, InvocationContext context) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         String runId = UUID.randomUUID().toString();
-        AgentState initialState = runtime.state(request.sessionId())
+        AgentState initialState = runner.state(request.sessionId())
                 .orElseGet(AgentState::ready)
                 .startNextIteration();
         ManagedRun run = new ManagedRun(runId, request.sessionId(), initialState);
@@ -114,9 +114,9 @@ public final class AgentRunCoordinator {
                 interruptRequested, run.snapshot(currentInvocation(run))));
     }
 
-    private void execute(ManagedRun run, AgentRequest request, AgentContext context) {
+    private void execute(ManagedRun run, AgentRequest request, InvocationContext context) {
         try {
-            AgentState state = runtime.run(request, context, run::publish);
+            AgentState state = runner.run(request, context, run::publish);
             run.finish(state, currentInvocation(run));
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
@@ -127,7 +127,7 @@ public final class AgentRunCoordinator {
     }
 
     private AgentInvocation currentInvocation(ManagedRun run) {
-        return runtime.latestInvocation(run.sessionId())
+        return runner.latestInvocation(run.sessionId())
                 .filter(invocation -> !invocation.startedAt().isBefore(run.createdAt()))
                 .orElse(null);
     }

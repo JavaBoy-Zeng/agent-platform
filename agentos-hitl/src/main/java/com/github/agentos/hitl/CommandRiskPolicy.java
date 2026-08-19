@@ -1,6 +1,6 @@
 package com.github.agentos.hitl;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 
@@ -60,7 +60,7 @@ public final class CommandRiskPolicy extends RiskPolicy {
 
     /** run_command 按命令文本判定，其余工具沿用工具级等级判定。 */
     @Override
-    public boolean requiresApproval(AgentContext context, AgentTool tool, ToolCall call) {
+    public boolean requiresApproval(InvocationContext context, AgentTool tool, ToolCall call) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(tool, "tool must not be null");
         Objects.requireNonNull(call, "call must not be null");

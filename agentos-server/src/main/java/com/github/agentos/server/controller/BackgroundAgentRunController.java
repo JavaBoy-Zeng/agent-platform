@@ -1,6 +1,6 @@
 package com.github.agentos.server.controller;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.server.run.AgentRunCoordinator;
 import org.springframework.http.HttpStatus;
@@ -85,7 +85,7 @@ public final class BackgroundAgentRunController {
         return new RunInvocation(
                 new AgentRequest(sessionId, body.input(),
                         body.attributes() == null ? Map.of() : body.attributes()),
-                new AgentContext(
+                new InvocationContext(
                         textOr(body.teamId(), "default-team"),
                         textOr(body.userId(), "default-user"),
                         textOr(body.agentId(), "main-agent"),
@@ -119,6 +119,6 @@ public final class BackgroundAgentRunController {
             Map<String, Object> attributes) {
     }
 
-    private record RunInvocation(AgentRequest request, AgentContext context) {
+    private record RunInvocation(AgentRequest request, InvocationContext context) {
     }
 }

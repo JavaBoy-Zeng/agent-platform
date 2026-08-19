@@ -1,8 +1,8 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.memory.CompletedTurn;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
@@ -53,7 +53,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.createPlan(
                     AgentRequest.of("session-1", "write it"),
-                    AgentContext.of("main-agent"));
+                    InvocationContext.of("main-agent"));
 
             assertThat(plan.type()).isEqualTo(PlanType.EXECUTION);
             assertThat(plan.steps()).singleElement().satisfies(step ->
@@ -96,7 +96,7 @@ class LlmAgentPlannerTest {
                     new PlanValidator(toolRegistry, 5),
                     new AgentExecutionLimits(3, 30, 30, 6));
             AgentRequest agentRequest = AgentRequest.of("session-1", "hello");
-            AgentContext context = AgentContext.of("main-agent");
+            InvocationContext context = InvocationContext.of("main-agent");
 
             AgentPlan plan = planner.createPlan(agentRequest, context);
 
@@ -166,7 +166,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan result = planner.replan(
                     AgentRequest.of("session-1", "finish"),
-                    AgentContext.of("main-agent"),
+                    InvocationContext.of("main-agent"),
                     previousPlan,
                     snapshot);
 

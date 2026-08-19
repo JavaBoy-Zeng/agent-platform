@@ -1,7 +1,7 @@
 package com.github.agentos.hitl;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 
@@ -38,7 +38,7 @@ public final class ApprovalService {
      * @return 审批通过时返回 {@code true}，否则返回 {@code false}
      */
     public boolean requestApproval(
-            AgentRequest agentRequest, AgentContext context, AgentTool tool, ToolCall call) {
+            AgentRequest agentRequest, InvocationContext context, AgentTool tool, ToolCall call) {
         Objects.requireNonNull(agentRequest, "agentRequest must not be null");
         Objects.requireNonNull(context, "context must not be null");
         ApprovalRequest approvalRequest = new ApprovalRequest(

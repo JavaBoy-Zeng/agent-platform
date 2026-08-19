@@ -1,9 +1,9 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionType;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolFailureType;
@@ -33,7 +33,7 @@ class PlanExecutorTest {
 
         PlanExecutor.ExecutionResult result = executor.execute(
                 AgentRequest.of("session-1", "run"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 plan("unstable", false),
                 30,
                 30);
@@ -54,7 +54,7 @@ class PlanExecutorTest {
                         ToolFailureType.INVALID_ARGUMENT, "unsupported input")));
         PlanExecutor.ExecutionResult skipped = optionalExecutor.execute(
                 AgentRequest.of("session-1", "run"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 plan("optional", true),
                 30,
                 30);
@@ -68,7 +68,7 @@ class PlanExecutorTest {
                         ToolFailureType.SECURITY_DENIED, "blocked by policy")));
         PlanExecutor.ExecutionResult denied = deniedExecutor.execute(
                 AgentRequest.of("session-2", "run"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 plan("denied", true),
                 30,
                 30);
@@ -86,7 +86,7 @@ class PlanExecutorTest {
 
         PlanExecutor.ExecutionResult result = executor.execute(
                 AgentRequest.of("session-1", "inspect"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 plan("lookup", false),
                 30,
                 30);
@@ -126,7 +126,7 @@ class PlanExecutorTest {
 
         PlanExecutor.ExecutionResult result = executor.execute(
                 AgentRequest.of("session-1", "write"),
-                AgentContext.of("main-agent"), plan("risky", false), 30, 30);
+                InvocationContext.of("main-agent"), plan("risky", false), 30, 30);
 
         assertThat(result.status()).isEqualTo(PlanExecutor.ExecutionStatus.WAITING);
         assertThat(result.pendingAction()).isNotNull();
@@ -148,7 +148,7 @@ class PlanExecutorTest {
                         ToolExecutionMode.SEQUENTIAL)), "");
 
         PlanExecutor.ExecutionResult result = executor.execute(
-                AgentRequest.of("session-1", "run"), AgentContext.of("main-agent"),
+                AgentRequest.of("session-1", "run"), InvocationContext.of("main-agent"),
                 plan, 30, 30);
 
         assertThat(result.status()).isEqualTo(PlanExecutor.ExecutionStatus.COMPLETED);

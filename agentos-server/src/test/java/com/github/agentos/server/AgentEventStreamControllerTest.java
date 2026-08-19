@@ -1,9 +1,9 @@
 package com.github.agentos.server;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.server.controller.AgentEventStreamController;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
@@ -27,12 +27,12 @@ class AgentEventStreamControllerTest {
 
     @Test
     void streamsDomainEventsOnDedicatedNames() throws Exception {
-        AgentLoop loop = (AgentRequest request, AgentContext context, AgentState running) ->
+        AgentLoop loop = (AgentRequest request, InvocationContext context, AgentState running) ->
                 running.complete("done");
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
                     new AgentEventStreamController(
-                            new AgentRuntime(loop), executor, new AgentRunTaskRegistry())).build();
+                            new AgentRunner(loop), executor, new AgentRunTaskRegistry())).build();
             MvcResult started = mvc.perform(post("/api/agents/runs/event-stream")
                             .contentType(MediaType.APPLICATION_JSON)
                             .accept(MediaType.TEXT_EVENT_STREAM)

@@ -1,6 +1,6 @@
 package com.github.agentos.agent.loop;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
@@ -30,7 +30,7 @@ class SimpleQaAgentTest {
 
         AgentState result = agent.run(
                 new AgentRequest("s1", "什么是 JVM", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 events::add);
 
@@ -57,7 +57,7 @@ class SimpleQaAgentTest {
 
         agent.run(
                 new AgentRequest("session-9", "1+1 等于几", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 
@@ -74,7 +74,7 @@ class SimpleQaAgentTest {
 
         AgentState result = agent.run(
                 new AgentRequest("s1", "什么是 JVM", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 events::add);
 
@@ -113,7 +113,7 @@ class SimpleQaAgentTest {
 
         AgentState result = agent.run(
                 new AgentRequest("s1", "什么是 Java", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 events::add);
 
@@ -143,7 +143,7 @@ class SimpleQaAgentTest {
 
         agent.run(
                 new AgentRequest("s1", "hi", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 events::add);
 
@@ -163,7 +163,7 @@ class SimpleQaAgentTest {
                 new AgentRequest("s1", "那明天呢", Map.of(
                         SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE,
                         "用户：今天几号\n助手：今天是 2026-08-19 星期三")),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 
@@ -185,7 +185,7 @@ class SimpleQaAgentTest {
         agent.run(
                 new AgentRequest("s1", "1+1 等于几", Map.of(
                         SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE, "  ")),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 

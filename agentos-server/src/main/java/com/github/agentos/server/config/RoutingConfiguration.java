@@ -22,7 +22,7 @@ import java.net.http.HttpClient;
 /**
  * 意图识别与 Agent 路由层装配。
  *
- * <p>该配置把 {@link RoutingAgentLoop} 接入到 {@code AgentRuntime} 之前，
+ * <p>该配置把 {@link RoutingAgentLoop} 接入到 {@code AgentRunner} 之前，
  * 让请求先经过 {@link IntentClassifier} 决策再进入执行循环。
  * 意图分级顺序：寒暄短路（零调用）→ 简单问答（{@link SimpleQaAgent} 单次直答）
  * → 复杂任务（{@link MainAgent} 规划执行）。</p>

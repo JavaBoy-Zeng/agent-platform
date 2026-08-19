@@ -52,7 +52,7 @@ class EventActionsTest {
 
     @Test
     void defaultEventCarriesActions() {
-        AgentContext context = AgentContext.of("main-agent").withInvocation(
+        InvocationContext context = InvocationContext.of("main-agent").withInvocation(
                 new AgentInvocation("inv-1", "session-1", "main-agent", "", java.time.Instant.now()));
 
         DefaultAgentEvent plain = DefaultAgentEvent.of(

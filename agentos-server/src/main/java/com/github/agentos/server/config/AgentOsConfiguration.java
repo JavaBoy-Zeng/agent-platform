@@ -10,7 +10,7 @@ import com.github.agentos.hitl.RiskPolicy;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentEventStore;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.CheckpointStore;
 import com.github.agentos.kernel.InMemoryAgentEventPublisher;
 import com.github.agentos.memory.MemoryService;
@@ -320,22 +320,24 @@ public class AgentOsConfiguration {
     }
 
     /**
-     * 创建面向 REST 接口的 Agent 运行时。
+     * 创建面向 REST 接口的 Agent 运行器。
      *
      * @param routingAgentLoop 意图路由 Agent 循环；具体行为见 {@link RoutingAgentLoop}
      * @param checkpointStore 审批恢复 Checkpoint 存储
-     * @return Agent 运行时
+     * @param agentExecutionLimits 单次运行累计执行预算
+     * @return Agent 运行器
      */
     @Bean
-    AgentRuntime agentRuntime(
+    AgentRunner agentRunner(
             RoutingAgentLoop routingAgentLoop,
             AgentEventPublisher agentEventPublisher,
             AgentEventStore agentEventStore,
             CheckpointStore checkpointStore,
-            com.github.agentos.kernel.SessionService sessionService) {
-        return new AgentRuntime(
+            com.github.agentos.kernel.SessionService sessionService,
+            AgentExecutionLimits agentExecutionLimits) {
+        return new AgentRunner(
                 routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore,
-                sessionService);
+                sessionService, agentExecutionLimits);
     }
 
     /** 创建进程内领域事件发布器，后续可注册审计或遥测监听器。 */
@@ -380,9 +382,9 @@ public class AgentOsConfiguration {
     /** 创建支持刷新恢复和事件补播的后台运行协调器。 */
     @Bean
     AgentRunCoordinator agentRunCoordinator(
-            AgentRuntime runtime,
+            AgentRunner runner,
             ExecutorService agentStreamExecutor,
             AgentRunTaskRegistry taskRegistry) {
-        return new AgentRunCoordinator(runtime, agentStreamExecutor, taskRegistry);
+        return new AgentRunCoordinator(runner, agentStreamExecutor, taskRegistry);
     }
 }

@@ -5,9 +5,9 @@ import com.github.agentos.agent.AgentExecutionResult;
 import com.github.agentos.agent.loop.SimpleQaAgent;
 import com.github.agentos.agent.registry.AgentRegistry;
 import com.github.agentos.agent.registry.InMemoryAgentRegistry;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
-import com.github.agentos.kernel.AgentExecutionContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
@@ -40,7 +40,7 @@ class RoutingAgentLoopTest {
         List<AgentRunEvent> events = new ArrayList<>();
         AgentState result = router.run(
                 new AgentRequest("s1", "hi", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 events::add);
 
@@ -68,7 +68,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "hello", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 event -> { });
 
@@ -91,7 +91,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "do something", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 event -> { });
 
@@ -117,7 +117,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "什么是 JVM", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 event -> { });
 
@@ -136,7 +136,7 @@ class RoutingAgentLoopTest {
 
         assertThatThrownBy(() -> router.run(
                 new AgentRequest("s1", "hi", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -148,12 +148,12 @@ class RoutingAgentLoopTest {
         AtomicInteger fallbackResumeCalls = new AtomicInteger();
         AgentLoop fallback = new AgentLoop() {
             @Override
-            public AgentState run(AgentRequest req, AgentContext ctx, AgentState running) {
+            public AgentState run(AgentRequest req, InvocationContext ctx, AgentState running) {
                 return running.complete("fallback");
             }
 
             @Override
-            public AgentState resume(AgentRequest req, AgentContext ctx, AgentState running,
+            public AgentState resume(AgentRequest req, InvocationContext ctx, AgentState running,
                                      com.github.agentos.kernel.AgentCheckpoint checkpoint,
                                      com.github.agentos.kernel.PendingActionResolution resolution,
                                      AgentEventSink sink) {
@@ -167,7 +167,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.resume(
                 new AgentRequest("s1", "hi", Map.of()),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 AgentState.ready().startNextIteration(),
                 new com.github.agentos.kernel.AgentCheckpoint(
                         "s1", "inv-1", "main-agent", "", "team", "user", "hi",
@@ -211,19 +211,19 @@ class RoutingAgentLoopTest {
         }
 
         @Override
-        public AgentExecutionResult run(AgentRequest req, AgentExecutionContext ctx) {
+        public AgentExecutionResult run(AgentRequest req, InvocationContext ctx) {
             calls.incrementAndGet();
             return AgentExecutionResult.from(
                     AgentState.ready().complete("agent-echo:" + req.objective()), null);
         }
 
         @Override
-        public AgentState run(AgentRequest req, AgentContext ctx, AgentState running) {
+        public AgentState run(AgentRequest req, InvocationContext ctx, AgentState running) {
             return run(req, ctx, running, AgentEventSink.NOOP);
         }
 
         @Override
-        public AgentState run(AgentRequest req, AgentContext ctx, AgentState running,
+        public AgentState run(AgentRequest req, InvocationContext ctx, AgentState running,
                               AgentEventSink sink) {
             calls.incrementAndGet();
             sink.emit(AgentRunEvent.of(

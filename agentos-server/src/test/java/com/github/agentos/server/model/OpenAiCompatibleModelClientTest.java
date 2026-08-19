@@ -1,6 +1,6 @@
 package com.github.agentos.server.model;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.memory.MemoryContext;
 import com.github.agentos.planner.ModelPlan;
@@ -170,7 +170,7 @@ class OpenAiCompatibleModelClientTest {
                 new AgentRequest(
                         "session-1", "inspect " + "x".repeat(40_000),
                         Map.of("payload", "y".repeat(40_000))),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,
@@ -188,7 +188,7 @@ class OpenAiCompatibleModelClientTest {
     private static PlanningRequest planningRequest(int maxSteps) {
         return new PlanningRequest(
                 AgentRequest.of("session-1", "hello"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,
@@ -199,7 +199,7 @@ class OpenAiCompatibleModelClientTest {
     private static PlanningRequest planningRequestWithRiskyTool(int maxSteps) {
         return new PlanningRequest(
                 AgentRequest.of("session-1", "hello"),
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,

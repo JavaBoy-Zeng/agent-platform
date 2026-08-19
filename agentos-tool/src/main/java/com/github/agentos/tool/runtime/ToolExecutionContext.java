@@ -1,8 +1,8 @@
 package com.github.agentos.tool.runtime;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 
 import java.util.Map;
@@ -11,7 +11,7 @@ import java.util.Objects;
 /** 一次工具调用所需的 Invocation、计划步骤和运行预算上下文。 */
 public record ToolExecutionContext(
         AgentRequest request,
-        AgentContext agentContext,
+        InvocationContext agentContext,
         String planId,
         String stepId,
         AgentExecutionLimits executionLimits,

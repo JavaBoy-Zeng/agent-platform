@@ -1,9 +1,9 @@
 package com.github.agentos.server.controller;
 
 import com.github.agentos.kernel.AgentCheckpoint;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.AgentInvocation;
@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RequestMapping("/api/agents")
 public class AgentController {
 
-    private final AgentRuntime runtime;
+    private final AgentRunner runner;
     private final ExecutorService streamExecutor;
     private final AgentRunTaskRegistry taskRegistry;
     private final SessionHistoryService sessionHistoryService;
@@ -48,15 +48,15 @@ public class AgentController {
     /**
      * 创建 Agent REST 控制器。
      *
-     * @param runtime Agent 统一运行入口
+     * @param runner Agent 统一运行入口
      * @param sessionHistoryService 会话多轮历史服务
      */
     public AgentController(
-            AgentRuntime runtime,
+            AgentRunner runner,
             ExecutorService streamExecutor,
             AgentRunTaskRegistry taskRegistry,
             SessionHistoryService sessionHistoryService) {
-        this.runtime = runtime;
+        this.runner = runner;
         this.streamExecutor = streamExecutor;
         this.taskRegistry = taskRegistry;
         this.sessionHistoryService = sessionHistoryService;
@@ -74,7 +74,7 @@ public class AgentController {
     @PostMapping("/runs")
     public ResponseEntity<RunResponse> run(@RequestBody RunRequest request) {
         RunInvocation invocation = normalize(request);
-        AgentState state = runtime.run(invocation.request(), invocation.context());
+        AgentState state = runner.run(invocation.request(), invocation.context());
         RunResponse response = response(invocation.request().sessionId(), state);
         return ResponseEntity.created(URI.create(
                 "/api/agents/" + invocation.request().sessionId() + "/state")).body(response);
@@ -98,7 +98,7 @@ public class AgentController {
         boolean started = taskRegistry.start(
                 invocation.request().sessionId(), streamExecutor, () -> {
             try {
-                AgentState state = runtime.run(
+                AgentState state = runner.run(
                         invocation.request(),
                         invocation.context(),
                         event -> sendEvent(emitter, connected, event));
@@ -133,7 +133,7 @@ public class AgentController {
         StopResponse response = new StopResponse(
                 sessionId,
                 interruptRequested,
-                runtime.state(sessionId).orElse(null));
+                runner.state(sessionId).orElse(null));
         return ResponseEntity.status(
                         interruptRequested ? HttpStatus.ACCEPTED : HttpStatus.OK)
                 .body(response);
@@ -180,7 +180,7 @@ public class AgentController {
                 SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE, history));
         return new RunInvocation(
                 new AgentRequest(sessionId, request.input(), attributes),
-                new AgentContext(teamId, userId, agentId, taskId));
+                new InvocationContext(teamId, userId, agentId, taskId));
     }
 
     /**
@@ -191,7 +191,7 @@ public class AgentController {
      */
     @GetMapping("/{sessionId}/state")
     public ResponseEntity<AgentState> state(@PathVariable String sessionId) {
-        return runtime.state(sessionId)
+        return runner.state(sessionId)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
@@ -199,7 +199,7 @@ public class AgentController {
     /** 查询会话当前等待处理的外部动作。 */
     @GetMapping("/{sessionId}/pending-action")
     public ResponseEntity<PendingActionResponse> pendingAction(@PathVariable String sessionId) {
-        return runtime.latestInvocation(sessionId)
+        return runner.latestInvocation(sessionId)
                 .filter(invocation -> invocation.status() == AgentRunStatus.WAITING
                         && invocation.pendingAction() != null)
                 .map(invocation -> ResponseEntity.ok(new PendingActionResponse(
@@ -217,8 +217,8 @@ public class AgentController {
             throw new IllegalArgumentException("pendingActionId must not be blank");
         }
         // 进程重启后 invocation 内存态可能丢失；checkpoint 仍在说明该调用确实处于 WAITING。
-        AgentCheckpoint checkpoint = runtime.checkpoint(invocationId).orElse(null);
-        AgentInvocation invocation = runtime.invocation(invocationId).orElse(null);
+        AgentCheckpoint checkpoint = runner.checkpoint(invocationId).orElse(null);
+        AgentInvocation invocation = runner.invocation(invocationId).orElse(null);
         if (invocation == null && checkpoint == null) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "invocation not found: " + invocationId);
@@ -230,14 +230,14 @@ public class AgentController {
         }
         String sessionId = invocation != null
                 ? invocation.sessionId() : checkpoint.sessionId();
-        AgentState state = runtime.resume(invocationId, new PendingActionResolution(
+        AgentState state = runner.resume(invocationId, new PendingActionResolution(
                 request.pendingActionId(), request.approved(),
                 request.data() == null ? Map.of() : request.data()));
         return ResponseEntity.ok(resolvedResponse(sessionId, invocationId, state));
     }
 
     private RunResponse response(String sessionId, AgentState state) {
-        AgentInvocation invocation = runtime.latestInvocation(sessionId).orElse(null);
+        AgentInvocation invocation = runner.latestInvocation(sessionId).orElse(null);
         return new RunResponse(
                 sessionId,
                 invocation == null ? "" : invocation.invocationId(),
@@ -248,7 +248,7 @@ public class AgentController {
 
     /** 审批恢复响应：优先内存 invocation，重启场景回退到已知 invocationId。 */
     private RunResponse resolvedResponse(String sessionId, String invocationId, AgentState state) {
-        AgentInvocation invocation = runtime.invocation(invocationId).orElse(null);
+        AgentInvocation invocation = runner.invocation(invocationId).orElse(null);
         return new RunResponse(
                 sessionId,
                 invocation == null ? invocationId : invocation.invocationId(),
@@ -303,6 +303,6 @@ public class AgentController {
             String sessionId, boolean interruptRequested, AgentState state) {
     }
 
-    private record RunInvocation(AgentRequest request, AgentContext context) {
+    private record RunInvocation(AgentRequest request, InvocationContext context) {
     }
 }

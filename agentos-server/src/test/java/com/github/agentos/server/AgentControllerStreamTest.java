@@ -2,14 +2,14 @@ package com.github.agentos.server;
 
 import com.github.agentos.agent.loop.SimpleQaAgent;
 import com.github.agentos.kernel.AgentCheckpoint;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.kernel.InMemoryCheckpointStore;
@@ -44,14 +44,14 @@ class AgentControllerStreamTest {
         AgentLoop loop = new AgentLoop() {
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState runningState) {
+                    AgentRequest request, InvocationContext context, AgentState runningState) {
                 return runningState.complete("done");
             }
 
             @Override
             public AgentState run(
                     AgentRequest request,
-                    AgentContext context,
+                    InvocationContext context,
                     AgentState runningState,
                     AgentEventSink eventSink) {
                 eventSink.emit(AgentRunEvent.of(
@@ -66,7 +66,7 @@ class AgentControllerStreamTest {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
                     new AgentController(
-                            new AgentRuntime(loop), executor, new AgentRunTaskRegistry(),
+                            new AgentRunner(loop), executor, new AgentRunTaskRegistry(),
                             historyService())).build();
             MvcResult started = mockMvc.perform(post("/api/agents/runs/stream")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -93,7 +93,7 @@ class AgentControllerStreamTest {
         AgentLoop loop = new AgentLoop() {
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState runningState) {
+                    AgentRequest request, InvocationContext context, AgentState runningState) {
                 context.invocation().waitFor(new PendingAction(
                         "approval-1", PendingActionType.HUMAN_APPROVAL,
                         "批准写入", "写入 report.docx", Map.of("toolName", "file_write")));
@@ -102,7 +102,7 @@ class AgentControllerStreamTest {
 
             @Override
             public AgentState resume(
-                    AgentRequest request, AgentContext context, AgentState runningState,
+                    AgentRequest request, InvocationContext context, AgentState runningState,
                     AgentCheckpoint checkpoint, PendingActionResolution resolution,
                     AgentEventSink sink) {
                 return runningState.complete("written");
@@ -110,9 +110,9 @@ class AgentControllerStreamTest {
         };
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            AgentRuntime runtime = new AgentRuntime(loop);
+            AgentRunner runner = new AgentRunner(loop);
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
-                    new AgentController(runtime, executor, new AgentRunTaskRegistry(),
+                    new AgentController(runner, executor, new AgentRunTaskRegistry(),
                             historyService())).build();
 
             mockMvc.perform(post("/api/agents/runs")
@@ -125,7 +125,7 @@ class AgentControllerStreamTest {
                     .andExpect(content().string(containsString(
                             "\"pendingActionId\":\"approval-1\"")));
 
-            String invocationId = runtime.latestInvocation("approval-session")
+            String invocationId = runner.latestInvocation("approval-session")
                     .orElseThrow().invocationId();
             mockMvc.perform(get("/api/agents/approval-session/pending-action"))
                     .andExpect(status().isOk())
@@ -150,13 +150,13 @@ class AgentControllerStreamTest {
         AgentLoop loop = new AgentLoop() {
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState runningState) {
+                    AgentRequest request, InvocationContext context, AgentState runningState) {
                 return run(request, context, runningState, AgentEventSink.NOOP);
             }
 
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState runningState,
+                    AgentRequest request, InvocationContext context, AgentState runningState,
                     AgentEventSink eventSink) {
                 seenRequests.add(request);
                 return runningState.complete("answer-" + seenRequests.size());
@@ -165,11 +165,11 @@ class AgentControllerStreamTest {
         AgentEventStore eventStore = new InMemoryAgentEventStore();
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            AgentRuntime runtime = new AgentRuntime(
+            AgentRunner runner = new AgentRunner(
                     loop, AgentEventPublisher.NOOP, eventStore, new InMemoryCheckpointStore());
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
                     new AgentController(
-                            runtime, executor, new AgentRunTaskRegistry(),
+                            runner, executor, new AgentRunTaskRegistry(),
                             new SessionHistoryService(eventStore, 5, 400))).build();
 
             mockMvc.perform(post("/api/agents/runs")

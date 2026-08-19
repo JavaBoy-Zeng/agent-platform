@@ -8,70 +8,93 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * 面向会话的 Agent 运行入口。
+ * 全系统真正的 Agent 执行入口（Runner）。
+ *
+ * <p>Runner 在执行边界组装 {@link InvocationContext}：查找或创建 {@link Session}、
+ * 绑定执行预算 {@link AgentExecutionLimits} 与 {@link AgentInvocation}，
+ * 再交给 {@link AgentLoop} 执行。事件携带的状态增量由
+ * {@link StateMergingEventPublisher} 统一合并进会话状态。</p>
  *
  * <p>运行时按 {@code sessionId} 保存最新状态，并通过并发 Map 的原子计算保证同一会话的
  * 状态更新串行执行。业务循环抛出的运行时异常会被转换为失败状态，避免异常越过运行边界。</p>
  */
-public final class AgentRuntime {
+public final class AgentRunner {
 
     private final AgentLoop agentLoop;
     private final AgentEventPublisher eventPublisher;
     private final CheckpointStore checkpointStore;
     private final SessionService sessionService;
+    private final AgentExecutionLimits budget;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
 
     /**
-     * 创建 Agent 运行时。
+     * 创建 Agent Runner。
      *
      * @param agentLoop 实际执行 Agent 业务逻辑的循环
      * @throws NullPointerException 当执行循环为 {@code null} 时抛出
      */
-    public AgentRuntime(AgentLoop agentLoop) {
+    public AgentRunner(AgentLoop agentLoop) {
         this(agentLoop, AgentEventPublisher.NOOP);
     }
 
-    /** 创建使用指定领域事件发布器的 Agent 运行时。 */
-    public AgentRuntime(AgentLoop agentLoop, AgentEventPublisher eventPublisher) {
+    /** 创建使用指定领域事件发布器的 Agent Runner。 */
+    public AgentRunner(AgentLoop agentLoop, AgentEventPublisher eventPublisher) {
         this(agentLoop, eventPublisher, new InMemoryCheckpointStore());
     }
 
-    /** 创建使用指定领域事件发布器和 CheckpointStore 的运行时。 */
-    public AgentRuntime(
+    /** 创建使用指定领域事件发布器和 CheckpointStore 的 Runner。 */
+    public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             CheckpointStore checkpointStore) {
         this(agentLoop, eventPublisher, checkpointStore, new InMemorySessionService());
     }
 
-    /** 创建将事件同时发布给监听器并写入存储的 Agent 运行时。 */
-    public AgentRuntime(
+    /** 创建将事件同时发布给监听器并写入存储的 Agent Runner。 */
+    public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher, AgentEventStore eventStore) {
         this(agentLoop, eventPublisher, eventStore, new InMemoryCheckpointStore());
     }
 
-    /** 创建同时使用 EventStore 与 CheckpointStore 的完整运行时。 */
-    public AgentRuntime(
+    /** 创建同时使用 EventStore 与 CheckpointStore 的完整 Runner。 */
+    public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             AgentEventStore eventStore, CheckpointStore checkpointStore) {
-        this(agentLoop, eventPublisher, eventStore, checkpointStore,
-                new InMemorySessionService());
+        this(agentLoop, eventPublisher, eventStore, checkpointStore, new InMemorySessionService());
     }
 
-    /** 创建使用指定会话服务的完整运行时；事件携带的状态增量会合并进会话状态。 */
-    public AgentRuntime(
+    /** 创建使用指定会话服务的完整 Runner；事件携带的状态增量会合并进会话状态。 */
+    public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             AgentEventStore eventStore, CheckpointStore checkpointStore,
             SessionService sessionService) {
+        this(agentLoop, eventPublisher, eventStore, checkpointStore, sessionService,
+                AgentExecutionLimits.defaults());
+    }
+
+    /** 创建使用指定会话服务和执行预算的完整 Runner。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore,
+            SessionService sessionService, AgentExecutionLimits budget) {
         this(agentLoop, storingPublisher(eventPublisher, eventStore),
-                checkpointStore, sessionService);
+                checkpointStore, sessionService, budget);
     }
 
     /** 规范构造：事件发布器已就绪（含落库通道），会话服务负责消费状态增量。 */
-    public AgentRuntime(
+    public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             CheckpointStore checkpointStore, SessionService sessionService) {
+        this(agentLoop, eventPublisher, checkpointStore, sessionService,
+                AgentExecutionLimits.defaults());
+    }
+
+    /** 规范构造：额外指定本次运行共享的执行预算。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore, SessionService sessionService,
+            AgentExecutionLimits budget) {
         this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
         this.eventPublisher = Objects.requireNonNull(
                 eventPublisher, "eventPublisher must not be null");
@@ -79,6 +102,7 @@ public final class AgentRuntime {
                 checkpointStore, "checkpointStore must not be null");
         this.sessionService = Objects.requireNonNull(
                 sessionService, "sessionService must not be null");
+        this.budget = Objects.requireNonNull(budget, "budget must not be null");
     }
 
     private static AgentEventPublisher storingPublisher(
@@ -93,11 +117,11 @@ public final class AgentRuntime {
      * 在指定上下文中执行一次 Agent 循环并保存最终状态。
      *
      * @param request 本次用户请求
-     * @param context 本次身份和任务上下文
+     * @param context 本次身份和任务作用域上下文
      * @return 执行结束后的状态快照
      * @throws NullPointerException 当请求或上下文为 {@code null} 时抛出
      */
-    public AgentState run(AgentRequest request, AgentContext context) {
+    public AgentState run(AgentRequest request, InvocationContext context) {
         return run(request, context, AgentEventSink.NOOP);
     }
 
@@ -110,7 +134,7 @@ public final class AgentRuntime {
      * @return 执行结束后的状态快照
      */
     public AgentState run(
-            AgentRequest request, AgentContext context, AgentEventSink eventSink) {
+            AgentRequest request, InvocationContext context, AgentEventSink eventSink) {
         return run(request, context, eventSink, AgentEventPublisher.NOOP);
     }
 
@@ -118,11 +142,11 @@ public final class AgentRuntime {
      * 执行 Agent，并把领域事件单独发送到本次运行发布器。
      *
      * <p>领域事件发布器与旧版流事件接收端互相独立，便于 SSE 区分 token、兼容事件和
-     * Runtime 领域事件。</p>
+     * Runner 领域事件。</p>
      */
     public AgentState run(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentEventSink eventSink,
             AgentEventPublisher invocationEventPublisher) {
         Objects.requireNonNull(request, "request must not be null");
@@ -139,7 +163,8 @@ public final class AgentRuntime {
                 new CompositeAgentEventPublisher(java.util.List.of(
                         eventPublisher, invocationEventPublisher)),
                 sessionService);
-        AgentContext invocationContext = context.withRuntime(invocation, runPublisher);
+        InvocationContext invocationContext = bind(request, context)
+                .withRuntime(invocation, runPublisher);
         return states.compute(request.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
             invocation.start();
@@ -186,6 +211,22 @@ public final class AgentRuntime {
                 return failed;
             }
         });
+    }
+
+    /** Runner 在执行边界组装 InvocationContext：注入执行预算与当前会话快照。 */
+    private InvocationContext bind(AgentRequest request, InvocationContext context) {
+        InvocationContext bound = context.withBudget(budget);
+        Session session = loadSessionQuietly(request, context.userId());
+        return session == null ? bound : bound.withSession(session);
+    }
+
+    /** 读取会话快照；会话服务不可用时降级为不注入，不影响运行本身。 */
+    private Session loadSessionQuietly(AgentRequest request, String userId) {
+        try {
+            return sessionService.getOrCreate(request.sessionId(), userId);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     /**
@@ -236,9 +277,10 @@ public final class AgentRuntime {
         invocation.resolve(resolution);
         AgentEventPublisher resumePublisher = new StateMergingEventPublisher(
                 eventPublisher, sessionService);
-        AgentContext context = new AgentContext(
+        AgentRequest request = AgentRequest.of(checkpoint.sessionId(), checkpoint.objective());
+        InvocationContext context = bind(request, new InvocationContext(
                 checkpoint.teamId(), checkpoint.userId(), checkpoint.agentId(),
-                checkpoint.taskId()).withRuntime(invocation, resumePublisher);
+                checkpoint.taskId())).withRuntime(invocation, resumePublisher);
         publish(resumePublisher, DefaultAgentEvent.of(
                 context, AgentEventType.HUMAN_ACTION_RESOLVED,
                 resolution.approved() ? "人工操作已批准" : "人工操作已拒绝",
@@ -257,7 +299,6 @@ public final class AgentRuntime {
                     "lastStatus", rejected.status().name()));
             return rejected;
         }
-        AgentRequest request = AgentRequest.of(checkpoint.sessionId(), checkpoint.objective());
         return states.compute(checkpoint.sessionId(), (sessionId, previous) -> {
             AgentState running = (previous == null ? AgentState.ready() : previous).startNextIteration();
             invocation.start();
@@ -285,7 +326,7 @@ public final class AgentRuntime {
     }
 
     private void saveCheckpoint(
-            AgentContext context, AgentRequest request, AgentInvocation invocation) {
+            InvocationContext context, AgentRequest request, AgentInvocation invocation) {
         PendingAction action = Objects.requireNonNull(
                 invocation.pendingAction(), "waiting invocation must have pendingAction");
         AgentCheckpoint checkpoint = new AgentCheckpoint(
@@ -301,7 +342,7 @@ public final class AgentRuntime {
                 "agentLoop returned null checkpoint"));
     }
 
-    private Optional<AgentEvent> mapLegacyEvent(AgentContext context, AgentRunEvent event) {
+    private Optional<AgentEvent> mapLegacyEvent(InvocationContext context, AgentRunEvent event) {
         AgentEventType type = switch (event.type()) {
             case PLAN_CREATED -> AgentEventType.PLAN_CREATED;
             case REPLAN -> AgentEventType.REPLAN_STARTED;
@@ -315,7 +356,7 @@ public final class AgentRuntime {
     }
 
     private void publishTerminal(
-            AgentContext context, AgentState state, java.util.Map<String, Object> stateDelta) {
+            InvocationContext context, AgentState state, java.util.Map<String, Object> stateDelta) {
         if (state.status() == AgentState.Status.WAITING) {
             return;
         }
@@ -331,7 +372,7 @@ public final class AgentRuntime {
      * 构造一次用户请求轮次的终态增量：记录最近目标、最近状态与累计轮次。
      *
      * <p>轮次以“用户请求完成一个完整轮回”为单位计数，审批恢复不重复计数。
-     * 会话服务属于 Runtime 的观察面，读取失败时降级为不含轮次的增量。</p>
+     * 会话服务属于 Runner 的观察面，读取失败时降级为不含轮次的增量。</p>
      */
     private java.util.Map<String, Object> terminalDelta(
             AgentRequest request, String userId, AgentState.Status status) {
@@ -356,7 +397,7 @@ public final class AgentRuntime {
         try {
             publisher.publish(event);
         } catch (RuntimeException ignored) {
-            // 领域事件观察端不得破坏 Runtime 执行。
+            // 领域事件观察端不得破坏 Runner 执行。
         }
     }
 }

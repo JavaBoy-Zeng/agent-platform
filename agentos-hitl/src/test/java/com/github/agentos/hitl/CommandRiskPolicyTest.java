@@ -1,7 +1,7 @@
 package com.github.agentos.hitl;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolResult;
@@ -23,7 +23,7 @@ class CommandRiskPolicyTest {
 
     private boolean requiresApproval(AgentTool tool, String command) {
         return policy.requiresApproval(
-                AgentContext.of("main-agent"),
+                InvocationContext.of("main-agent"),
                 tool,
                 new ToolCall(tool.name(),
                         command == null ? Map.of() : Map.of("command", command)));
@@ -68,7 +68,7 @@ class CommandRiskPolicyTest {
     void blankOrMissingCommandRequiresApproval() {
         assertThat(requiresApproval(runCommand, " ")).isTrue();
         assertThat(policy.requiresApproval(
-                AgentContext.of("main-agent"), runCommand, new ToolCall("run_command", Map.of())))
+                InvocationContext.of("main-agent"), runCommand, new ToolCall("run_command", Map.of())))
                 .isTrue();
     }
 

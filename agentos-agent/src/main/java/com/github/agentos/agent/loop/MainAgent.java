@@ -3,7 +3,7 @@ package com.github.agentos.agent.loop;
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.AgentExecutionResult;
 import com.github.agentos.agent.finalize.AgentFinalizer;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentLoop;
@@ -104,7 +104,7 @@ public final class MainAgent implements AgentLoop, Agent {
     }
 
     @Override
-    public AgentState run(AgentRequest request, AgentContext context, AgentState runningState) {
+    public AgentState run(AgentRequest request, InvocationContext context, AgentState runningState) {
         return run(request, context, runningState, AgentEventSink.NOOP);
     }
 
@@ -124,8 +124,7 @@ public final class MainAgent implements AgentLoop, Agent {
     @Override
     public AgentExecutionResult run(
             AgentRequest request,
-            com.github.agentos.kernel.AgentExecutionContext executionContext) {
-        AgentContext context = executionContext.agentContext();
+            InvocationContext context) {
         AgentState result = run(
                 request, context, AgentState.ready().startNextIteration(), AgentEventSink.NOOP);
         return AgentExecutionResult.from(
@@ -135,7 +134,7 @@ public final class MainAgent implements AgentLoop, Agent {
     @Override
     public AgentState run(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentState runningState,
             AgentEventSink eventSink) {
         return run(request, context, runningState, eventSink, null);
@@ -144,7 +143,7 @@ public final class MainAgent implements AgentLoop, Agent {
     @Override
     public AgentState resume(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentState runningState,
             AgentCheckpoint checkpoint,
             PendingActionResolution resolution,
@@ -161,7 +160,7 @@ public final class MainAgent implements AgentLoop, Agent {
 
     @Override
     public AgentCheckpoint checkpoint(
-            AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
+            AgentRequest request, InvocationContext context, AgentCheckpoint checkpoint) {
         Continuation continuation = peekContinuation(checkpoint.invocationId());
         if (continuation == null) {
             return checkpoint;
@@ -184,7 +183,7 @@ public final class MainAgent implements AgentLoop, Agent {
 
     private AgentState run(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentState runningState,
             AgentEventSink eventSink,
             Continuation continuation) {
@@ -600,7 +599,7 @@ public final class MainAgent implements AgentLoop, Agent {
 
     private void captureMemory(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             String finalAnswer,
             List<StepResult> results,
             String planId) {
@@ -695,7 +694,7 @@ public final class MainAgent implements AgentLoop, Agent {
         }
     }
 
-    private static void incrementModelCalls(AgentContext context) {
+    private static void incrementModelCalls(InvocationContext context) {
         if (context.invocation() != null) {
             context.invocation().incrementModelCalls();
         }

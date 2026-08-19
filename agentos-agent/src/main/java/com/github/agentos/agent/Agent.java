@@ -1,7 +1,7 @@
 package com.github.agentos.agent;
 
-import com.github.agentos.kernel.AgentExecutionContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 
 /** 为未来注册和组合预留的统一 Agent 执行协议。 */
 public interface Agent {
@@ -13,5 +13,5 @@ public interface Agent {
     String description();
 
     /** 在给定执行上下文中运行一次 Agent。 */
-    AgentExecutionResult run(AgentRequest request, AgentExecutionContext context);
+    AgentExecutionResult run(AgentRequest request, InvocationContext context);
 }

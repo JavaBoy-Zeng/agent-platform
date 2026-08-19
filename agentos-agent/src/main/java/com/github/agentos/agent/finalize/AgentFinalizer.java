@@ -1,6 +1,6 @@
 package com.github.agentos.agent.finalize;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.planner.AgentPlan;
 
@@ -8,5 +8,5 @@ import com.github.agentos.planner.AgentPlan;
 public interface AgentFinalizer {
 
     /** 校验并返回 COMPLETE 计划携带的最终回答。 */
-    String finish(AgentRequest request, AgentContext context, AgentPlan completedPlan);
+    String finish(AgentRequest request, InvocationContext context, AgentPlan completedPlan);
 }

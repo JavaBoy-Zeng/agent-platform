@@ -1,8 +1,8 @@
 package com.github.agentos.tool.runtime;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolExecutionMode;
@@ -148,7 +148,7 @@ class ToolDispatcherTest {
 
     private static ToolDispatcher.ToolExecutionContextFactory contextFactory() {
         return tool -> new ToolExecutionContext(
-                AgentRequest.of("session-1", "test"), AgentContext.of("main-agent"),
+                AgentRequest.of("session-1", "test"), InvocationContext.of("main-agent"),
                 "plan-1", "step-1", AgentExecutionLimits.defaults(), Map.of(), tool);
     }
 

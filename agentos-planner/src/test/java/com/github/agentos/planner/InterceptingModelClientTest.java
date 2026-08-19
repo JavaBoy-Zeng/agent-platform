@@ -1,7 +1,7 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.memory.MemoryContext;
 import org.junit.jupiter.api.Test;
 
@@ -64,7 +64,7 @@ class InterceptingModelClientTest {
 
     private static PlanningRequest request() {
         return new PlanningRequest(
-                AgentRequest.of("session-1", "hello"), AgentContext.of("main-agent"),
+                AgentRequest.of("session-1", "hello"), InvocationContext.of("main-agent"),
                 MemoryContext.empty(false), null, null, List.of(), 1);
     }
 

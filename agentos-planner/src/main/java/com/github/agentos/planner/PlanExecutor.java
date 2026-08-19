@@ -1,10 +1,10 @@
 package com.github.agentos.planner;
 
-import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolExecutionContext;
 import com.github.agentos.tool.api.ToolResult;
@@ -38,7 +38,7 @@ public final class PlanExecutor {
      */
     public ExecutionResult execute(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentPlan plan,
             int remainingStepCount,
             int remainingToolCalls) {
@@ -50,7 +50,7 @@ public final class PlanExecutor {
     /** 在剩余预算内执行计划，并持续发送不包含原始大结果的工具阶段事件。 */
     public ExecutionResult execute(
             AgentRequest request,
-            AgentContext context,
+            InvocationContext context,
             AgentPlan plan,
             int remainingStepCount,
             int remainingToolCalls,

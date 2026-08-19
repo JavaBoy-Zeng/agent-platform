@@ -2,7 +2,7 @@ package com.github.agentos.agent.registry;
 
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.AgentExecutionResult;
-import com.github.agentos.kernel.AgentExecutionContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import org.junit.jupiter.api.Test;
@@ -32,7 +32,7 @@ class InMemoryAgentRegistryTest {
             @Override public String id() { return id; }
             @Override public String description() { return "test"; }
             @Override public AgentExecutionResult run(
-                    AgentRequest request, AgentExecutionContext context) {
+                    AgentRequest request, InvocationContext context) {
                 return AgentExecutionResult.from(
                         AgentState.ready().startNextIteration().complete("ok"), null);
             }

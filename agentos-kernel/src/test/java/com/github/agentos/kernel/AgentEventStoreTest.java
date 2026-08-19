@@ -14,13 +14,13 @@ class AgentEventStoreTest {
         InMemoryAgentEventStore store = new InMemoryAgentEventStore();
         AgentLoop loop = new AgentLoop() {
             @Override
-            public AgentState run(AgentRequest request, AgentContext context, AgentState running) {
+            public AgentState run(AgentRequest request, InvocationContext context, AgentState running) {
                 return running.complete("done");
             }
 
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState running,
+                    AgentRequest request, InvocationContext context, AgentState running,
                     AgentEventSink sink) {
                 sink.emit(AgentRunEvent.of(
                         AgentRunEvent.Type.PLAN_CREATED, request.sessionId(), "plan",
@@ -28,13 +28,13 @@ class AgentEventStoreTest {
                 return running.complete("done");
             }
         };
-        AgentRuntime runtime = new AgentRuntime(loop, AgentEventPublisher.NOOP, store);
+        AgentRunner runner = new AgentRunner(loop, AgentEventPublisher.NOOP, store);
         AgentRequest request = AgentRequest.of("same-session", "test");
 
-        runtime.run(request, AgentContext.of("main-agent"));
-        String firstId = runtime.latestInvocation("same-session").orElseThrow().invocationId();
-        runtime.run(request, AgentContext.of("main-agent"));
-        String secondId = runtime.latestInvocation("same-session").orElseThrow().invocationId();
+        runner.run(request, InvocationContext.of("main-agent"));
+        String firstId = runner.latestInvocation("same-session").orElseThrow().invocationId();
+        runner.run(request, InvocationContext.of("main-agent"));
+        String secondId = runner.latestInvocation("same-session").orElseThrow().invocationId();
 
         assertThat(store.findByInvocationId(firstId)).extracting(AgentEvent::type)
                 .containsExactly(

@@ -1,6 +1,6 @@
 package com.github.agentos.agent.routing;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import org.junit.jupiter.api.Test;
 
@@ -23,56 +23,56 @@ class HeuristicIntentClassifierTest {
     void shortCircuitsChineseGreeting() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "你好", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsChineseGreetingWithPunctuation() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "你好！", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsEnglishGreetingCaseInsensitive() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "HI", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsMorningGreeting() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "早上好", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsAcknowledgement() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "好的", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsEnglishAcknowledgement() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "thanks", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsThankYou() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "thank you", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     @Test
     void shortCircuitsGreetingWithSurroundingWhitespace() {
         assertThat(classifier.classify(
                 new AgentRequest("s1", "   你好  ", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
     }
 
     // ---------- 不应当被短路的真实场景（回归用例） ----------
@@ -82,7 +82,7 @@ class HeuristicIntentClassifierTest {
         // 中文事实查询 — 必须落到 MainAgent，让 LLM 调 WeatherTool
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "重庆多少度？", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.isShortCircuit()).isFalse();
         assertThat(result.hasAgentTarget()).isFalse();
@@ -93,7 +93,7 @@ class HeuristicIntentClassifierTest {
     void doesNotShortCircuitEnglishWeatherQuestion() {
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "what's the weather", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.isShortCircuit()).isFalse();
         assertThat(result.hasAgentTarget()).isFalse();
@@ -103,7 +103,7 @@ class HeuristicIntentClassifierTest {
     void doesNotShortCircuitStockQuestion() {
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "今天上证多少点", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.isShortCircuit()).isFalse();
         assertThat(result.hasAgentTarget()).isFalse();
@@ -114,7 +114,7 @@ class HeuristicIntentClassifierTest {
         // 纯算术不需要工具，短文本且无任务信号词 → 派发到简单问答 Agent
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "3+5 等于几", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.isShortCircuit()).isFalse();
         assertThat(result.hasAgentTarget()).isTrue();
@@ -127,7 +127,7 @@ class HeuristicIntentClassifierTest {
         // "你好，帮我搜索..." 这种把寒暄和任务拼接的输入，必须落到 fallback
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "你好帮我搜索", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.isShortCircuit()).isFalse();
         assertThat(result.hasAgentTarget()).isFalse();
@@ -138,7 +138,7 @@ class HeuristicIntentClassifierTest {
         // "嗨，你是谁" 不应被短路（去除标点后是 "嗨你是谁"，不在白名单）
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "嗨你是谁", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.isShortCircuit()).isFalse();
     }
@@ -149,7 +149,7 @@ class HeuristicIntentClassifierTest {
     void routesShortConceptQuestionToSimpleQa() {
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "什么是 JVM？", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.hasAgentTarget()).isTrue();
         assertThat(result.agentId()).isEqualTo("simple-qa-agent");
@@ -160,7 +160,7 @@ class HeuristicIntentClassifierTest {
     void routesComparisonQuestionToSimpleQa() {
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "java 和 go 有什么区别", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.agentId()).isEqualTo("simple-qa-agent");
     }
@@ -169,7 +169,7 @@ class HeuristicIntentClassifierTest {
     void routesEnglishConceptQuestionToSimpleQa() {
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "what is recursion?", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.agentId()).isEqualTo("simple-qa-agent");
     }
@@ -179,7 +179,7 @@ class HeuristicIntentClassifierTest {
         // "嗨你是谁" 不是寒暄白名单，但属于简单问答
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "嗨你是谁", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.agentId()).isEqualTo("simple-qa-agent");
     }
@@ -194,7 +194,7 @@ class HeuristicIntentClassifierTest {
                 "今天几号", "今天是哪年哪月哪日", "今天是星期几", "what's today's date"}) {
             IntentClassification result = classifier.classify(
                     new AgentRequest("s1", input, Map.of()),
-                    AgentContext.of("main-agent"));
+                    InvocationContext.of("main-agent"));
 
             assertThat(result.hasAgentTarget())
                     .as("input '%s' must fall back to MainAgent", input)
@@ -206,7 +206,7 @@ class HeuristicIntentClassifierTest {
     void longQuestionFallsBackInsteadOfSimpleQa() {
         IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "什么是 JVM".repeat(20), Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.hasAgentTarget()).isFalse();
         assertThat(result.intent()).isEqualTo("heuristic-fallback");
@@ -217,7 +217,7 @@ class HeuristicIntentClassifierTest {
         HeuristicIntentClassifier disabled = new HeuristicIntentClassifier(16, MESSAGE);
         IntentClassification result = disabled.classify(
                 new AgentRequest("s1", "什么是 JVM", Map.of()),
-                AgentContext.of("main-agent"));
+                InvocationContext.of("main-agent"));
 
         assertThat(result.hasAgentTarget()).isFalse();
         assertThat(result.intent()).isEqualTo("heuristic-fallback");
@@ -230,7 +230,7 @@ class HeuristicIntentClassifierTest {
         HeuristicIntentClassifier strict = new HeuristicIntentClassifier(0, MESSAGE);
         assertThat(strict.classify(
                 new AgentRequest("s1", "你好", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isFalse();
+                InvocationContext.of("main-agent")).isShortCircuit()).isFalse();
     }
 
     @Test
@@ -239,7 +239,7 @@ class HeuristicIntentClassifierTest {
         // "thank you" = 9 chars, 即使在白名单也因长度被拒
         assertThat(tight.classify(
                 new AgentRequest("s1", "thank you", Map.of()),
-                AgentContext.of("main-agent")).isShortCircuit()).isFalse();
+                InvocationContext.of("main-agent")).isShortCircuit()).isFalse();
     }
 
     @Test

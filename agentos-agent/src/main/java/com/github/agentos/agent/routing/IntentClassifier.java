@@ -1,6 +1,6 @@
 package com.github.agentos.agent.routing;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 
 /** 在请求进入 MainAgent 之前产出路由决策的策略接口。 */
@@ -17,5 +17,5 @@ public interface IntentClassifier {
      * @param context 本次身份和任务上下文
      * @return 路由决策，不可为 {@code null}
      */
-    IntentClassification classify(AgentRequest request, AgentContext context);
+    IntentClassification classify(AgentRequest request, InvocationContext context);
 }

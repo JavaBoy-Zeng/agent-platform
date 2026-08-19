@@ -1,5 +1,5 @@
 package com.github.agentos.agent.finalize;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.planner.AgentPlan;
 import com.github.agentos.planner.PlanOutcome;
@@ -27,7 +27,7 @@ public final class DefaultAgentFinalizer implements AgentFinalizer {
 
     @Override
     public String finish(
-            AgentRequest request, AgentContext context, AgentPlan completedPlan) {
+            AgentRequest request, InvocationContext context, AgentPlan completedPlan) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(completedPlan, "completedPlan must not be null");

@@ -1,6 +1,6 @@
 package com.github.agentos.hitl;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 
@@ -36,7 +36,7 @@ public class RiskPolicy {
      * @return 需要人工审批时返回 {@code true}
      * @throws NullPointerException 当任一参数为 {@code null} 时抛出
      */
-    public boolean requiresApproval(AgentContext context, AgentTool tool, ToolCall call) {
+    public boolean requiresApproval(InvocationContext context, AgentTool tool, ToolCall call) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(tool, "tool must not be null");
         Objects.requireNonNull(call, "call must not be null");

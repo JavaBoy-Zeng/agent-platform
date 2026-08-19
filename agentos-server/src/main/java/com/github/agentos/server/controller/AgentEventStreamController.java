@@ -1,10 +1,10 @@
 package com.github.agentos.server.controller;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.HttpStatus;
@@ -28,15 +28,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RequestMapping("/api/agents")
 public final class AgentEventStreamController {
 
-    private final AgentRuntime runtime;
+    private final AgentRunner runner;
     private final ExecutorService executor;
     private final AgentRunTaskRegistry taskRegistry;
 
     /** 创建领域事件 SSE 控制器。 */
     public AgentEventStreamController(
-            AgentRuntime runtime, ExecutorService executor,
+            AgentRunner runner, ExecutorService executor,
             AgentRunTaskRegistry taskRegistry) {
-        this.runtime = runtime;
+        this.runner = runner;
         this.executor = executor;
         this.taskRegistry = taskRegistry;
     }
@@ -57,7 +57,7 @@ public final class AgentEventStreamController {
 
         boolean started = taskRegistry.start(invocation.request().sessionId(), executor, () -> {
             try {
-                AgentState state = runtime.run(
+                AgentState state = runner.run(
                         invocation.request(), invocation.context(),
                         event -> sendLegacy(emitter, connected, event),
                         event -> sendDomain(emitter, connected, event));
@@ -122,7 +122,7 @@ public final class AgentEventStreamController {
         return new EventStreamInvocation(
                 new AgentRequest(sessionId, body.input(),
                         body.attributes() == null ? Map.of() : body.attributes()),
-                new AgentContext(teamId, userId, agentId,
+                new InvocationContext(teamId, userId, agentId,
                         body.taskId() == null ? "" : body.taskId()));
     }
 
@@ -140,6 +140,6 @@ public final class AgentEventStreamController {
     public record EventStreamResponse(String sessionId, AgentState state) {
     }
 
-    private record EventStreamInvocation(AgentRequest request, AgentContext context) {
+    private record EventStreamInvocation(AgentRequest request, InvocationContext context) {
     }
 }

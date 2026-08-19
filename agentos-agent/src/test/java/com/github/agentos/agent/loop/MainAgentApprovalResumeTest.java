@@ -4,10 +4,10 @@ import com.github.agentos.agent.finalize.DefaultAgentFinalizer;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.ApprovalToolInterceptor;
 import com.github.agentos.hitl.RiskPolicy;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.memory.MemoryService;
@@ -69,7 +69,7 @@ class MainAgentApprovalResumeTest {
                                 new ApprovalService(request -> false)))),
                 new DefaultFailureClassifier());
         AgentPlanner planner = new AgentPlanner() {
-            @Override public AgentPlan createPlan(AgentRequest request, AgentContext context) {
+            @Override public AgentPlan createPlan(AgentRequest request, InvocationContext context) {
                 planCalls.incrementAndGet();
                 return AgentPlan.create(
                         PlanType.EXECUTION, PlanOrigin.INITIAL, PlanOutcome.CONTINUE,
@@ -88,13 +88,13 @@ class MainAgentApprovalResumeTest {
             }
 
             @Override public AgentPlan replan(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
                 return decide(request, context, previousPlan, snapshot).plan();
             }
 
             @Override public AgentDecision decide(
-                    AgentRequest request, AgentContext context, AgentPlan previousPlan,
+                    AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
                 decisionCalls.incrementAndGet();
                 return AgentDecision.from(AgentPlan.create(
@@ -107,10 +107,10 @@ class MainAgentApprovalResumeTest {
             MainAgent agent = new MainAgent(
                     planner, executor, memory, new DefaultAgentFinalizer(),
                     new AgentExecutionLimits(3, 10, 10, 5));
-            AgentRuntime runtime = new AgentRuntime(agent);
+            AgentRunner runtime = new AgentRunner(agent);
             AgentState waiting = runtime.run(
                     AgentRequest.of("session-1", "write file"),
-                    AgentContext.of("main-agent"));
+                    InvocationContext.of("main-agent"));
             var invocation = runtime.latestInvocation("session-1").orElseThrow();
 
             assertThat(waiting.status()).isEqualTo(AgentState.Status.WAITING);

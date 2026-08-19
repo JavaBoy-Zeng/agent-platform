@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Checkpoint 与审批恢复测试。 */
-class AgentRuntimeResumeTest {
+class AgentRunnerResumeTest {
 
     @Test
     void resumesApprovedInvocationWithSameIdAndRejectStops() {
@@ -16,12 +16,12 @@ class AgentRuntimeResumeTest {
         AtomicInteger stepOneExecutions = new AtomicInteger();
         AgentLoop loop = new AgentLoop() {
             @Override public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState running) {
+                    AgentRequest request, InvocationContext context, AgentState running) {
                 return running;
             }
 
             @Override public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState running,
+                    AgentRequest request, InvocationContext context, AgentState running,
                     AgentEventSink sink) {
                 stepOneExecutions.incrementAndGet();
                 context.invocation().waitFor(action("approval-1"));
@@ -29,7 +29,7 @@ class AgentRuntimeResumeTest {
             }
 
             @Override public AgentCheckpoint checkpoint(
-                    AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
+                    AgentRequest request, InvocationContext context, AgentCheckpoint checkpoint) {
                 return new AgentCheckpoint(
                         checkpoint.sessionId(), checkpoint.invocationId(), checkpoint.agentId(),
                         checkpoint.taskId(), checkpoint.teamId(), checkpoint.userId(),
@@ -40,7 +40,7 @@ class AgentRuntimeResumeTest {
             }
 
             @Override public AgentState resume(
-                    AgentRequest request, AgentContext context, AgentState running,
+                    AgentRequest request, InvocationContext context, AgentState running,
                     AgentCheckpoint checkpoint, PendingActionResolution resolution,
                 AgentEventSink sink) {
                 assertThat(checkpoint.currentStepIndex()).isEqualTo(1);
@@ -50,22 +50,22 @@ class AgentRuntimeResumeTest {
             }
         };
         InMemoryCheckpointStore store = new InMemoryCheckpointStore();
-        AgentRuntime runtime = new AgentRuntime(loop, AgentEventPublisher.NOOP, store);
+        AgentRunner runner = new AgentRunner(loop, AgentEventPublisher.NOOP, store);
 
-        runtime.run(AgentRequest.of("session-1", "write"), AgentContext.of("main-agent"));
-        String invocationId = runtime.latestInvocation("session-1").orElseThrow().invocationId();
-        AgentState approved = runtime.resume(
+        runner.run(AgentRequest.of("session-1", "write"), InvocationContext.of("main-agent"));
+        String invocationId = runner.latestInvocation("session-1").orElseThrow().invocationId();
+        AgentState approved = runner.resume(
                 invocationId, PendingActionResolution.approved("approval-1"));
 
         assertThat(approved.status()).isEqualTo(AgentState.Status.COMPLETED);
         assertThat(approved.output()).isEqualTo("resumed");
         assertThat(resumes).hasValue(1);
         assertThat(stepOneExecutions).hasValue(1);
-        assertThat(runtime.checkpoint(invocationId)).isEmpty();
+        assertThat(runner.checkpoint(invocationId)).isEmpty();
 
-        runtime.run(AgentRequest.of("session-2", "write"), AgentContext.of("main-agent"));
-        String rejectedId = runtime.latestInvocation("session-2").orElseThrow().invocationId();
-        AgentState rejected = runtime.resume(
+        runner.run(AgentRequest.of("session-2", "write"), InvocationContext.of("main-agent"));
+        String rejectedId = runner.latestInvocation("session-2").orElseThrow().invocationId();
+        AgentState rejected = runner.resume(
                 rejectedId, PendingActionResolution.rejected("approval-1"));
         assertThat(rejected.status()).isEqualTo(AgentState.Status.FAILED);
         assertThat(resumes).hasValue(1);

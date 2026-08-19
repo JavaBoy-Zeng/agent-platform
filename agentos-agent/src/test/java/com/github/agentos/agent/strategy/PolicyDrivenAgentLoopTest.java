@@ -1,8 +1,7 @@
 package com.github.agentos.agent.strategy;
 
-import com.github.agentos.kernel.AgentContext;
-import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentLoop;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.ExecutionMode;
@@ -23,11 +22,11 @@ class PolicyDrivenAgentLoopTest {
         PolicyDrivenAgentLoop router = new PolicyDrivenAgentLoop(
                 (request, context) -> ExecutionMode.valueOf(
                         String.valueOf(request.attributes().get("mode"))),
-                AgentExecutionLimits.defaults(), direct, react, plan);
+                direct, react, plan);
 
         AgentState result = router.run(
                 new AgentRequest("s1", "run", Map.of("mode", "REACT")),
-                AgentContext.of("main-agent"), AgentState.ready().startNextIteration());
+                InvocationContext.of("main-agent"), AgentState.ready().startNextIteration());
 
         assertThat(result.output()).isEqualTo("react");
     }

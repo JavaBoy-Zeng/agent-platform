@@ -1,11 +1,11 @@
 package com.github.agentos.server;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
-import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.server.controller.BackgroundAgentRunController;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
@@ -41,14 +41,14 @@ class BackgroundAgentRunControllerTest {
         AgentLoop loop = new AgentLoop() {
             @Override
             public AgentState run(
-                    AgentRequest request, AgentContext context, AgentState runningState) {
+                    AgentRequest request, InvocationContext context, AgentState runningState) {
                 return runningState.complete("done");
             }
 
             @Override
             public AgentState run(
                     AgentRequest request,
-                    AgentContext context,
+                    InvocationContext context,
                     AgentState runningState,
                     AgentEventSink eventSink) {
                 eventSink.emit(AgentRunEvent.of(
@@ -63,7 +63,7 @@ class BackgroundAgentRunControllerTest {
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
-                    new AgentRuntime(loop), executor, new AgentRunTaskRegistry());
+                    new AgentRunner(loop), executor, new AgentRunTaskRegistry());
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
                     new BackgroundAgentRunController(coordinator)).build();
 
@@ -123,11 +123,11 @@ class BackgroundAgentRunControllerTest {
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
-                    new AgentRuntime(loop), executor, new AgentRunTaskRegistry());
+                    new AgentRunner(loop), executor, new AgentRunTaskRegistry());
 
             AgentRunCoordinator.RunSnapshot disconnectedRun = coordinator.start(
                     new AgentRequest("disconnect-1", "hello", Map.of()),
-                    AgentContext.of("agent"));
+                    InvocationContext.of("agent"));
             assertThat(firstStarted.await(2, TimeUnit.SECONDS)).isTrue();
             var emitter = coordinator.stream(disconnectedRun.runId(), 0).orElseThrow();
             emitter.complete();
@@ -138,7 +138,7 @@ class BackgroundAgentRunControllerTest {
 
             AgentRunCoordinator.RunSnapshot cancellableRun = coordinator.start(
                     new AgentRequest("cancel-1", "hello", Map.of()),
-                    AgentContext.of("agent"));
+                    InvocationContext.of("agent"));
             assertThat(secondStarted.await(2, TimeUnit.SECONDS)).isTrue();
             AgentRunCoordinator.CancelResult cancellation = coordinator.cancel(
                     cancellableRun.runId()).orElseThrow();

@@ -1,7 +1,7 @@
 package com.github.agentos.agent.strategy;
 
 import com.github.agentos.agent.finalize.AgentFinalizer;
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentLoop;
@@ -51,14 +51,14 @@ public final class ReactExecutionStrategy implements AgentLoop {
     }
 
     @Override
-    public AgentState run(AgentRequest request, AgentContext context, AgentState runningState) {
+    public AgentState run(AgentRequest request, InvocationContext context, AgentState runningState) {
         return run(request, context, runningState, AgentEventSink.NOOP);
     }
 
     /** 模型返回 ToolCall 时执行并反馈 Observation，返回 final 时结束。 */
     @Override
     public AgentState run(
-            AgentRequest request, AgentContext context, AgentState runningState,
+            AgentRequest request, InvocationContext context, AgentState runningState,
             AgentEventSink eventSink) {
         int modelCalls = 1;
         int toolCalls = 0;

@@ -1,6 +1,6 @@
 package com.github.agentos.agent.strategy;
 
-import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
@@ -19,13 +19,13 @@ public final class PlanExecutionStrategy implements AgentLoop {
     }
 
     @Override
-    public AgentState run(AgentRequest request, AgentContext context, AgentState runningState) {
+    public AgentState run(AgentRequest request, InvocationContext context, AgentState runningState) {
         return delegate.run(request, context, runningState);
     }
 
     @Override
     public AgentState run(
-            AgentRequest request, AgentContext context, AgentState runningState,
+            AgentRequest request, InvocationContext context, AgentState runningState,
             AgentEventSink eventSink) {
         return delegate.run(request, context, runningState, eventSink);
     }

@@ -46,13 +46,13 @@ public record DefaultAgentEvent(
 
     /** 使用当前时间和随机事件标识创建无指令领域事件。 */
     public static DefaultAgentEvent of(
-            AgentContext context, AgentEventType type, String message, Map<String, Object> data) {
+            InvocationContext context, AgentEventType type, String message, Map<String, Object> data) {
         return of(context, type, message, data, EventActions.NONE);
     }
 
     /** 使用当前时间和随机事件标识创建携带动作的领域事件。 */
     public static DefaultAgentEvent of(
-            AgentContext context, AgentEventType type, String message,
+            InvocationContext context, AgentEventType type, String message,
             Map<String, Object> data, EventActions actions) {
         Objects.requireNonNull(context, "context must not be null");
         if (context.invocation() == null) {
