@@ -38,7 +38,14 @@ PlanExecutor
 
 ## 默认安全策略
 
-`agentos-server` 当前把审批阈值设置为 `MEDIUM`，并使用一个默认拒绝处理器。因此低风险工具可以执行，中高风险工具在接入真实审批渠道前保持阻断状态。
+`agentos-server` 对 shell 命令使用内容级风险策略 `CommandRiskPolicy`：
+
+- 只读白名单命令（`ls`、`cat`、`grep`、`git status`、`mvn test` 等）直接执行，不打断任务。
+- 白名单之外、或包含管道/重定向/命令串联/命令替换等 shell 元字符的命令一律要求审批，
+  避免 "cat file; rm -rf /" 这类以只读命令开头的拼接攻击绕过审批。
+- 其他高风险工具（`file_write`、`git_commit` 等）仍按 `MEDIUM` 审批阈值处理。
+
+审批处理器当前是默认拒绝实现；接入真实审批渠道前，需要审批的调用保持阻断状态。
 
 ## 模块依赖与扩展
 

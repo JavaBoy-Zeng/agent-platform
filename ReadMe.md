@@ -21,14 +21,14 @@ flowchart LR
     tool --> kernel
 ```
 
-- [`agentos-kernel`](agentos-kernel/ReadMe.md)：运行入口、Agent 循环、上下文与状态机。
-- [`agentos-agent`](agentos-agent/ReadMe.md)：主 Agent 编排，连接规划、执行和记忆；含 BaseAgent 体系与 Workflow Agents（串行/并行/循环编排、Agent 工具化）。
-- [`agentos-planner`](agentos-planner/ReadMe.md)：迭代规划、失败分类、计划模型和执行器。
-- [`agentos-tool`](agentos-tool/ReadMe.md)：工具 API、统一调度运行时、结构化失败和内置工具。
+- [`agentos-kernel`](agentos-kernel/ReadMe.md)：运行入口（`AgentRunner`/`InvocationContext`）、Agent 循环、状态机，以及事件、Checkpoint 恢复、协作式取消、插件与产物存储等横切能力。
+- [`agentos-agent`](agentos-agent/ReadMe.md)：主 Agent 编排与三级意图路由，连接规划、执行和记忆；含 BaseAgent 体系与 Workflow Agents（串行/并行/循环编排、Agent 工具化）。
+- [`agentos-planner`](agentos-planner/ReadMe.md)：迭代规划、失败分类、计划模型、执行器和 LlmFlow 请求组装流水线。
+- [`agentos-tool`](agentos-tool/ReadMe.md)：工具 API（`ToolContext`）、统一调度运行时、结构化失败、产物登记和内置工具。
 - [`agentos-memory`](agentos-memory/ReadMe.md)：L0–L3 分层记忆、混合召回、持久化 Pipeline 与统一服务。
-- [`agentos-hitl`](agentos-hitl/ReadMe.md)：风险策略与人工审批端口；默认拒绝需要审批的操作。
+- [`agentos-hitl`](agentos-hitl/ReadMe.md)：风险策略与人工审批端口；shell 命令按内容级策略放行只读命令、审批破坏性命令。
 - [`agentos-console`](agentos-console/ReadMe.md)：基于 Vue 3 的独立 Agent 操作控制台。
-- [`agentos-server`](agentos-server/ReadMe.md)：Spring Boot 依赖注入、REST API 与集成测试。
+- [`agentos-server`](agentos-server/ReadMe.md)：Spring Boot 依赖注入、REST API（运行/事件流/产物/用量/记忆）、持久化与鉴权。
 
 ## 启动
 
@@ -78,12 +78,25 @@ curl -X POST http://localhost:8080/api/agent-runs/{runId}/cancel
 ```
 
 事件使用单调递增的 `sequence` 作为 SSE ID。断开或刷新页面只会移除订阅，不会取消后台任务；
-当前 Run 和事件保存在服务进程内存中，因此服务重启后不能继续恢复。
+`cancel` 接口触发协作式取消，运行在下一个检查点进入 `CANCELLED` 终态。
 
 查询会话状态：
 
 ```bash
 curl http://localhost:8080/api/agents/session-1/state
+```
+
+下载运行产物（工具写入的报告、文档等自动登记为会话产物）：
+
+```bash
+curl "http://localhost:8080/api/artifacts?sessionId=session-1"
+curl -OJ http://localhost:8080/api/artifacts/{artifactId}
+```
+
+查询模型 token 用量：
+
+```bash
+curl http://localhost:8080/api/usage/session-1
 ```
 
 启动独立 Vue 3 控制台：
@@ -100,6 +113,10 @@ npm run dev
 建议使用 SQLite；当前向量仍在召回时计算，尚未接入 `sqlite-vec` 或独立向量数据库。详细 API、
 作用域、恢复边界和配置见 [`agentos-memory`](agentos-memory/ReadMe.md)。
 
+运行态（领域事件、审批 Checkpoint、断点续跑状态、用量账本）默认保存在进程内存中；
+设置 `AGENTOS_PERSISTENCE_MODE=sqlite` 后写入单一 SQLite 文件，进程重启后等待审批的任务
+可恢复执行。REST 接口默认不鉴权，配置 `AGENTOS_API_KEY` 后要求 `X-API-Key` 请求头。
+
 ## 项目文档
 
 - [架构说明](docs/ARCHITECTURE.md)
@@ -108,17 +125,10 @@ npm run dev
 - [分层记忆系统面试项目总结](docs/AGENT_MEMORY_INTERVIEW.md)
 
 
-外部工具
-天气
-股票
-搜索
-地图
-邮件
-日历
-数据库
-本地工具
-文件
-Shell
-Git
-代码执行
-浏览器
+## 工具规划
+
+| 外部工具 | 本地工具 |
+| --- | --- |
+| 天气、股票、搜索、地图、邮件、日历、数据库 | 文件、Shell、Git、代码执行、浏览器 |
+
+当前已实现：文件读写、Shell、Git 提交、网页抓取、搜索、天气、日期。

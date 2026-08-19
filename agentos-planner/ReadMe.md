@@ -9,6 +9,10 @@
 | --- | --- |
 | `AgentPlanner` | 提供 `createPlan`、兼容的 `replan`，以及基于 Observation 的 `decide`。 |
 | `LlmAgentPlanner` | 召回记忆、调用 `ModelClient`、把模型 DTO 转成领域计划并校验。 |
+| `ChatClient` | 简单问答直答的单轮/流式模型端口，与 `ModelClient` 平行；不携带工具定义。 |
+| `flow.LlmFlow` | LLM 请求组装流水线：按序执行 `LlmRequestProcessor` 链后产出最终请求。 |
+| `flow.LlmRequest / LlmMessage` | 面向厂商的消息模型（system 指令 + user/assistant 序列）。 |
+| `flow.InstructionProcessor / HistoryProcessor` | 默认处理器：注入系统指令、把会话历史展开为消息序列。 |
 | `AgentPlan` | Runtime 创建的计划，包含 `type`、`origin`、`outcome`、步骤或最终回答。 |
 | `PlanType` | `DISCOVERY` 探索未知环境；`EXECUTION` 执行任务，也包含最终回答阶段。 |
 | `PlanOrigin` | `INITIAL` 或 `REPLANNED`，描述计划如何产生，不进入模型输出 Schema。 |
@@ -39,6 +43,21 @@ User → MainAgent → Planner → Tool → Observation → Decision
 
 `final_answer` 不是 `AgentTool`。`COMPLETE` 计划必须是 `EXECUTION`、不得包含步骤，并且必须
 包含非空 `finalAnswer`；`CONTINUE` 计划必须包含步骤且不得包含最终回答。
+
+## 请求组装（LlmFlow）
+
+发给模型的请求不是手工拼接的字符串，而是经 `flow` 包的处理器链组装：
+
+```text
+LlmFlow.run(LlmRequest, processors)
+    ├── InstructionProcessor   注入 system 指令
+    └── HistoryProcessor       展开会话历史为 user/assistant 消息
+    ──► 最终 LlmRequest ──► ChatClient / ModelClient
+```
+
+处理器是纯函数式的 `LlmRequestProcessor`，按声明顺序对不可变请求做增量变换；
+多轮上下文、prompt 预算裁剪等横切关注点以处理器接入，不侵入客户端实现。
+简单 QA 直答与规划两条链路共用同一流水线。
 
 ## 失败策略
 

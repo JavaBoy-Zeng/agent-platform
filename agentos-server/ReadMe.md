@@ -5,10 +5,12 @@
 ## 主要职责
 
 - 启动 Spring Boot Web 应用。
-- 将规划器、工具、记忆、审批服务、主 Agent 和运行时装配为 Bean。
+- 将路由、规划器、工具、记忆、审批服务、主 Agent 和运行时装配为 Bean。
 - 提供创建 Agent 运行和查询会话状态的 REST API。
 - 提供 Planner、Tool、Observation、Decision 阶段的 SSE 流式运行 API。
 - 提供按作用域查看 L0-L3 数据的只读记忆管理 API。
+- 提供会话产物（Artifact）的列举、下载与删除 API。
+- 提供按会话汇总的模型 token 用量查询 API。
 - 将请求参数错误转换为标准 HTTP Problem Detail 响应。
 - 承载跨模块集成测试和可执行 JAR 打包。
 
@@ -17,32 +19,43 @@
 | 类型 | 作用 |
 | --- | --- |
 | `AgentOsApplication` | 标注 `@SpringBootApplication` 的应用入口。 |
-| `AgentOsConfiguration` | 装配工具、记忆、审批、计划执行器、主 Agent 和运行时。 |
-| `LlmPlannerConfiguration` | 装配 `LlmAgentPlanner` 和默认的 OpenAI-compatible `ModelClient`。 |
+| `AgentOsConfiguration` | 装配工具、记忆、审批、计划执行器、主 Agent、插件、产物存储和运行时。 |
+| `LlmPlannerConfiguration` | 装配 `LlmAgentPlanner` 和默认的 OpenAI-compatible `ModelClient` / `ChatClient`。 |
+| `RoutingConfiguration` | 装配三级意图路由（问候白名单 → 简单 QA → MainAgent）。 |
+| `PersistenceConfiguration` | 按 `agentos.persistence.mode` 装配内存或 SQLite 持久化实现。 |
+| `SecurityConfiguration / ApiKeyAuthFilter` | `X-API-Key` 请求头鉴权；未配置密钥时本地开发自动关闭。 |
 | `AgentController` | 暴露 Agent 运行和状态查询 API。 |
 | `BackgroundAgentRunController` | 暴露后台运行创建、快照、事件补播和取消 API。 |
+| `ArtifactController` | 暴露会话产物列举、下载与删除 API。 |
+| `UsageController / UsageRecorder` | 模型 token 用量记账与按会话查询。 |
+| `SessionHistoryService` | 运行前回放最近轮次并注入 QA 与规划 prompt 的多轮上下文。 |
 | `AgentRunCoordinator` | 管理进程内后台 Run、事件序号和 SSE 订阅者。 |
 | `MemoryController` | 暴露 L0-L3 记忆快照只读查询 API。 |
 | `AgentExceptionHandler` | 将非法参数异常转换为 HTTP 400。 |
-| `AgentRuntimeIntegrationTest` | 验证规划、工具执行、状态更新和记忆写入的完整链路。 |
 
 ## 默认装配
 
 ```text
-AgentRuntime
-    └── MainAgent
-        ├── AgentPlanner
-        │   └── LlmAgentPlanner ──► ModelClient
-        ├── PlanExecutor
-        │   ├── FailureClassifier
-        │   └── ToolDispatcher
-        │       ├── ToolRegistry ──► directory_list / file_search / file_read / ...
-        │       └── ApprovalToolInterceptor ──► RiskPolicy / ApprovalService
-        ├── AgentFinalizer
-        └── MemoryService
-            ├── MemoryStore (memory / file / sqlite)
-            ├── MemoryModel (rules / OpenAI-compatible)
-            └── MemoryEmbedding (hashing / OpenAI-compatible)
+AgentRunner
+    └── RoutingAgentLoop（问候白名单 / simple-qa-agent / MainAgent）
+        └── MainAgent
+            ├── AgentPlanner
+            │   └── LlmAgentPlanner ──► ModelClient（经 LlmFlow 组装请求）
+            ├── PlanExecutor
+            │   ├── FailureClassifier
+            │   └── ToolDispatcher
+            │       ├── ToolRegistry ──► directory_list / file_search / file_read / file_write /
+            │       │                  run_command / web_fetch / web_search / today / ...
+            │       └── ApprovalToolInterceptor ──► RiskPolicy / ApprovalService
+            ├── AgentFinalizer
+            ├── ContinuationStore（断点续跑）
+            └── MemoryService
+                ├── MemoryStore (memory / file / sqlite)
+                ├── MemoryModel (rules / OpenAI-compatible)
+                └── MemoryEmbedding (hashing / OpenAI-compatible)
+
+横切：AgentPluginManager（用量记账等插件） · ArtifactService（产物存储） ·
+      AgentEventStore / CheckpointStore / SessionService（memory 或 sqlite）
 ```
 
 ## HTTP API
@@ -105,7 +118,29 @@ POST /api/agent-runs/{runId}/cancel
 ```
 
 事件包含单调递增的 `sequence`，SSE 的 `id` 与该序号一致。断开事件连接不会取消任务；
-重新连接时传入最后成功处理的序号即可补播遗漏事件。
+重新连接时传入最后成功处理的序号即可补播遗漏事件。`cancel` 触发协作式取消令牌，
+运行中的循环与工具在下一个检查点进入 `CANCELLED` 终态。
+
+### 查询与下载产物
+
+文件类工具写入成功后自动登记为会话产物：
+
+```http
+GET    /api/artifacts?sessionId=session-1        列举（按登记时间倒序）
+GET    /api/artifacts/{artifactId}               下载原始内容（带 MIME 与 attachment 头）
+DELETE /api/artifacts/{artifactId}               删除
+```
+
+不再向调用方暴露本地文件路径；产物目录由 `agentos.artifacts.root` 配置。
+
+### 查询模型用量
+
+```http
+GET /api/usage/{sessionId}
+```
+
+返回该会话累计的模型调用次数与 prompt/completion/total token 数。数据经
+`AgentPluginManager` 在每次模型回调点记账，进程重启后在 sqlite 模式下仍可查询。
 
 ### 查询记忆快照
 
@@ -120,6 +155,43 @@ GET /api/memories?sessionId=session-1&teamId=default-team&userId=default-user&ag
 
 管理接口中的数量是当前作用域可见的存储总量；`[agent-memory]` 日志中的数量则是经过召回策略
 筛选后，本次实际发送给规划模型的数量，两者可能不同。
+
+## 持久化
+
+```yaml
+agentos:
+  persistence:
+    mode: "${AGENTOS_PERSISTENCE_MODE:memory}"          # memory | sqlite
+    sqlite-file: "${AGENTOS_PERSISTENCE_SQLITE_FILE:.agentos/runtime/runtime.sqlite}"
+```
+
+- `memory`：默认，零依赖启动，运行态保存在进程内。
+- `sqlite`：领域事件、审批 Checkpoint、断点续跑状态与用量账本写入同一 SQLite 文件；
+  进程重启（含 `kill -9`）后任务可恢复，等待审批的运行批准后继续执行，用量账本仍可查询。
+
+## 多轮会话上下文
+
+`SessionHistoryService` 在运行前从事件存储回放最近轮次（默认 5 轮，单条 400 字符截断），
+同时注入简单 QA 直答与规划两条链路的 prompt。因此 "今天几号" 之后的 "那明天呢"、
+"什么是 JVM" 之后的 "它和 JRE 的区别是什么" 可以正确解析指代。
+
+```yaml
+agentos:
+  history:
+    max-turns: 5
+    max-message-chars: 400
+```
+
+## REST 鉴权
+
+```yaml
+agentos:
+  security:
+    api-key: "${AGENTOS_API_KEY:}"
+```
+
+配置非空后，全部 `/api/**` 请求必须携带 `X-API-Key` 请求头；留空关闭鉴权，便于本地开发。
+上线 `run_command` 等高危工具前必须配置。
 
 ## 构建与启动
 
@@ -140,10 +212,10 @@ java -jar agentos-server/target/agentos-server-0.0.1-SNAPSHOT.jar
 ```yaml
 agentos:
   runtime:
-    max-replan-count: 3
+    max-replan-count: 6
     max-step-count: 30
     max-tool-calls: 30
-    max-model-calls: 6
+    max-model-calls: 10
     max-observation-chars: 4000
     max-observation-total-chars: 24000
   model:
@@ -153,7 +225,7 @@ agentos:
     response-format: "NONE"
     reasoning-split: true
     connect-timeout: "10s"
-    request-timeout: "60s"
+    request-timeout: "600s"
     max-prompt-chars: 60000
 ```
 
@@ -166,18 +238,30 @@ java -jar agentos-server/target/agentos-server-0.0.1-SNAPSHOT.jar
 ```
 
 所有 YAML 配置仍可被同名 Environment variables 覆盖。`API_KEY` 对无需鉴权的本地
-OpenAI-compatible 服务可以留空。配置映射如下：
+OpenAI-compatible 服务可以留空。常用配置映射如下：
 
 | 配置项 | 环境变量 | 默认值 |
 | --- | --- | --- |
-| `agentos.model.model` | `AGENTOS_MODEL_MODEL` | 无，必须显式指定 |
+| `agentos.model.model` | `AGENTOS_MODEL_MODEL` | `MiniMax-M3` |
+| `agentos.model.chat-model` | `AGENTOS_MODEL_CHAT_MODEL` | 空，复用主模型 |
 | `agentos.model.endpoint` | `AGENTOS_MODEL_ENDPOINT` | `https://api.minimaxi.com/v1/chat/completions` |
 | `agentos.model.api-key` | `AGENTOS_MODEL_API_KEY` | 空 |
 | `agentos.model.response-format` | `AGENTOS_MODEL_RESPONSE_FORMAT` | `NONE`（MiniMax） |
 | `agentos.model.reasoning-split` | `AGENTOS_MODEL_REASONING_SPLIT` | `true`（MiniMax-M3） |
-| `agentos.model.connect-timeout` | `AGENTOS_MODEL_CONNECT_TIMEOUT` | `10s` |
-| `agentos.model.request-timeout` | `AGENTOS_MODEL_REQUEST_TIMEOUT` | `60s` |
-| `agentos.model.max-prompt-chars` | `AGENTOS_MODEL_MAX_PROMPT_CHARS` | `60000` |
+| `agentos.model.request-timeout` | `AGENTOS_MODEL_REQUEST_TIMEOUT` | `600s` |
+| `agentos.persistence.mode` | `AGENTOS_PERSISTENCE_MODE` | `memory` |
+| `agentos.persistence.sqlite-file` | `AGENTOS_PERSISTENCE_SQLITE_FILE` | `.agentos/runtime/runtime.sqlite` |
+| `agentos.security.api-key` | `AGENTOS_API_KEY` | 空，关闭鉴权 |
+| `agentos.artifacts.root` | `AGENTOS_ARTIFACTS_ROOT` | `.agentos/artifacts` |
+| `agentos.tools.run-command.enabled` | `AGENTOS_RUN_COMMAND_ENABLED` | `true` |
+| `agentos.tools.run-command.work-dir` | `AGENTOS_RUN_COMMAND_WORK_DIR` | 服务进程当前目录 |
+| `agentos.tools.run-command.timeout-seconds` | `AGENTOS_RUN_COMMAND_TIMEOUT_SECONDS` | `60` |
+| `agentos.tools.run-command.max-output-chars` | `AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS` | `20000` |
+| `agentos.tools.web-fetch.timeout-seconds` | `AGENTOS_WEB_FETCH_TIMEOUT_SECONDS` | `20` |
+| `agentos.tools.web-search.api-key` | `AGENTOS_WEB_SEARCH_API_KEY` | 空，不注册 `web_search` |
+| `agentos.history.max-turns` | — | `5` |
+| `agentos.router.simple-qa.max-chars` | — | `64` |
+| `agentos.router.short-circuit.max-chars` | — | `16` |
 
 默认适配器根据当前注册工具动态生成计划 JSON Schema。若兼容服务不支持 `json_schema`，可将
 `AGENTOS_MODEL_RESPONSE_FORMAT` 改为 `JSON_OBJECT`；连 `response_format` 参数也不支持时改为 `NONE`。
@@ -191,6 +275,17 @@ OpenAI-compatible 服务可以留空。配置映射如下：
 初始规划与每次 Decision 模型调用都计入 `max-model-calls`。只有 Decision 返回 REPLAN 时才计入
 `max-replan-count`；返回 COMPLETE 不再产生无意义的 replan 计数。
 
+## 意图路由
+
+请求先经规则三级分类，避免任务被误判为简单问答：
+
+1. 问候白名单（≤16 字符，如 "你好"）直接短路返回固定应答，不调用模型。
+2. 简单 QA（≤64 字符且不含任务信号词）派发到 `simple-qa-agent` 单次直答，
+   不携带工具定义、不进入规划循环。
+3. 其余请求（含 "帮我看下…"、"今天/几号" 等任务信号）进入 MainAgent 规划链路。
+
+路由分级阈值经 `agentos.router.*` 配置，规则细节见 [`agentos-agent`](../agentos-agent/ReadMe.md)。
+
 ## 执行日志
 
 服务端默认以 `INFO` 级别记录一次 Agent 运行的关键阶段，并使用 `sessionId` 和 `planId` 串联：
@@ -199,12 +294,14 @@ OpenAI-compatible 服务可以留空。配置映射如下：
 | --- | --- |
 | `[agent-run]` | 运行开始、最终成功、最终失败和总耗时 |
 | `[model-call]` | 模型请求开始、HTTP 状态、模型生成步骤数和耗时 |
+| `[chat-call]` / `[chat-stream]` | 简单 QA 直答与流式调用 |
 | `[agent-plan]` | 计划目标、步骤总数以及每个规划步骤 |
 | `[agent-observation]` | 工具结果的有界摘要、状态和失败类型 |
 | `[agent-decision]` | Observation 是否充分以及 COMPLETE / REPLAN 结果 |
 | `[agent-replan]` | 仅在 Decision 确实要求后续计划时记录次数 |
 | `[agent-step]` | 步骤开始、工具名称、执行结果、审批状态和耗时 |
 | `[agent-memory]` | 规划前召回的 L0-L3 数量、降级状态和耗时，以及成功运行后的记忆写入异常 |
+| `[auth]` | API Key 鉴权启用/关闭状态 |
 
 示例：
 
@@ -230,6 +327,7 @@ OpenAI-compatible 服务可以留空。配置映射如下：
 - 按需实现自定义 `ModelClient`，覆盖默认的 OpenAI-compatible 适配器。
 - 注册新的 `AgentTool` Bean，工具会被自动加入注册表。
 - 用真实审批渠道替换默认拒绝型 `ApprovalService`。
+- 实现 `AgentPlugin` 接入自定义记账、审计或追踪插件，容器会自动收编。
 - 多实例部署时将后台 Run、事件和记忆迁移到共享持久化基础设施。
 
 该模块是唯一需要感知 Spring 的模块，领域逻辑应优先保留在其他模块中。

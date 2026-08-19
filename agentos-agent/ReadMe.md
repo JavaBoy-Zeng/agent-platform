@@ -50,6 +50,11 @@ Agent、任务身份、会话状态与执行预算，是单次执行的完整运
 记忆采用 fail-open：只有最终成功的运行会写入 `CompletedTurn`；记忆存储失败不会把成功运行改成
 失败。工具观察写入记忆前按单条 20,000 字符、总计 100,000 字符限制，并优先保留最新结果。
 
+`loop` 包中的 `ContinuationStore` 保存断点续跑状态：运行在审批等待、协作取消等中断点
+保存上下文，进程重启（sqlite 持久化模式）后凭 `invocationId` 恢复继续执行。
+`SimpleQaAgent` 是简单问答的直答实现：单轮响应、不携带工具定义，配合
+`SessionHistoryService` 注入的最近轮次支持指代消解。
+
 ## Workflow Agents
 
 `workflow` 包提供以 `BaseAgent` 为根的可组合 Agent 体系。`BaseAgent` 只回答
