@@ -3,6 +3,7 @@ package com.github.agentos.tool.builtin.shell;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolActions;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
@@ -76,7 +77,7 @@ public final class RunCommandTool implements AgentTool {
     }
 
     @Override
-    public ToolResult execute(ToolCall call) {
+    public ToolResult execute(ToolContext context, ToolCall call) {
         String command = requiredString(call.arguments().get("command"), "command");
         long timeout = timeoutSeconds(call.arguments().get("timeout_seconds"));
         boolean windows = System.getProperty("os.name", "").toLowerCase().contains("win");

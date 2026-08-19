@@ -4,6 +4,7 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolResult;
 import org.junit.jupiter.api.Test;
 
@@ -100,7 +101,7 @@ class CommandRiskPolicyTest {
         }
 
         @Override
-        public ToolResult execute(ToolCall call) {
+        public ToolResult execute(ToolContext context, ToolCall call) {
             return ToolResult.success("ok");
         }
 

@@ -3,8 +3,10 @@ package com.github.agentos.tool.runtime;
 import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventType;
 import com.github.agentos.kernel.DefaultAgentEvent;
+import com.github.agentos.kernel.EventActions;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolExecutionMode;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
@@ -18,7 +20,8 @@ import java.util.concurrent.Executors;
 /**
  * 工具注册表解析与完整生命周期的统一执行边界。
  *
- * <p>Dispatcher 统一处理未知工具、前置短路、工具异常、结果后处理和领域事件发布。</p>
+ * <p>Dispatcher 统一处理未知工具、前置短路、工具异常、结果后处理和领域事件发布，
+ * 并把 {@link ToolContext} 传递给工具，使工具能访问 Invocation、会话状态与预算。</p>
  */
 public final class ToolDispatcher {
 
@@ -38,15 +41,15 @@ public final class ToolDispatcher {
     }
 
     /** 执行一次完整工具生命周期并保证异常不会越过工具边界。 */
-    public ToolResult dispatch(ToolCall call, ToolExecutionContextFactory contextFactory) {
+    public ToolResult dispatch(ToolCall call, ToolContextFactory contextFactory) {
         Objects.requireNonNull(call, "call must not be null");
         Objects.requireNonNull(contextFactory, "contextFactory must not be null");
         AgentTool tool = registry.find(call.toolName()).orElse(null);
         if (tool == null) {
             return ToolResult.failure(ToolFailureType.UNKNOWN, "unknown tool: " + call.toolName());
         }
-        ToolExecutionContext context = contextFactory.create(tool);
-        publish(context, AgentEventType.TOOL_CALL_STARTED, "工具调用开始", call, null);
+        ToolContext context = contextFactory.create(tool);
+        publish(context, AgentEventType.TOOL_CALL_STARTED, "工具调用开始", call, null, EventActions.NONE);
         try {
             for (ToolInterceptor interceptor : interceptors) {
                 ToolBeforeResult before = Objects.requireNonNull(
@@ -57,7 +60,7 @@ public final class ToolDispatcher {
                 }
             }
             ToolResult result = Objects.requireNonNull(
-                    tool.execute(call), "tool returned null result");
+                    tool.execute(context, call), "tool returned null result");
             for (ToolInterceptor interceptor : interceptors) {
                 result = Objects.requireNonNull(
                         interceptor.afterExecute(call, result, context),
@@ -97,7 +100,7 @@ public final class ToolDispatcher {
     public List<ToolResult> dispatch(
             List<ToolCall> calls,
             ToolExecutionMode mode,
-            ToolExecutionContextFactory contextFactory) {
+            ToolContextFactory contextFactory) {
         List<ToolCall> safeCalls = List.copyOf(
                 Objects.requireNonNull(calls, "calls must not be null"));
         Objects.requireNonNull(mode, "mode must not be null");
@@ -119,18 +122,22 @@ public final class ToolDispatcher {
     }
 
     private ToolResult publishResult(
-            ToolExecutionContext context, ToolCall call, ToolResult result) {
+            ToolContext context, ToolCall call, ToolResult result) {
+        Map<String, Object> stateDelta = result.actions().stateDelta();
+        EventActions eventActions = stateDelta.isEmpty()
+                ? EventActions.NONE
+                : EventActions.stateDelta(stateDelta);
         publish(context,
                 result.success() ? AgentEventType.TOOL_CALL_COMPLETED
                         : AgentEventType.TOOL_CALL_FAILED,
-                result.success() ? "工具调用完成" : result.error(), call, result);
+                result.success() ? "工具调用完成" : result.error(), call, result, eventActions);
         return result;
     }
 
     private static void publish(
-            ToolExecutionContext context, AgentEventType type, String message,
-            ToolCall call, ToolResult result) {
-        if (context.agentContext().invocation() == null) {
+            ToolContext context, AgentEventType type, String message,
+            ToolCall call, ToolResult result, EventActions eventActions) {
+        if (context.invocation().invocation() == null) {
             return;
         }
         Map<String, Object> data = result == null
@@ -139,9 +146,10 @@ public final class ToolDispatcher {
                 : Map.of("planId", context.planId(), "stepId", context.stepId(),
                         "toolName", call.toolName(), "success", result.success(),
                         "failureType", result.failureType().name());
-        AgentEvent event = DefaultAgentEvent.of(context.agentContext(), type, message, data);
+        AgentEvent event = DefaultAgentEvent.of(
+                context.invocation(), type, message, data, eventActions);
         try {
-            context.agentContext().eventPublisher().publish(event);
+            context.invocation().eventPublisher().publish(event);
         } catch (RuntimeException ignored) {
             // 观察端不得中断工具执行。
         }
@@ -149,7 +157,7 @@ public final class ToolDispatcher {
 
     /** 在工具解析完成后创建包含真实工具对象的执行上下文。 */
     @FunctionalInterface
-    public interface ToolExecutionContextFactory {
-        ToolExecutionContext create(AgentTool tool);
+    public interface ToolContextFactory {
+        ToolContext create(AgentTool tool);
     }
 }

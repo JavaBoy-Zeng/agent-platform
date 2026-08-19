@@ -82,6 +82,13 @@ public record ToolResult(
                 Map.of(), ToolActions.none());
     }
 
+    /** 创建携带 Runtime 控制动作（如状态增量）的成功结果。 */
+    public static ToolResult success(Object data, ToolActions actions) {
+        return new ToolResult(
+                ToolStatus.SUCCESS, data, "", ToolFailureType.NONE,
+                Map.of(), actions);
+    }
+
     /** 创建携带元数据与 Runtime 控制动作的成功结果。 */
     public static ToolResult success(
             Object data, String message, Map<String, Object> metadata, ToolActions actions) {

@@ -6,6 +6,7 @@ import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
@@ -67,7 +68,7 @@ public final class AgentToolAdapter implements AgentTool {
     }
 
     @Override
-    public ToolResult execute(ToolCall call) {
+    public ToolResult execute(ToolContext toolContext, ToolCall call) {
         Object objective = call.arguments().get(OBJECTIVE_PARAMETER);
         if (!(objective instanceof String text) || text.isBlank()) {
             return ToolResult.failure(
@@ -78,7 +79,7 @@ public final class AgentToolAdapter implements AgentTool {
                 && !value.isBlank() ? value
                         : "agent-tool-" + UUID.randomUUID();
         AgentRequest request = AgentRequest.of(sessionId, text);
-        InvocationContext context = InvocationContext.of(agent.id());
+        InvocationContext context = toolContext.invocation().withAgentId(agent.id());
         AgentState state = agent.run(
                 request, context, AgentState.ready().startNextIteration(), AgentEventSink.NOOP);
         return switch (state.status()) {

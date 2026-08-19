@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin.file;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
@@ -76,7 +77,7 @@ public final class FileReadTool implements AgentTool {
     }
 
     @Override
-    public ToolResult execute(ToolCall call) {
+    public ToolResult execute(ToolContext context, ToolCall call) {
         try {
             String requested = FileToolSupport.requiredString(call.arguments().get("path"), "path");
             Path path = accessPolicy.authorizeRead(Path.of(requested));

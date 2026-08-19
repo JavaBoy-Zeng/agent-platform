@@ -1,6 +1,7 @@
 package com.github.agentos.tool.builtin.web;
 
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolResult;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -54,7 +55,7 @@ class WebSearchToolTest {
 
     @Test
     void returnsFormattedResults() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_search", Map.of("query", "java version", "max_results", 2)));
 
         assertThat(result.success()).isTrue();
@@ -66,7 +67,7 @@ class WebSearchToolTest {
 
     @Test
     void defaultsToFiveResultsWithoutMax() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_search", Map.of("query", "java")));
 
         assertThat(result.success()).isTrue();
@@ -74,14 +75,14 @@ class WebSearchToolTest {
 
     @Test
     void rejectsBlankQuery() {
-        assertThatThrownBy(() -> tool.execute(
+        assertThatThrownBy(() -> tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_search", Map.of("query", " "))))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void rejectsOutOfRangeMaxResults() {
-        assertThatThrownBy(() -> tool.execute(
+        assertThatThrownBy(() -> tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_search", Map.of("query", "x", "max_results", 11))))
                 .isInstanceOf(IllegalArgumentException.class);
     }

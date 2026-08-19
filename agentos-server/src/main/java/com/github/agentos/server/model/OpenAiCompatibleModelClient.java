@@ -10,7 +10,6 @@ import com.github.agentos.planner.PlanType;
 import com.github.agentos.planner.PlanningRequest;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolDefinition;
-import com.github.agentos.tool.api.ToolParameter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -478,21 +477,6 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
     }
 
     private Map<String, Object> stepSchema(ToolDefinition tool) {
-        Map<String, Object> argumentProperties = new LinkedHashMap<>();
-        List<String> requiredArguments = new ArrayList<>();
-        for (ToolParameter parameter : tool.parameters()) {
-            argumentProperties.put(parameter.name(), Map.of("type", jsonType(parameter.type()), "description", parameter.description()));
-            if (parameter.required()) {
-                requiredArguments.add(parameter.name());
-            }
-        }
-
-        Map<String, Object> argumentsSchema = new LinkedHashMap<>();
-        argumentsSchema.put("type", "object");
-        argumentsSchema.put("properties", argumentProperties);
-        argumentsSchema.put("required", requiredArguments);
-        argumentsSchema.put("additionalProperties", false);
-
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("id", Map.of("type", "string", "description", "Unique step identifier within this plan"));
         properties.put("description", Map.of("type", "string", "description", "Purpose of this step"));
@@ -500,23 +484,12 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 "type", "boolean",
                 "description", "Whether a recoverable NOT_FOUND/INVALID_ARGUMENT/exhausted TRANSIENT failure may be skipped"));
         properties.put("toolName", Map.of("type", "string", "enum", List.of(tool.name())));
-        properties.put("arguments", argumentsSchema);
+        properties.put("arguments", tool.parametersSchema());
         return Map.of(
                 "type", "object",
                 "properties", properties,
                 "required", List.of("id", "description", "optional", "toolName", "arguments"),
                 "additionalProperties", false);
-    }
-
-    private static String jsonType(ToolParameter.ValueType type) {
-        return switch (type) {
-            case STRING -> "string";
-            case NUMBER -> "number";
-            case INTEGER -> "integer";
-            case BOOLEAN -> "boolean";
-            case OBJECT -> "object";
-            case ARRAY -> "array";
-        };
     }
 
     private ModelPlan parseResponse(String responseBody) {

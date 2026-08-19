@@ -5,9 +5,9 @@ import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.InvocationContext;
-import com.github.agentos.tool.runtime.ToolDispatcher;
-import com.github.agentos.tool.runtime.ToolExecutionContext;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.runtime.ToolDispatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -118,7 +118,7 @@ public final class PlanExecutor {
                 attempts++;
                 toolCalls += batchSize;
                 List<ToolResult> toolResults = toolDispatcher.dispatch(
-                        step.toolCalls(), step.executionMode(), tool -> new ToolExecutionContext(
+                        step.toolCalls(), step.executionMode(), tool -> new ToolContext(
                                 request,
                                 context,
                                 plan.id(),

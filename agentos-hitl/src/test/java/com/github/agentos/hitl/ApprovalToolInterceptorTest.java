@@ -6,9 +6,9 @@ import com.github.agentos.kernel.PendingActionType;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.runtime.ToolBeforeResult;
-import com.github.agentos.tool.runtime.ToolExecutionContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -51,8 +51,8 @@ class ApprovalToolInterceptorTest {
                 new RiskPolicy(threshold), new ApprovalService(request -> false));
     }
 
-    private static ToolExecutionContext context(AgentTool tool) {
-        return new ToolExecutionContext(
+    private static ToolContext context(AgentTool tool) {
+        return new ToolContext(
                 AgentRequest.of("session-1", "test"),
                 InvocationContext.of("main-agent"),
                 "plan-1",
@@ -67,7 +67,7 @@ class ApprovalToolInterceptorTest {
             @Override public String name() { return "test"; }
             @Override public String description() { return "test tool"; }
             @Override public RiskLevel riskLevel() { return riskLevel; }
-            @Override public ToolResult execute(ToolCall call) { return ToolResult.success("ok"); }
+            @Override public ToolResult execute(ToolContext context, ToolCall call) { return ToolResult.success("ok"); }
         };
     }
 }

@@ -2,6 +2,7 @@ package com.github.agentos.tool.api;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -56,5 +57,14 @@ public record ToolDefinition(
                 tool.description(),
                 tool.riskLevel(),
                 tool.parameters());
+    }
+
+    /**
+     * 返回参数结构的 JSON Schema 表示，供模型客户端与外部协议统一消费。
+     *
+     * @return object 类型的 JSON Schema 映射
+     */
+    public Map<String, Object> parametersSchema() {
+        return JsonSchemas.fromParameters(parameters);
     }
 }

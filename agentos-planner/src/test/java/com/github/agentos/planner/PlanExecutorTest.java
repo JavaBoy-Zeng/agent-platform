@@ -6,6 +6,7 @@ import com.github.agentos.kernel.PendingActionType;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.runtime.ToolBeforeResult;
 import com.github.agentos.tool.runtime.ToolDispatcher;
@@ -101,16 +102,14 @@ class PlanExecutorTest {
             @Override public String name() { return "risky"; }
             @Override public String description() { return "write external state"; }
             @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
-            @Override public ToolResult execute(ToolCall call) {
+            @Override public ToolResult execute(ToolContext context, ToolCall call) {
                 return ToolResult.success("must not execute");
             }
         };
         ToolRegistry registry = new ToolRegistry(List.of(risky));
         ToolInterceptor pendingInterceptor = new ToolInterceptor() {
             @Override
-            public ToolBeforeResult beforeExecute(
-                    ToolCall call,
-                    com.github.agentos.tool.runtime.ToolExecutionContext context) {
+            public ToolBeforeResult beforeExecute(ToolCall call, ToolContext context) {
                 PendingAction action = new PendingAction(
                         "approval-1",
                         PendingActionType.HUMAN_APPROVAL,
@@ -191,7 +190,7 @@ class PlanExecutorTest {
             }
 
             @Override
-            public ToolResult execute(ToolCall call) {
+            public ToolResult execute(ToolContext context, ToolCall call) {
                 return behavior.execute(call);
             }
         };

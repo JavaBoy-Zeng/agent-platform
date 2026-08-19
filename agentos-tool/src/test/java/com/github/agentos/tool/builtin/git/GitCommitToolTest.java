@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin.git;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.builtin.git.GitCommitTool;
@@ -39,7 +40,7 @@ class GitCommitToolTest {
         Files.writeString(repository.resolve("requested.md"), "requested");
         Files.writeString(repository.resolve("unrelated.txt"), "unrelated");
 
-        ToolResult result = tool.execute(call(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), call(
                 List.of("requested.md"), "docs: add requested file"));
 
         assertThat(result.success()).isTrue();
@@ -60,7 +61,7 @@ class GitCommitToolTest {
         Files.writeString(repository.resolve("requested.md"), "requested");
         git("add", "already-staged.txt");
 
-        ToolResult result = tool.execute(call(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), call(
                 List.of("requested.md"), "docs: add requested file"));
 
         assertThat(result.success()).isFalse();
@@ -73,13 +74,13 @@ class GitCommitToolTest {
 
     @Test
     void rejectsUnsafeOrUnchangedPathsAndDeclaresHighRisk() {
-        ToolResult escaping = tool.execute(call(
+        ToolResult escaping = tool.execute(ToolContexts.testContext(tool), call(
                 List.of("../outside.txt"), "docs: unsafe"));
-        ToolResult repositoryRoot = tool.execute(call(
+        ToolResult repositoryRoot = tool.execute(ToolContexts.testContext(tool), call(
                 List.of("."), "docs: everything"));
-        ToolResult directoryPath = tool.execute(call(
+        ToolResult directoryPath = tool.execute(ToolContexts.testContext(tool), call(
                 List.of(".git/.."), "docs: directory"));
-        ToolResult unchanged = tool.execute(call(
+        ToolResult unchanged = tool.execute(ToolContexts.testContext(tool), call(
                 List.of("base.txt"), "docs: unchanged"));
 
         assertThat(escaping.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);

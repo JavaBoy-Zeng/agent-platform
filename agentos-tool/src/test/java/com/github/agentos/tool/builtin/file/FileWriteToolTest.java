@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin.file;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.builtin.file.access.AllowAllFileAccessPolicy;
@@ -30,7 +31,7 @@ class FileWriteToolTest {
         Path file = directory.resolve("你好.txt");
         FileWriteTool tool = tool();
 
-        ToolResult result = tool.execute(call(file, "中文内容", Map.of()));
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), call(file, "中文内容", Map.of()));
 
         assertThat(result.success()).isTrue();
         assertThat(Files.readString(file, StandardCharsets.UTF_8)).isEqualTo("中文内容");
@@ -46,7 +47,7 @@ class FileWriteToolTest {
         Path file = directory.resolve("existing.txt");
         Files.writeString(file, "original", StandardCharsets.UTF_8);
 
-        ToolResult result = tool().execute(call(file, "replacement", Map.of()));
+        ToolResult result = tool().execute(ToolContexts.testContext(tool()), call(file, "replacement", Map.of()));
 
         assertThat(result.success()).isFalse();
         assertThat(result.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);
@@ -59,9 +60,9 @@ class FileWriteToolTest {
         Files.writeString(file, "old", StandardCharsets.UTF_8);
         FileWriteTool tool = tool();
 
-        ToolResult overwritten = tool.execute(call(
+        ToolResult overwritten = tool.execute(ToolContexts.testContext(tool), call(
                 file, "new", Map.of("mode", "OVERWRITE")));
-        ToolResult appended = tool.execute(call(
+        ToolResult appended = tool.execute(ToolContexts.testContext(tool), call(
                 file, "+tail", Map.of("mode", "append")));
 
         assertThat(overwritten.success()).isTrue();
@@ -73,8 +74,8 @@ class FileWriteToolTest {
     void optionallyCreatesMissingParentDirectories() throws Exception {
         Path file = directory.resolve("nested/deep/file.txt");
 
-        ToolResult rejected = tool().execute(call(file, "body", Map.of()));
-        ToolResult created = tool().execute(call(
+        ToolResult rejected = tool().execute(ToolContexts.testContext(tool()), call(file, "body", Map.of()));
+        ToolResult created = tool().execute(ToolContexts.testContext(tool()), call(
                 file, "body", Map.of("createParentDirectories", true)));
 
         assertThat(rejected.success()).isFalse();
@@ -87,7 +88,7 @@ class FileWriteToolTest {
     void createsRealDocxAndPreservesParagraphs() throws Exception {
         Path file = directory.resolve("report.docx");
 
-        ToolResult result = tool().execute(call(file, "标题\n第一段\n第二段", Map.of()));
+        ToolResult result = tool().execute(ToolContexts.testContext(tool()), call(file, "标题\n第一段\n第二段", Map.of()));
 
         assertThat(result.success()).isTrue();
         assertThat(Files.readAllBytes(file)).startsWith(0x50, 0x4b);
@@ -100,8 +101,8 @@ class FileWriteToolTest {
         Path file = directory.resolve("append.docx");
         FileWriteTool tool = tool();
 
-        ToolResult created = tool.execute(call(file, "第一段", Map.of()));
-        ToolResult appended = tool.execute(call(file, "第二段\n第三段", Map.of("mode", "APPEND")));
+        ToolResult created = tool.execute(ToolContexts.testContext(tool), call(file, "第一段", Map.of()));
+        ToolResult appended = tool.execute(ToolContexts.testContext(tool), call(file, "第二段\n第三段", Map.of("mode", "APPEND")));
 
         assertThat(created.success()).isTrue();
         assertThat(appended.success()).isTrue();
@@ -110,9 +111,9 @@ class FileWriteToolTest {
 
     @Test
     void rejectsLegacyDocAndUnknownExtensions() {
-        ToolResult legacyDoc = tool().execute(call(
+        ToolResult legacyDoc = tool().execute(ToolContexts.testContext(tool()), call(
                 directory.resolve("legacy.doc"), "body", Map.of()));
-        ToolResult pdf = tool().execute(call(
+        ToolResult pdf = tool().execute(ToolContexts.testContext(tool()), call(
                 directory.resolve("report.pdf"), "body", Map.of()));
 
         assertThat(legacyDoc.success()).isFalse();
@@ -127,7 +128,7 @@ class FileWriteToolTest {
         FileAccessPolicy readOnly = requested -> requested.toAbsolutePath().normalize();
         FileWriteTool tool = new FileWriteTool(readOnly);
 
-        ToolResult result = tool.execute(call(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), call(
                 directory.resolve("denied.txt"), "body", Map.of()));
 
         assertThat(result.success()).isFalse();

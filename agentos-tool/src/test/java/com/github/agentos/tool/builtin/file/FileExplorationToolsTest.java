@@ -1,6 +1,7 @@
 package com.github.agentos.tool.builtin.file;
 
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.builtin.file.reader.FileReaderFactory;
@@ -38,7 +39,7 @@ class FileExplorationToolsTest {
         Files.writeString(directory.resolve("module/src/App.java"), "class App {}", StandardCharsets.UTF_8);
         DirectoryListTool tool = new DirectoryListTool(new AllowAllReadableFileAccessPolicy());
 
-        ToolResult result = tool.execute(new ToolCall("directory_list", Map.of(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), new ToolCall("directory_list", Map.of(
                 "path", directory.toString(),
                 "maxDepth", 2,
                 "maxEntries", 10)));
@@ -59,7 +60,7 @@ class FileExplorationToolsTest {
         Files.writeString(directory.resolve("visible/.cache/item"), "hidden", StandardCharsets.UTF_8);
         DirectoryListTool tool = new DirectoryListTool(new AllowAllReadableFileAccessPolicy());
 
-        ToolResult result = tool.execute(new ToolCall("directory_list", Map.of(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), new ToolCall("directory_list", Map.of(
                 "path", directory.toString(),
                 "maxDepth", 5,
                 "maxEntries", 100)));
@@ -78,11 +79,11 @@ class FileExplorationToolsTest {
                 StandardCharsets.UTF_8);
         FileSearchTool tool = new FileSearchTool(new AllowAllReadableFileAccessPolicy());
 
-        ToolResult names = tool.execute(new ToolCall("file_search", Map.of(
+        ToolResult names = tool.execute(ToolContexts.testContext(tool), new ToolCall("file_search", Map.of(
                 "path", directory.toString(),
                 "mode", "NAME",
                 "query", "*.java")));
-        ToolResult contents = tool.execute(new ToolCall("file_search", Map.of(
+        ToolResult contents = tool.execute(ToolContexts.testContext(tool), new ToolCall("file_search", Map.of(
                 "path", directory.toString(),
                 "mode", "CONTENT",
                 "query", "class mainagent",
@@ -98,7 +99,7 @@ class FileExplorationToolsTest {
     void reportsMissingRootAsNotFound() {
         FileSearchTool tool = new FileSearchTool(new AllowAllReadableFileAccessPolicy());
 
-        ToolResult result = tool.execute(new ToolCall("file_search", Map.of(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), new ToolCall("file_search", Map.of(
                 "path", directory.resolve("missing").toString(),
                 "mode", "NAME",
                 "query", "*")));
@@ -120,7 +121,7 @@ class FileExplorationToolsTest {
         assertThat(tool.parameters().get(0).required()).isTrue();
         assertThat(tool.parameters().get(1).required()).isFalse();
         assertThat(tool.parameters().get(2).required()).isFalse();
-        ToolResult result = tool.execute(new ToolCall(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), new ToolCall(
                 "file_read", Map.of("path", file.toString())));
 
         assertThat(result.success()).isTrue();
@@ -139,9 +140,9 @@ class FileExplorationToolsTest {
                 new AllowAllReadableFileAccessPolicy(),
                 new FileReaderFactory(List.of(new PdfFileReader())));
 
-        ToolResult first = tool.execute(new ToolCall(
+        ToolResult first = tool.execute(ToolContexts.testContext(tool), new ToolCall(
                 "file_read", Map.of("path", file.toString())));
-        ToolResult second = tool.execute(new ToolCall(
+        ToolResult second = tool.execute(ToolContexts.testContext(tool), new ToolCall(
                 "file_read", Map.of("path", file.toString(), "page", 2, "offset", 0)));
 
         assertThat(first.success()).isTrue();
@@ -167,7 +168,7 @@ class FileExplorationToolsTest {
                 new AllowAllReadableFileAccessPolicy(),
                 new FileReaderFactory(List.of(new PdfFileReader())));
 
-        ToolResult result = tool.execute(new ToolCall(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), new ToolCall(
                 "file_read", Map.of("path", file.toString(), "page", 2)));
 
         assertThat(result.success()).isFalse();
@@ -187,9 +188,9 @@ class FileExplorationToolsTest {
                 new AllowAllReadableFileAccessPolicy(),
                 new FileReaderFactory(List.of(new PdfFileReader())));
 
-        ToolResult first = tool.execute(new ToolCall(
+        ToolResult first = tool.execute(ToolContexts.testContext(tool), new ToolCall(
                 "file_read", Map.of("path", file.toString())));
-        ToolResult remainder = tool.execute(new ToolCall(
+        ToolResult remainder = tool.execute(ToolContexts.testContext(tool), new ToolCall(
                 "file_read", Map.of("path", file.toString(), "page", 1, "offset", 3_000)));
 
         assertThat(first.success()).isTrue();

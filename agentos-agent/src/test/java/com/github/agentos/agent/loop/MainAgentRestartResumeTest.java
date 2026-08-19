@@ -25,6 +25,7 @@ import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.PlanType;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolRegistry;
@@ -74,7 +75,7 @@ class MainAgentRestartResumeTest {
             @Override public String name() { return "file_write"; }
             @Override public String description() { return "write a file"; }
             @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
-            @Override public ToolResult execute(ToolCall call) {
+            @Override public ToolResult execute(ToolContext context, ToolCall call) {
                 writes.incrementAndGet();
                 return ToolResult.success("written " + call.arguments().get("path"));
             }
@@ -83,7 +84,7 @@ class MainAgentRestartResumeTest {
             @Override public String name() { return "git_commit"; }
             @Override public String description() { return "commit selected files"; }
             @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
-            @Override public ToolResult execute(ToolCall call) {
+            @Override public ToolResult execute(ToolContext context, ToolCall call) {
                 commits.incrementAndGet();
                 return ToolResult.success("committed");
             }

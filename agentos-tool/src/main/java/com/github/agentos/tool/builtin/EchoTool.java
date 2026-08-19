@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.api.ToolFailureType;
@@ -62,7 +63,7 @@ public final class EchoTool implements AgentTool {
      * @return 参数存在时返回成功结果，否则返回缺少参数的失败结果
      */
     @Override
-    public ToolResult execute(ToolCall call) {
+    public ToolResult execute(ToolContext context, ToolCall call) {
         Object message = call.arguments().get("message");
         return message == null
                 ? ToolResult.failure(ToolFailureType.INVALID_ARGUMENT, "missing required argument: message")

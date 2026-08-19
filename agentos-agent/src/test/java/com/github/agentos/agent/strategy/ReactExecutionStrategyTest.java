@@ -15,6 +15,7 @@ import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.PlanType;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import com.github.agentos.tool.api.ToolResult;
@@ -56,7 +57,7 @@ class ReactExecutionStrategyTest {
         AgentTool tool = new AgentTool() {
             @Override public String name() { return "weather"; }
             @Override public String description() { return "weather lookup"; }
-            @Override public ToolResult execute(ToolCall call) {
+            @Override public ToolResult execute(ToolContext context, ToolCall call) {
                 toolCalls.incrementAndGet();
                 return ToolResult.success("sunny");
             }
@@ -86,7 +87,7 @@ class ReactExecutionStrategyTest {
         AgentTool tool = new AgentTool() {
             @Override public String name() { return "weather"; }
             @Override public String description() { return "weather lookup"; }
-            @Override public ToolResult execute(ToolCall call) { return ToolResult.success("sunny"); }
+            @Override public ToolResult execute(ToolContext context, ToolCall call) { return ToolResult.success("sunny"); }
         };
         ReactExecutionStrategy strategy = new ReactExecutionStrategy(
                 planner, new ToolDispatcher(new ToolRegistry(List.of(tool))),

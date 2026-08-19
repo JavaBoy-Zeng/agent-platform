@@ -1,6 +1,7 @@
 package com.github.agentos.tool.api;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 暴露给 Agent 调用的工具协议。
@@ -37,6 +38,19 @@ public interface AgentTool {
     }
 
     /**
+     * 获取工具参数的 JSON Schema 表示。
+     *
+     * <p>JSON Schema 是面向模型与外部协议（OpenAI、Gemini、Claude、MCP、OpenAPI）
+     * 的统一参数交换格式，默认由 {@link #parameters()} 派生；
+     * 需要表达嵌套结构或枚举约束的工具可以直接覆盖本方法。</p>
+     *
+     * @return object 类型的 JSON Schema 映射
+     */
+    default Map<String, Object> parametersSchema() {
+        return JsonSchemas.fromParameters(parameters());
+    }
+
+    /**
      * 获取工具的风险等级。
      *
      * @return 风险等级，默认是低风险
@@ -57,11 +71,12 @@ public interface AgentTool {
     /**
      * 执行一次工具调用。
      *
+     * @param context 本次工具调用可访问的运行世界（Invocation、会话状态、预算等）
      * @param call 工具名称及调用参数
      * @return 标准化的工具执行结果
      * @throws Exception 当底层工具执行发生异常时抛出，由工具执行器统一转换
      */
-    ToolResult execute(ToolCall call) throws Exception;
+    ToolResult execute(ToolContext context, ToolCall call) throws Exception;
 
     /**
      * 工具操作的风险等级。

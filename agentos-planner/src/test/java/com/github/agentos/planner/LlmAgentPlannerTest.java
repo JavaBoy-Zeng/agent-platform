@@ -9,6 +9,7 @@ import com.github.agentos.memory.MemoryService;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.builtin.EchoTool;
@@ -30,7 +31,7 @@ class LlmAgentPlannerTest {
             @Override public String name() { return "write"; }
             @Override public String description() { return "write a resource"; }
             @Override public RiskLevel riskLevel() { return RiskLevel.HIGH; }
-            @Override public ToolResult execute(ToolCall call) {
+            @Override public ToolResult execute(ToolContext context, ToolCall call) {
                 return ToolResult.success("written");
             }
         };

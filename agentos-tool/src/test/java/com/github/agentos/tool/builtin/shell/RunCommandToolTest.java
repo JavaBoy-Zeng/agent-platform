@@ -1,6 +1,7 @@
 package com.github.agentos.tool.builtin.shell;
 
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,7 +23,7 @@ class RunCommandToolTest {
 
     @Test
     void executesSimpleCommandAndReturnsOutput() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("run_command", Map.of("command", "echo hello-agentos")));
 
         assertThat(result.success()).isTrue();
@@ -31,7 +32,7 @@ class RunCommandToolTest {
 
     @Test
     void reportsNonZeroExitCodeAsFailure() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("run_command", Map.of("command", "exit 3")));
 
         assertThat(result.success()).isFalse();
@@ -41,7 +42,7 @@ class RunCommandToolTest {
     @Test
     void killsCommandExceedingTimeout() {
         RunCommandTool shortTimeout = new RunCommandTool(Path.of("."), 1, 20000);
-        ToolResult result = shortTimeout.execute(
+        ToolResult result = shortTimeout.execute(ToolContexts.testContext(shortTimeout),
                 new ToolCall("run_command", Map.of("command", "sleep 30")));
 
         assertThat(result.success()).isFalse();
@@ -52,7 +53,7 @@ class RunCommandToolTest {
     @Test
     void truncatesOversizedOutput() {
         RunCommandTool tinyOutput = new RunCommandTool(Path.of("."), 30, 50);
-        ToolResult result = tinyOutput.execute(
+        ToolResult result = tinyOutput.execute(ToolContexts.testContext(tinyOutput),
                 new ToolCall("run_command", Map.of("command", "echo 012345678901234567890123456789012345678901234567890123456789")));
 
         assertThat(result.success()).isTrue();
@@ -65,7 +66,7 @@ class RunCommandToolTest {
         java.nio.file.Files.writeString(marker, "here");
         RunCommandTool scoped = new RunCommandTool(otherDir, 30, 20000);
 
-        ToolResult result = scoped.execute(
+        ToolResult result = scoped.execute(ToolContexts.testContext(scoped),
                 new ToolCall("run_command", Map.of("command",
                         "ls marker.txt")));
 
@@ -74,14 +75,14 @@ class RunCommandToolTest {
 
     @Test
     void rejectsBlankCommand() {
-        assertThatThrownBy(() -> tool.execute(
+        assertThatThrownBy(() -> tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("run_command", Map.of("command", " "))))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void rejectsNonPositiveTimeout() {
-        assertThatThrownBy(() -> tool.execute(
+        assertThatThrownBy(() -> tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("run_command", Map.of("command", "echo hi", "timeout_seconds", 0))))
                 .isInstanceOf(IllegalArgumentException.class);
     }

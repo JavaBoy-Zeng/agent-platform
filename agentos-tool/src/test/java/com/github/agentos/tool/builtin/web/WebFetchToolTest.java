@@ -1,6 +1,7 @@
 package com.github.agentos.tool.builtin.web;
 
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolResult;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -70,7 +71,7 @@ class WebFetchToolTest {
 
     @Test
     void convertsHtmlToPlainText() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_fetch", Map.of("url", base + "/html")));
 
         assertThat(result.success()).isTrue();
@@ -84,7 +85,7 @@ class WebFetchToolTest {
 
     @Test
     void passesJsonThrough() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_fetch", Map.of("url", base + "/json")));
 
         assertThat(result.success()).isTrue();
@@ -93,7 +94,7 @@ class WebFetchToolTest {
 
     @Test
     void rejectsBinaryContent() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_fetch", Map.of("url", base + "/binary")));
 
         assertThat(result.success()).isFalse();
@@ -102,7 +103,7 @@ class WebFetchToolTest {
 
     @Test
     void reportsHttpErrors() {
-        ToolResult result = tool.execute(
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_fetch", Map.of("url", base + "/missing")));
 
         assertThat(result.success()).isFalse();
@@ -111,7 +112,7 @@ class WebFetchToolTest {
 
     @Test
     void rejectsNonHttpUrl() {
-        assertThatThrownBy(() -> tool.execute(
+        assertThatThrownBy(() -> tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_fetch", Map.of("url", "ftp://example.com"))))
                 .isInstanceOf(IllegalArgumentException.class);
     }

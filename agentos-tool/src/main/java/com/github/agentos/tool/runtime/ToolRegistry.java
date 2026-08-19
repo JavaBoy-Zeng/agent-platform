@@ -1,7 +1,9 @@
 package com.github.agentos.tool.runtime;
 
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolDefinition;
+import com.github.agentos.tool.api.ToolProvider;
 
 import java.util.Collection;
 import java.util.Comparator;
@@ -14,9 +16,10 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * 以工具名称为键的线程安全注册表。
  *
- * <p>注册表拒绝同名工具重复注册，并向规划执行层提供查找、强制获取和枚举能力。</p>
+ * <p>注册表拒绝同名工具重复注册，并向规划执行层提供查找、强制获取和枚举能力。
+ * 同时实现 {@link ToolProvider}，作为内置工具集的统一来源接入运行时。</p>
  */
-public final class ToolRegistry {
+public final class ToolRegistry implements ToolProvider {
 
     private final ConcurrentMap<String, AgentTool> tools = new ConcurrentHashMap<>();
 
@@ -74,6 +77,12 @@ public final class ToolRegistry {
      */
     public List<AgentTool> all() {
         return List.copyOf(tools.values());
+    }
+
+    /** 注册表对任意 Invocation 作用域返回同一份内置工具集合。 */
+    @Override
+    public List<AgentTool> getTools(InvocationContext context) {
+        return all();
     }
 
     /**

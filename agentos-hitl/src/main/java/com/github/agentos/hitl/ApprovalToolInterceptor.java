@@ -2,7 +2,7 @@ package com.github.agentos.hitl;
 
 import com.github.agentos.tool.runtime.ToolBeforeResult;
 import com.github.agentos.tool.api.ToolCall;
-import com.github.agentos.tool.runtime.ToolExecutionContext;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.runtime.ToolInterceptor;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.kernel.PendingAction;
@@ -25,12 +25,12 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
 
     /** 高风险调用未获批准时返回挂起动作，恢复后允许真实工具执行。 */
     @Override
-    public ToolBeforeResult beforeExecute(ToolCall call, ToolExecutionContext context) {
-        if (!riskPolicy.requiresApproval(context.agentContext(), context.tool(), call)) {
+    public ToolBeforeResult beforeExecute(ToolCall call, ToolContext context) {
+        if (!riskPolicy.requiresApproval(context.invocation(), context.tool(), call)) {
             return ToolBeforeResult.allow();
         }
-        if (context.agentContext().invocation() != null
-                && context.agentContext().invocation().consumeApproval(
+        if (context.invocation().invocation() != null
+                && context.invocation().invocation().consumeApproval(
                         context.tool().name(), call.arguments())) {
             return ToolBeforeResult.allow();
         }

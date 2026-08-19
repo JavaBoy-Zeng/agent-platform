@@ -1,6 +1,7 @@
 package com.github.agentos.tool.builtin;
 
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolResult;
 import org.junit.jupiter.api.Test;
 
@@ -51,8 +52,10 @@ class TodayToolTest {
         TodayTool kiritimati = new TodayTool(ZoneId.of("Pacific/Kiritimati"));
         TodayTool pagoPago = new TodayTool(ZoneId.of("Pacific/Pago_Pago"));
 
-        String farEast = kiritimati.execute(new ToolCall("current_date", Map.of())).output();
-        String farWest = pagoPago.execute(new ToolCall("current_date", Map.of())).output();
+        String farEast = kiritimati.execute(
+                ToolContexts.testContext(kiritimati), new ToolCall("current_date", Map.of())).output();
+        String farWest = pagoPago.execute(
+                ToolContexts.testContext(pagoPago), new ToolCall("current_date", Map.of())).output();
 
         assertThat(farEast).matches("\\d{4}年\\d{2}月\\d{2}日 星期[一二三四五六日]");
         assertThat(farWest).matches("\\d{4}年\\d{2}月\\d{2}日 星期[一二三四五六日]");

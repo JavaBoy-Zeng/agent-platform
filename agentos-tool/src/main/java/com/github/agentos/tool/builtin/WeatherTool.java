@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.api.ToolFailureType;
@@ -86,7 +87,7 @@ public final class WeatherTool implements AgentTool {
      * @return 天气结果
      */
     @Override
-    public ToolResult execute(ToolCall call) {
+    public ToolResult execute(ToolContext context, ToolCall call) {
         Object city = call.arguments().get("city");
         if (city == null) {
             return ToolResult.failure(ToolFailureType.INVALID_ARGUMENT, "missing required argument: city");

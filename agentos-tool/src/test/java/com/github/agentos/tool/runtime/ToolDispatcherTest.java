@@ -1,10 +1,17 @@
 package com.github.agentos.tool.runtime;
 
+import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.AgentRunner;
+import com.github.agentos.kernel.InMemoryAgentEventStore;
+import com.github.agentos.kernel.InMemoryCheckpointStore;
+import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.api.ToolActions;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolExecutionMode;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
@@ -30,7 +37,7 @@ class ToolDispatcherTest {
         ToolInterceptor interceptor = new ToolInterceptor() {
             @Override
             public ToolBeforeResult beforeExecute(
-                    ToolCall call, ToolExecutionContext context) {
+                    ToolCall call, ToolContext context) {
                 return ToolBeforeResult.shortCircuit(ToolResult.success("cached"));
             }
         };
@@ -47,7 +54,7 @@ class ToolDispatcherTest {
         ToolInterceptor interceptor = new ToolInterceptor() {
             @Override
             public ToolResult afterExecute(
-                    ToolCall call, ToolResult result, ToolExecutionContext context) {
+                    ToolCall call, ToolResult result, ToolContext context) {
                 return ToolResult.success(result.output() + "-after");
             }
         };
@@ -63,7 +70,7 @@ class ToolDispatcherTest {
         ToolInterceptor interceptor = new ToolInterceptor() {
             @Override
             public ToolResult onError(
-                    ToolCall call, Throwable error, ToolExecutionContext context) {
+                    ToolCall call, Throwable error, ToolContext context) {
                 return ToolResult.failure(ToolFailureType.TRANSIENT, "converted");
             }
         };
@@ -142,12 +149,52 @@ class ToolDispatcherTest {
         assertThat(maximum).hasValue(1);
     }
 
+    @Test
+    void toolReadsSessionStateAndStateDeltaFlowsIntoNextRun() {
+        InMemorySessionService sessions = new InMemorySessionService();
+        AgentTool counter = new AgentTool() {
+            @Override public String name() { return "counter"; }
+            @Override public String description() { return "count runs"; }
+
+            @Override
+            public ToolResult execute(ToolContext context, ToolCall call) {
+                long seen = context.sessionState().longValue("toolRuns", 0);
+                return ToolResult.success(
+                        "seen=" + seen,
+                        ToolActions.stateDelta(Map.of("toolRuns", seen + 1)));
+            }
+        };
+        ToolDispatcher dispatcher = new ToolDispatcher(new ToolRegistry(List.of(counter)));
+        AgentRunner runner = new AgentRunner(
+                (request, context, running) -> {
+                    ToolResult result = dispatcher.dispatch(
+                            new ToolCall("counter", Map.of()),
+                            tool -> new ToolContext(
+                                    request, context, "", "",
+                                    AgentExecutionLimits.defaults(), Map.of(), tool));
+                    return running.complete(result.output());
+                },
+                AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+
+        String first = runner.run(
+                AgentRequest.of("session-1", "first"), InvocationContext.of("main-agent")).output();
+        String second = runner.run(
+                AgentRequest.of("session-1", "second"), InvocationContext.of("main-agent")).output();
+
+        assertThat(first).isEqualTo("seen=0");
+        // 工具写入的 stateDelta 经事件合并进会话状态，下一次运行的工具能读到。
+        assertThat(second).isEqualTo("seen=1");
+        assertThat(sessions.find("session-1").orElseThrow().state().longValue("toolRuns", 0))
+                .isEqualTo(2L);
+    }
+
     private static ToolDispatcher dispatcher(AgentTool tool, ToolInterceptor interceptor) {
         return new ToolDispatcher(new ToolRegistry(List.of(tool)), List.of(interceptor));
     }
 
-    private static ToolDispatcher.ToolExecutionContextFactory contextFactory() {
-        return tool -> new ToolExecutionContext(
+    private static ToolDispatcher.ToolContextFactory contextFactory() {
+        return tool -> new ToolContext(
                 AgentRequest.of("session-1", "test"), InvocationContext.of("main-agent"),
                 "plan-1", "step-1", AgentExecutionLimits.defaults(), Map.of(), tool);
     }
@@ -169,7 +216,7 @@ class ToolDispatcherTest {
             public boolean parallelSafe() { return parallelSafe; }
 
             @Override
-            public ToolResult execute(ToolCall call) throws Exception {
+            public ToolResult execute(ToolContext context, ToolCall call) throws Exception {
                 return behavior.execute(call);
             }
         };

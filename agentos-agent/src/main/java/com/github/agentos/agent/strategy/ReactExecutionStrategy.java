@@ -16,8 +16,8 @@ import com.github.agentos.planner.PlanStep;
 import com.github.agentos.planner.ReplanReason;
 import com.github.agentos.planner.StepResult;
 import com.github.agentos.planner.StepStatus;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.runtime.ToolDispatcher;
-import com.github.agentos.tool.runtime.ToolExecutionContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 
@@ -75,7 +75,7 @@ public final class ReactExecutionStrategy implements AgentLoop {
                             "maxToolCalls exhausted: " + limits.maxToolCalls());
                 }
                 List<ToolResult> results = toolDispatcher.dispatch(
-                        step.toolCalls(), step.executionMode(), tool -> new ToolExecutionContext(
+                        step.toolCalls(), step.executionMode(), tool -> new ToolContext(
                                 request, context, currentPlan.id(), step.id(), limits, Map.of(), tool));
                 toolCalls += results.size();
                 if (context.invocation() != null) {

@@ -1,10 +1,12 @@
 package com.github.agentos.agent.workflow;
 
 import com.github.agentos.kernel.AgentEventSink;
+import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
@@ -47,7 +49,7 @@ class AgentToolAdapterTest {
                     }
                 });
 
-        ToolResult result = adapter.execute(new ToolCall("research-agent", Map.of(
+        ToolResult result = adapter.execute(context(adapter), new ToolCall("research-agent", Map.of(
                 AgentToolAdapter.OBJECTIVE_PARAMETER, "研究一下 JVM",
                 AgentToolAdapter.SESSION_ID_PARAMETER, "session-9")));
 
@@ -61,7 +63,7 @@ class AgentToolAdapterTest {
         AgentToolAdapter adapter = new AgentToolAdapter(
                 scripted("agent", state -> state.complete("never")));
 
-        ToolResult result = adapter.execute(new ToolCall("agent", Map.of()));
+        ToolResult result = adapter.execute(context(adapter), new ToolCall("agent", Map.of()));
 
         assertThat(result.success()).isFalse();
         assertThat(result.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);
@@ -72,7 +74,7 @@ class AgentToolAdapterTest {
         AgentToolAdapter adapter = new AgentToolAdapter(
                 scripted("agent", state -> state.fail("agent exploded")));
 
-        ToolResult result = adapter.execute(new ToolCall("agent",
+        ToolResult result = adapter.execute(context(adapter), new ToolCall("agent",
                 Map.of(AgentToolAdapter.OBJECTIVE_PARAMETER, "do work")));
 
         assertThat(result.success()).isFalse();
@@ -85,11 +87,18 @@ class AgentToolAdapterTest {
         AgentToolAdapter adapter = new AgentToolAdapter(
                 scripted("agent", state -> state.waitForAction("approval")));
 
-        ToolResult result = adapter.execute(new ToolCall("agent",
+        ToolResult result = adapter.execute(context(adapter), new ToolCall("agent",
                 Map.of(AgentToolAdapter.OBJECTIVE_PARAMETER, "do work")));
 
         assertThat(result.success()).isFalse();
         assertThat(result.failureType()).isEqualTo(ToolFailureType.PERMISSION_DENIED);
+    }
+
+    private static ToolContext context(AgentToolAdapter adapter) {
+        return new ToolContext(
+                AgentRequest.of("session-9", "test"),
+                InvocationContext.of("main-agent"),
+                "", "", AgentExecutionLimits.defaults(), Map.of(), adapter);
     }
 
     private static BaseAgent scripted(String id, java.util.function.Function<AgentState, AgentState> behavior) {
