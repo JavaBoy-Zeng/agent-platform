@@ -29,6 +29,23 @@ agentos:
       api-key: "${AGENTOS_WEB_SEARCH_API_KEY:}"
       endpoint: "${AGENTOS_WEB_SEARCH_ENDPOINT:https://api.tavily.com/search}"
       timeout-seconds: "${AGENTOS_WEB_SEARCH_TIMEOUT_SECONDS:20}"
+    code-executor:
+      # 设为 false 可完全禁用 execute_code 工具。
+      enabled: "${AGENTOS_CODE_EXECUTOR_ENABLED:true}"
+      # 执行环境：auto（默认，Docker 可用走沙箱，否则回退本地进程）、
+      # docker（强制沙箱）、local（宿主机直跑，HIGH 风险需审批）。
+      mode: "${AGENTOS_CODE_EXECUTOR_MODE:auto}"
+      # 默认执行超时秒数（工具参数可按次覆盖）。
+      timeout-seconds: "${AGENTOS_CODE_EXECUTOR_TIMEOUT_SECONDS:60}"
+      # 单流输出截断上限，防止 token 爆炸。
+      max-output-chars: "${AGENTOS_CODE_EXECUTOR_MAX_OUTPUT_CHARS:20000}"
+  skills:
+    # 技能体系：load_skill 工具按需注入操作指南，正文不常驻提示词。
+    enabled: "${AGENTOS_SKILLS_ENABLED:true}"
+    # 本地技能目录（<root>/<技能名>/SKILL.md）；优先级高于 classpath，可覆盖内置技能。
+    root: "${AGENTOS_SKILLS_ROOT:.agentos/skills}"
+    # 内置 classpath 技能资源路径（逗号分隔）。
+    classpath-resources: "skills/report-writing/SKILL.md,skills/code-review/SKILL.md"
   runtime:
     max-replan-count: 6
     max-step-count: 30

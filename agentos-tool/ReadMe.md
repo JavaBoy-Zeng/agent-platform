@@ -13,6 +13,8 @@
 | `com.github.agentos.tool.builtin.git` | 本地 Git 工具。 |
 | `com.github.agentos.tool.builtin.shell` | Shell 命令执行工具。 |
 | `com.github.agentos.tool.builtin.web` | 网页抓取与搜索工具。 |
+| `com.github.agentos.tool.skill` | 技能定义、来源解析、注册表与 `load_skill` 工具。 |
+| `com.github.agentos.tool.code` | 代码执行协议、本地/沙箱执行器与 `execute_code` 工具。 |
 
 `api` 不依赖 `runtime` 或 `builtin`，`runtime` 不依赖 `builtin`，这些边界由 ArchUnit 测试持续校验。
 
@@ -46,6 +48,8 @@
 | `web_fetch` | 抓取单个网页正文并截断，受超时限制。 |
 | `web_search` | Tavily 搜索；未配置 API Key 时不注册。 |
 | `git_commit` | 本地 Git 提交，高风险需审批。 |
+| `load_skill` | 把注册表中的某项技能完整指令按需注入对话上下文，技能正文不常驻提示词。 |
+| `execute_code` | 执行 Python/Shell/Java 代码片段；风险等级跟随执行器：沙箱 LOW，宿主机直跑 HIGH 需审批。 |
 | `echo` | 仅用于调用链测试，不承担最终回答。 |
 | `today` | 返回当前日期与星期，用于日期类问答。 |
 | `weather` | 查询外部天气接口。 |
@@ -64,6 +68,29 @@ PDF 首次调用 `file_read` 时可省略 `page` 和 `offset`，默认从第 1 �
 前端凭该标识经 `/api/artifacts` 下载，而不是暴露本地文件路径。
 
 产物登记是附加能力：存储不可用或登记失败时静默降级，不影响文件写入本体的成功语义。
+
+## 技能体系
+
+技能（`AgentSkill`）是"完成某类任务的操作指南"：YAML frontmatter 声明 `name` 与
+`description`，Markdown 正文即指令。`SkillSource` 负责发现与解析——
+`LocalSkillSource` 扫描 `<root>/<技能名>/SKILL.md` 与单文件技能，`ClasspathSkillSource`
+按显式资源路径加载内置技能。`SkillRegistry` 聚合多来源，同 ID 技能先注册者生效，
+装配层借此实现"本地目录覆盖 classpath"。
+
+技能正文不常驻提示词：规划器从 `load_skill` 工具描述看到技能摘要，需要时以
+`skill_id` 调用换取完整指令，控制固定 token 消耗。
+
+## 代码执行
+
+`CodeExecutor` 是执行协议：支持语言探测（`supports`）、沙箱标记（`isSandboxed`）与
+统一结果（退出码、stdout/stderr、耗时、是否超时）。两种实现：
+
+- `LocalProcessCodeExecutor`：宿主机临时目录直跑，无隔离，工具按 HIGH 风险走 HITL 审批。
+- `DockerSandboxExecutor`：一次性容器（`--rm`、`--network none`、内存/CPU 限额、
+  源码只读挂载），失败被约束在容器内，工具按 LOW 风险免审批。
+
+`execute_code` 工具只做参数解析与结果格式化，执行完全委托给执行器；
+服务端经 `agentos.tools.code-executor.mode` 选择 auto / docker / local。
 
 ## 失败分类约定
 

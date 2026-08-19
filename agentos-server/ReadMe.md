@@ -11,6 +11,7 @@
 - 提供按作用域查看 L0-L3 数据的只读记忆管理 API。
 - 提供会话产物（Artifact）的列举、下载与删除 API。
 - 提供按会话汇总的模型 token 用量查询 API。
+- 提供按 Invocation 的工具轨迹评估 API（期望路径、禁用工具、预算、回答关键词）。
 - 将请求参数错误转换为标准 HTTP Problem Detail 响应。
 - 承载跨模块集成测试和可执行 JAR 打包。
 
@@ -27,6 +28,9 @@
 | `AgentController` | 暴露 Agent 运行和状态查询 API。 |
 | `BackgroundAgentRunController` | 暴露后台运行创建、快照、事件补播和取消 API。 |
 | `ArtifactController` | 暴露会话产物列举、下载与删除 API。 |
+| `EvaluationController / EvaluationService` | 回放 Invocation 事件流并按评估用例比对工具轨迹。 |
+| `SkillConfiguration` | 装配技能注册表与 `load_skill` 工具；本地目录优先于 classpath 内置技能。 |
+| `CodeExecutorConfiguration` | 按 mode 装配代码执行器（docker 沙箱 / 本地进程 / auto）与 `execute_code` 工具。 |
 | `UsageController / UsageRecorder` | 模型 token 用量记账与按会话查询。 |
 | `SessionHistoryService` | 运行前回放最近轮次并注入 QA 与规划 prompt 的多轮上下文。 |
 | `AgentRunCoordinator` | 管理进程内后台 Run、事件序号和 SSE 订阅者。 |
@@ -45,7 +49,8 @@ AgentRunner
             │   ├── FailureClassifier
             │   └── ToolDispatcher
             │       ├── ToolRegistry ──► directory_list / file_search / file_read / file_write /
-            │       │                  run_command / web_fetch / web_search / today / ...
+            │       │                  run_command / web_fetch / web_search / today /
+            │       │                  load_skill / execute_code / ...
             │       └── ApprovalToolInterceptor ──► RiskPolicy / ApprovalService
             ├── AgentFinalizer
             ├── ContinuationStore（断点续跑）
@@ -142,6 +147,28 @@ GET /api/usage/{sessionId}
 返回该会话累计的模型调用次数与 prompt/completion/total token 数。数据经
 `AgentPluginManager` 在每次模型回调点记账，进程重启后在 sqlite 模式下仍可查询。
 
+### 评估一次运行
+
+对任意一次 Invocation 提交评估用例，校验 Agent 的工具轨迹与最终回答：
+
+```http
+POST /api/evaluations/{invocationId}
+Content-Type: application/json
+
+{
+  "caseId": "search-then-answer",
+  "expectedToolSequence": ["web_search"],
+  "forbiddenTools": ["file_write"],
+  "maxToolCalls": 5,
+  "requiredResponseKeywords": ["结论"],
+  "requireCompleted": true
+}
+```
+
+响应包含 `passed`、`score`（通过检查数 / 已执行检查数）、逐项 `findings` 明细、
+实际工具序列与最终回答。所有字段均可省略；Invocation 无事件记录时返回 `404`。
+评估语义详见 [`agentos-kernel`](../agentos-kernel/README.md)。
+
 ### 查询记忆快照
 
 ```http
@@ -155,6 +182,28 @@ GET /api/memories?sessionId=session-1&teamId=default-team&userId=default-user&ag
 
 管理接口中的数量是当前作用域可见的存储总量；`[agent-memory]` 日志中的数量则是经过召回策略
 筛选后，本次实际发送给规划模型的数量，两者可能不同。
+
+## 技能与代码执行
+
+技能是"完成某类任务的操作指南"，正文不常驻提示词：规划器从 `load_skill` 工具描述
+看到技能摘要，需要时以 `skill_id` 换取完整指令。默认内置 `report-writing` 与
+`code-review` 两个 classpath 技能；`agentos.skills.root` 指向的本地目录优先级更高，
+可覆盖同 ID 内置技能：
+
+```yaml
+agentos:
+  skills:
+    enabled: true
+    root: ".agentos/skills"                     # <root>/<技能名>/SKILL.md
+    classpath-resources: "skills/report-writing/SKILL.md,skills/code-review/SKILL.md"
+```
+
+`execute_code` 工具执行 Python/Shell/Java 代码片段，执行环境由
+`agentos.tools.code-executor.mode` 决定：
+
+- `auto`（默认）：Docker 可用时走沙箱，否则回退本地进程。
+- `docker`：强制一次性容器（`--network none`、内存/CPU 限额、源码只读挂载），LOW 风险免审批。
+- `local`：宿主机直跑，HIGH 风险需 HITL 审批。
 
 ## 持久化
 
@@ -259,6 +308,13 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.tools.run-command.max-output-chars` | `AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS` | `20000` |
 | `agentos.tools.web-fetch.timeout-seconds` | `AGENTOS_WEB_FETCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.web-search.api-key` | `AGENTOS_WEB_SEARCH_API_KEY` | 空，不注册 `web_search` |
+| `agentos.tools.code-executor.enabled` | `AGENTOS_CODE_EXECUTOR_ENABLED` | `true` |
+| `agentos.tools.code-executor.mode` | `AGENTOS_CODE_EXECUTOR_MODE` | `auto` |
+| `agentos.tools.code-executor.timeout-seconds` | `AGENTOS_CODE_EXECUTOR_TIMEOUT_SECONDS` | `60` |
+| `agentos.tools.code-executor.max-output-chars` | `AGENTOS_CODE_EXECUTOR_MAX_OUTPUT_CHARS` | `20000` |
+| `agentos.skills.enabled` | `AGENTOS_SKILLS_ENABLED` | `true` |
+| `agentos.skills.root` | `AGENTOS_SKILLS_ROOT` | `.agentos/skills` |
+| `agentos.skills.classpath-resources` | — | 内置两个技能资源 |
 | `agentos.history.max-turns` | — | `5` |
 | `agentos.router.simple-qa.max-chars` | — | `64` |
 | `agentos.router.short-circuit.max-chars` | — | `16` |

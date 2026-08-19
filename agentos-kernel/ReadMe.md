@@ -34,6 +34,24 @@
 | `Artifact / ArtifactService / LocalArtifactService` | 运行产物（报告、文档等非文本输出）的元数据、存储与分发；文件实现采用临时文件 + 原子替换写入，重启后仍可下载。 |
 | `ModelUsage` | 一次模型调用的 token 用量快照，经插件体系汇入用量账本。 |
 
+## 运行评估
+
+评估回答"Agent 为完成任务走了哪些路径"，而非只看最终答案。`ToolTrajectory.fromEvents`
+从事件流按时间序还原工具调用轨迹（兼容并行执行下同名调用的事件交错，以 LIFO 配对
+STARTED/COMPLETED/FAILED）。`EvalCase` 以"路径优先"声明期望：
+
+| 检查项 | 语义 |
+| --- | --- |
+| `expectedToolSequence` | 期望工具按序构成实际轨迹的有序子序列（允许中间插入其他调用） |
+| `forbiddenTools` | 禁止工具不得出现在轨迹中 |
+| `maxToolCalls` | 工具调用预算上限 |
+| `requiredResponseKeywords` | 最终回答必须包含的关键词（忽略大小写） |
+| `requireCompleted` | 运行需到达 `AGENT_COMPLETED` |
+
+`ToolTrajectoryEvaluator` 逐项比对并产出 `EvaluationResult`（passed、按已执行检查数
+计算的 score、逐项 `EvalFinding` 明细）；未声明的检查自动跳过。服务端经
+`POST /api/evaluations/{invocationId}` 暴露该能力。
+
 ## 状态流转
 
 ```text
