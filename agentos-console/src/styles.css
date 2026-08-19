@@ -1361,8 +1361,7 @@ button.session-select {
 .prompt-frame textarea {
   display: block;
   width: 100%;
-  min-height: 42px;
-  max-height: 140px;
+  height: 66px;
   padding: 3px 0;
   resize: none;
   border: 0;

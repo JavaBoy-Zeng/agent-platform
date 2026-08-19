@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 const props = defineProps({
   agentId: { type: String, required: true },
@@ -20,19 +20,16 @@ const presets = [
 ]
 
 const promptInput = ref(null)
-const MAX_INPUT_HEIGHT = 140
 
-/** 随内容自动增高，避免固定高度下粘贴多行文本时视口滚到 caret、看不到开头内容。 */
-function resizeInput() {
+/** 粘贴或内容变化后滚动到顶部，确保看到开头而不是 caret 位置。 */
+function scrollToTop() {
   const el = promptInput.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + 'px'
+  if (el) el.scrollTop = 0
 }
 
 function onInput(event) {
   emit('update:prompt', event.target.value)
-  resizeInput()
+  nextTick(scrollToTop)
 }
 
 /** Enter 发送，Shift+Enter 换行；中文输入法组词确认的 Enter 不触发发送。 */
@@ -44,8 +41,7 @@ function onKeydown(event) {
   if (!props.busy && props.prompt.trim()) emit('run')
 }
 
-watch(() => props.prompt, () => nextTick(resizeInput))
-onMounted(resizeInput)
+watch(() => props.prompt, () => nextTick(scrollToTop))
 </script>
 
 <template>
@@ -70,7 +66,7 @@ onMounted(resizeInput)
         id="promptInput"
         ref="promptInput"
         :value="prompt"
-        rows="1"
+        rows="3"
         maxlength="2000"
         placeholder="描述目标、限制条件和期望结果……"
         required
