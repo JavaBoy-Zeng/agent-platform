@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({
   agentId: { type: String, required: true },
@@ -19,12 +19,33 @@ const presets = [
   '检查执行计划中的潜在风险'
 ]
 
-function onShortcut(event) {
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-    event.preventDefault()
-    emit('run')
-  }
+const promptInput = ref(null)
+const MAX_INPUT_HEIGHT = 140
+
+/** 随内容自动增高，避免固定高度下粘贴多行文本时视口滚到 caret、看不到开头内容。 */
+function resizeInput() {
+  const el = promptInput.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + 'px'
 }
+
+function onInput(event) {
+  emit('update:prompt', event.target.value)
+  resizeInput()
+}
+
+/** Enter 发送，Shift+Enter 换行；中文输入法组词确认的 Enter 不触发发送。 */
+function onKeydown(event) {
+  if (event.key !== 'Enter') return
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.shiftKey) return
+  event.preventDefault()
+  if (!props.busy && props.prompt.trim()) emit('run')
+}
+
+watch(() => props.prompt, () => nextTick(resizeInput))
+onMounted(resizeInput)
 </script>
 
 <template>
@@ -47,16 +68,17 @@ function onShortcut(event) {
       <label for="promptInput">任务指令</label>
       <textarea
         id="promptInput"
+        ref="promptInput"
         :value="prompt"
-        rows="3"
+        rows="1"
         maxlength="2000"
         placeholder="描述目标、限制条件和期望结果……"
         required
-        @input="$emit('update:prompt', $event.target.value)"
-        @keydown="onShortcut"
+        @input="onInput"
+        @keydown="onKeydown"
       ></textarea>
       <div class="prompt-meta">
-        <span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 执行</span>
+        <span><kbd>Enter</kbd> 执行 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span>
         <span>{{ characterCount }} / 2000</span>
       </div>
     </div>
