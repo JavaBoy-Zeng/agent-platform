@@ -1,5 +1,6 @@
 package com.github.agentos.server.controller;
 
+import com.github.agentos.kernel.AgentCheckpoint;
 import com.github.agentos.kernel.AgentContext;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRuntime;
@@ -207,18 +208,24 @@ public class AgentController {
                 || request.pendingActionId().isBlank()) {
             throw new IllegalArgumentException("pendingActionId must not be blank");
         }
-        AgentInvocation invocation = runtime.invocation(invocationId).orElseThrow(() ->
-                new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "invocation not found: " + invocationId));
-        if (invocation.status() != AgentRunStatus.WAITING) {
+        // 进程重启后 invocation 内存态可能丢失；checkpoint 仍在说明该调用确实处于 WAITING。
+        AgentCheckpoint checkpoint = runtime.checkpoint(invocationId).orElse(null);
+        AgentInvocation invocation = runtime.invocation(invocationId).orElse(null);
+        if (invocation == null && checkpoint == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "invocation not found: " + invocationId);
+        }
+        if (invocation != null && invocation.status() != AgentRunStatus.WAITING) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
                     "invocation is not waiting for an external action: " + invocationId);
         }
+        String sessionId = invocation != null
+                ? invocation.sessionId() : checkpoint.sessionId();
         AgentState state = runtime.resume(invocationId, new PendingActionResolution(
                 request.pendingActionId(), request.approved(),
                 request.data() == null ? Map.of() : request.data()));
-        return ResponseEntity.ok(response(invocation.sessionId(), state));
+        return ResponseEntity.ok(resolvedResponse(sessionId, invocationId, state));
     }
 
     private RunResponse response(String sessionId, AgentState state) {
@@ -226,6 +233,17 @@ public class AgentController {
         return new RunResponse(
                 sessionId,
                 invocation == null ? "" : invocation.invocationId(),
+                state,
+                state.status() == AgentState.Status.WAITING && invocation != null
+                        ? invocation.pendingAction() : null);
+    }
+
+    /** 审批恢复响应：优先内存 invocation，重启场景回退到已知 invocationId。 */
+    private RunResponse resolvedResponse(String sessionId, String invocationId, AgentState state) {
+        AgentInvocation invocation = runtime.invocation(invocationId).orElse(null);
+        return new RunResponse(
+                sessionId,
+                invocation == null ? invocationId : invocation.invocationId(),
                 state,
                 state.status() == AgentState.Status.WAITING && invocation != null
                         ? invocation.pendingAction() : null);

@@ -199,6 +199,11 @@ public final class AgentRuntime {
                 new AgentInvocation(
                         invocationId, checkpoint.sessionId(), checkpoint.agentId(),
                         checkpoint.taskId(), checkpoint.savedAt()));
+        if (invocation.pendingAction() == null) {
+            // 进程重启后重建的 Invocation 需要回填挂起动作，否则恢复执行时
+            // 已批准的调用会被再次拦截进入新的审批循环。
+            invocation.waitFor(pending);
+        }
         invocation.resolve(resolution);
         AgentContext context = new AgentContext(
                 checkpoint.teamId(), checkpoint.userId(), checkpoint.agentId(),

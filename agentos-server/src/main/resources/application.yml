@@ -1,4 +1,10 @@
 agentos:
+  persistence:
+    # 运行态持久化：memory（默认，零依赖）或 sqlite。
+    # sqlite 模式下领域事件、审批 Checkpoint、断点续跑状态与用量账本
+    # 写入同一 SQLite 文件，重启后审批恢复与账本查询仍可用。
+    mode: "${AGENTOS_PERSISTENCE_MODE:memory}"
+    sqlite-file: "${AGENTOS_PERSISTENCE_SQLITE_FILE:.agentos/runtime/runtime.sqlite}"
   security:
     # REST 接口鉴权密钥（X-API-Key 请求头）；留空关闭鉴权，便于本地开发。
     # 上线 run_command 等高危工具前必须配置。

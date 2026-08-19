@@ -58,6 +58,7 @@ public final class MainAgent implements AgentLoop, Agent {
     private final AgentFinalizer finalizer;
     private final AgentExecutionLimits limits;
     private final ObservationSummarizer observationSummarizer;
+    private final ContinuationStore continuationStore;
     private final ConcurrentMap<String, Continuation> continuations = new ConcurrentHashMap<>();
 
     public MainAgent(
@@ -78,6 +79,19 @@ public final class MainAgent implements AgentLoop, Agent {
             AgentFinalizer finalizer,
             AgentExecutionLimits limits,
             ObservationSummarizer observationSummarizer) {
+        this(planner, planExecutor, memoryService, finalizer, limits,
+                observationSummarizer, ContinuationStore.NOOP);
+    }
+
+    /** 创建带续跑状态持久化的主 Agent；重启后审批恢复依赖该存储。 */
+    public MainAgent(
+            AgentPlanner planner,
+            PlanExecutor planExecutor,
+            MemoryService memoryService,
+            AgentFinalizer finalizer,
+            AgentExecutionLimits limits,
+            ObservationSummarizer observationSummarizer,
+            ContinuationStore continuationStore) {
         this.planner = Objects.requireNonNull(planner, "planner must not be null");
         this.planExecutor = Objects.requireNonNull(planExecutor, "planExecutor must not be null");
         this.memoryService = Objects.requireNonNull(memoryService, "memoryService must not be null");
@@ -85,6 +99,8 @@ public final class MainAgent implements AgentLoop, Agent {
         this.limits = Objects.requireNonNull(limits, "limits must not be null");
         this.observationSummarizer = Objects.requireNonNull(
                 observationSummarizer, "observationSummarizer must not be null");
+        this.continuationStore = Objects.requireNonNull(
+                continuationStore, "continuationStore must not be null");
     }
 
     @Override
@@ -135,7 +151,7 @@ public final class MainAgent implements AgentLoop, Agent {
             AgentEventSink eventSink) {
         Objects.requireNonNull(checkpoint, "checkpoint must not be null");
         Objects.requireNonNull(resolution, "resolution must not be null");
-        Continuation continuation = continuations.remove(checkpoint.invocationId());
+        Continuation continuation = takeContinuation(checkpoint.invocationId());
         if (continuation == null) {
             return runningState.fail(
                     "approved invocation cannot resume because its execution continuation is missing");
@@ -146,7 +162,7 @@ public final class MainAgent implements AgentLoop, Agent {
     @Override
     public AgentCheckpoint checkpoint(
             AgentRequest request, AgentContext context, AgentCheckpoint checkpoint) {
-        Continuation continuation = continuations.get(checkpoint.invocationId());
+        Continuation continuation = peekContinuation(checkpoint.invocationId());
         if (continuation == null) {
             return checkpoint;
         }
@@ -163,6 +179,7 @@ public final class MainAgent implements AgentLoop, Agent {
     @Override
     public void discard(AgentCheckpoint checkpoint) {
         continuations.remove(checkpoint.invocationId());
+        deleteContinuationQuietly(checkpoint.invocationId());
     }
 
     private AgentState run(
@@ -264,14 +281,16 @@ public final class MainAgent implements AgentLoop, Agent {
                         context.invocation().waitFor(action);
                         PlanStep waitingStep = Objects.requireNonNull(
                                 execution.currentStep(), "waiting execution must have currentStep");
-                        continuations.put(context.invocationId(), new Continuation(
+                        Continuation saved = new Continuation(
                                 request,
                                 remainingPlan(plan, waitingStep),
                                 cumulativeResults,
                                 modelCalls,
                                 replanCount,
                                 processedSteps,
-                                toolCalls));
+                                toolCalls);
+                        continuations.put(context.invocationId(), saved);
+                        saveContinuationQuietly(context.invocationId(), saved);
                     }
                     emit(eventSink, AgentRunEvent.of(
                             AgentRunEvent.Type.DECISION,
@@ -439,6 +458,65 @@ public final class MainAgent implements AgentLoop, Agent {
             remainingPlan = Objects.requireNonNull(
                     remainingPlan, "remainingPlan must not be null");
             cumulativeResults = List.copyOf(cumulativeResults);
+        }
+    }
+
+    /** 取出续跑状态：优先内存，其次持久化存储（同时删除，语义与内存 remove 对齐）。 */
+    private Continuation takeContinuation(String invocationId) {
+        Continuation inMemory = continuations.remove(invocationId);
+        if (inMemory != null) {
+            deleteContinuationQuietly(invocationId);
+            return inMemory;
+        }
+        return continuationStore.load(invocationId)
+                .map(loaded -> {
+                    deleteContinuationQuietly(invocationId);
+                    return new Continuation(
+                            loaded.request(), loaded.remainingPlan(),
+                            loaded.cumulativeResults(), loaded.modelCalls(),
+                            loaded.replanCount(), loaded.processedSteps(),
+                            loaded.toolCalls());
+                })
+                .orElse(null);
+    }
+
+    /** 只读查看续跑状态，不改变内存或存储。 */
+    private Continuation peekContinuation(String invocationId) {
+        Continuation inMemory = continuations.get(invocationId);
+        if (inMemory != null) {
+            return inMemory;
+        }
+        return continuationStore.load(invocationId)
+                .map(loaded -> new Continuation(
+                        loaded.request(), loaded.remainingPlan(),
+                        loaded.cumulativeResults(), loaded.modelCalls(),
+                        loaded.replanCount(), loaded.processedSteps(),
+                        loaded.toolCalls()))
+                .orElse(null);
+    }
+
+    /** 写透持久化；失败只记日志，不中断已进入 WAITING 的运行。 */
+    private void saveContinuationQuietly(String invocationId, Continuation continuation) {
+        try {
+            continuationStore.save(invocationId, new ContinuationStore.PersistedContinuation(
+                    continuation.request(), continuation.remainingPlan(),
+                    continuation.cumulativeResults(), continuation.modelCalls(),
+                    continuation.replanCount(), continuation.processedSteps(),
+                    continuation.toolCalls()));
+        } catch (RuntimeException exception) {
+            LOGGER.warn(
+                    "[agent-continuation] persist failed invocationId={} error={}",
+                    invocationId, exception.getMessage());
+        }
+    }
+
+    private void deleteContinuationQuietly(String invocationId) {
+        try {
+            continuationStore.delete(invocationId);
+        } catch (RuntimeException exception) {
+            LOGGER.warn(
+                    "[agent-continuation] delete failed invocationId={} error={}",
+                    invocationId, exception.getMessage());
         }
     }
 

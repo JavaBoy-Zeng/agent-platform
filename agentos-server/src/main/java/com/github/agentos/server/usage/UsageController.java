@@ -22,7 +22,7 @@ public class UsageController {
     /** 返回指定会话的累计模型用量。 */
     @GetMapping("/{sessionId}")
     public Map<String, Object> sessionUsage(@PathVariable String sessionId) {
-        UsageRecorder.SessionUsage usage = recorder.summary(sessionId);
+        UsageStore.SessionUsage usage = recorder.summary(sessionId);
         return Map.of(
                 "sessionId", sessionId,
                 "modelCalls", usage.modelCalls(),

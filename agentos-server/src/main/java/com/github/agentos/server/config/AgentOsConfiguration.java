@@ -11,8 +11,8 @@ import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentRuntime;
+import com.github.agentos.kernel.CheckpointStore;
 import com.github.agentos.kernel.InMemoryAgentEventPublisher;
-import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.planner.*;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
@@ -302,6 +302,7 @@ public class AgentOsConfiguration {
      * @param memoryService  记忆服务
      * @param agentFinalizer 内部最终回答收口器
      * @param limits         单次运行累计预算
+     * @param continuationStore 断点续跑状态存储；sqlite 模式下重启后审批仍可恢复
      * @return 主 Agent
      */
     @Bean
@@ -311,36 +312,34 @@ public class AgentOsConfiguration {
             MemoryService memoryService,
             AgentFinalizer agentFinalizer,
             AgentExecutionLimits limits,
-            ObservationSummarizer observationSummarizer) {
+            ObservationSummarizer observationSummarizer,
+            com.github.agentos.agent.loop.ContinuationStore continuationStore) {
         return new MainAgent(
                 agentPlanner, planExecutor, memoryService, agentFinalizer, limits,
-                observationSummarizer);
+                observationSummarizer, continuationStore);
     }
 
     /**
      * 创建面向 REST 接口的 Agent 运行时。
      *
      * @param routingAgentLoop 意图路由 Agent 循环；具体行为见 {@link RoutingAgentLoop}
+     * @param checkpointStore 审批恢复 Checkpoint 存储
      * @return Agent 运行时
      */
     @Bean
     AgentRuntime agentRuntime(
             RoutingAgentLoop routingAgentLoop,
             AgentEventPublisher agentEventPublisher,
-            AgentEventStore agentEventStore) {
-        return new AgentRuntime(routingAgentLoop, agentEventPublisher, agentEventStore);
+            AgentEventStore agentEventStore,
+            CheckpointStore checkpointStore) {
+        return new AgentRuntime(
+                routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore);
     }
 
     /** 创建进程内领域事件发布器，后续可注册审计或遥测监听器。 */
     @Bean
     AgentEventPublisher agentEventPublisher() {
         return new InMemoryAgentEventPublisher();
-    }
-
-    /** 创建进程内领域事件存储，支持按 Invocation 和 Session 查询轨迹。 */
-    @Bean
-    AgentEventStore agentEventStore() {
-        return new InMemoryAgentEventStore();
     }
 
     /**
