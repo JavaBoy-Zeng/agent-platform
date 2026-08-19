@@ -41,6 +41,10 @@ agentos:
     max-turns: 5
     # 历史中单条消息的截断上限，防止长输出拖爆 prompt。
     max-message-chars: 400
+  artifacts:
+    # Agent 运行产物（报告、文档等）的本地存储目录；
+    # 工具写文件成功后自动登记，可经 /api/artifacts 查询与下载。
+    root: "${AGENTOS_ARTIFACTS_ROOT:.agentos/artifacts}"
   router:
     short-circuit:
       # 触发短路的请求文本长度上限；0 表示关闭短路。

@@ -30,6 +30,7 @@ public final class AgentRunner {
     private final SessionService sessionService;
     private final AgentExecutionLimits budget;
     private final AgentPluginManager plugins;
+    private final ArtifactService artifacts;
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
@@ -99,6 +100,16 @@ public final class AgentRunner {
                 checkpointStore, sessionService, budget, plugins);
     }
 
+    /** 创建带事件落库、会话服务、执行预算、插件与产物存储的完整 Runner。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore,
+            SessionService sessionService, AgentExecutionLimits budget,
+            AgentPluginManager plugins, ArtifactService artifacts) {
+        this(agentLoop, storingPublisher(eventPublisher, eventStore),
+                checkpointStore, sessionService, budget, plugins, artifacts);
+    }
+
     /** 规范构造：事件发布器已就绪（含落库通道），会话服务负责消费状态增量。 */
     public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
@@ -121,6 +132,16 @@ public final class AgentRunner {
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
             CheckpointStore checkpointStore, SessionService sessionService,
             AgentExecutionLimits budget, AgentPluginManager plugins) {
+        this(agentLoop, eventPublisher, checkpointStore, sessionService, budget,
+                plugins, ArtifactService.NOOP);
+    }
+
+    /** 最完整构造：横切能力插件集合与产物存储。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore, SessionService sessionService,
+            AgentExecutionLimits budget, AgentPluginManager plugins,
+            ArtifactService artifacts) {
         this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
         this.eventPublisher = Objects.requireNonNull(
                 eventPublisher, "eventPublisher must not be null");
@@ -130,6 +151,7 @@ public final class AgentRunner {
                 sessionService, "sessionService must not be null");
         this.budget = Objects.requireNonNull(budget, "budget must not be null");
         this.plugins = Objects.requireNonNull(plugins, "plugins must not be null");
+        this.artifacts = artifacts == null ? ArtifactService.NOOP : artifacts;
     }
 
     private static AgentEventPublisher storingPublisher(
@@ -253,9 +275,9 @@ public final class AgentRunner {
         return result;
     }
 
-    /** Runner 在执行边界组装 InvocationContext：注入执行预算与当前会话快照。 */
+    /** Runner 在执行边界组装 InvocationContext：注入执行预算、产物存储与当前会话快照。 */
     private InvocationContext bind(AgentRequest request, InvocationContext context) {
-        InvocationContext bound = context.withBudget(budget);
+        InvocationContext bound = context.withBudget(budget).withArtifacts(artifacts);
         Session session = loadSessionQuietly(request, context.userId());
         return session == null ? bound : bound.withSession(session);
     }

@@ -14,9 +14,14 @@ public final class ToolContexts {
 
     /** 创建以指定工具为中心的最小可用执行上下文。 */
     public static ToolContext testContext(AgentTool tool) {
+        return testContext(tool, InvocationContext.of("test-agent"));
+    }
+
+    /** 创建携带指定 Invocation 上下文的执行上下文，供注入产物存储等运行时能力。 */
+    public static ToolContext testContext(AgentTool tool, InvocationContext invocation) {
         return new ToolContext(
                 AgentRequest.of("test-session", "test"),
-                InvocationContext.of("test-agent"),
+                invocation,
                 "", "", AgentExecutionLimits.defaults(), Map.of(), tool);
     }
 }

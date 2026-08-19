@@ -1,5 +1,6 @@
 package com.github.agentos.tool.builtin.file;
 
+import com.github.agentos.kernel.Artifact;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolActions;
 import com.github.agentos.tool.api.ToolCall;
@@ -13,13 +14,16 @@ import com.github.agentos.tool.builtin.file.writer.FileContentWriter;
 import com.github.agentos.tool.builtin.file.writer.FileContentWriterFactory;
 import com.github.agentos.tool.builtin.file.writer.TextFileContentWriter;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /** 创建、覆盖或追加 TXT、Markdown 和 Word OOXML 文档。 */
 public final class FileWriteTool implements AgentTool {
@@ -106,13 +110,17 @@ public final class FileWriteTool implements AgentTool {
             boolean created = !Files.exists(path);
             mode.write(writer, path, content);
             int bytesWritten = content.getBytes(StandardCharsets.UTF_8).length;
-            Map<String, Object> data = Map.of(
-                    "path", path.toString(),
-                    "format", writer.format(),
-                    "mode", mode.name(),
-                    "created", created,
-                    "bytesWritten", bytesWritten,
-                    "fileSizeBytes", Files.size(path));
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("path", path.toString());
+            data.put("format", writer.format());
+            data.put("mode", mode.name());
+            data.put("created", created);
+            data.put("bytesWritten", bytesWritten);
+            data.put("fileSizeBytes", Files.size(path));
+            registerArtifact(context, path).ifPresent(artifact -> {
+                data.put("artifactId", artifact.artifactId());
+                data.put("artifactFilename", artifact.filename());
+            });
             return ToolResult.success(
                     data,
                     "file written successfully",
@@ -123,6 +131,40 @@ public final class FileWriteTool implements AgentTool {
         } catch (Exception exception) {
             return FileToolSupport.failure(exception, "file write");
         }
+    }
+
+    /**
+     * 把写入完成的文件登记为会话产物，供 REST 下载与管理。
+     *
+     * <p>产物登记是附加能力：存储不可用或登记失败时静默降级，
+     * 不影响文件写入本体的成功语义。</p>
+     */
+    private static Optional<Artifact> registerArtifact(ToolContext context, Path path) {
+        try {
+            return context.artifacts().save(
+                    context.sessionId(),
+                    context.invocationId(),
+                    path.getFileName().toString(),
+                    contentTypeFor(path),
+                    Files.readAllBytes(path));
+        } catch (IOException | RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    /** 按扩展名推断产物的 MIME 类型。 */
+    private static String contentTypeFor(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (name.endsWith(".txt")) {
+            return "text/plain";
+        }
+        if (name.endsWith(".md") || name.endsWith(".markdown")) {
+            return "text/markdown";
+        }
+        if (name.endsWith(".docx")) {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        }
+        return "application/octet-stream";
     }
 
     private static String requiredContent(Object value) {

@@ -21,6 +21,7 @@ import java.util.Objects;
  * @param invocation 本次运行记录；Runner 注入前为 {@code null}
  * @param eventPublisher 领域事件发布器
  * @param cancellation 本次运行的协作式取消令牌
+ * @param artifacts 本次运行的产物存储；未注入时为 {@link ArtifactService#NOOP}
  */
 public record InvocationContext(
         String teamId,
@@ -31,7 +32,23 @@ public record InvocationContext(
         AgentExecutionLimits budget,
         AgentInvocation invocation,
         AgentEventPublisher eventPublisher,
-        CancellationToken cancellation) {
+        CancellationToken cancellation,
+        ArtifactService artifacts) {
+
+    /** 兼容无产物存储构造：产物访问退化为空实现。 */
+    public InvocationContext(
+            String teamId,
+            String userId,
+            String agentId,
+            String taskId,
+            Session session,
+            AgentExecutionLimits budget,
+            AgentInvocation invocation,
+            AgentEventPublisher eventPublisher,
+            CancellationToken cancellation) {
+        this(teamId, userId, agentId, taskId, session, budget, invocation, eventPublisher,
+                cancellation, ArtifactService.NOOP);
+    }
 
     /** 兼容无令牌构造：创建一个永不取消的令牌。 */
     public InvocationContext(
@@ -66,6 +83,7 @@ public record InvocationContext(
         budget = budget == null ? AgentExecutionLimits.defaults() : budget;
         eventPublisher = eventPublisher == null ? AgentEventPublisher.NOOP : eventPublisher;
         cancellation = cancellation == null ? CancellationToken.notCancelled() : cancellation;
+        artifacts = artifacts == null ? ArtifactService.NOOP : artifacts;
     }
 
     /** 创建默认团队和用户作用域下的 Invocation 上下文。 */
@@ -86,7 +104,7 @@ public record InvocationContext(
     public InvocationContext withSession(Session value) {
         return new InvocationContext(teamId, userId, agentId, taskId,
                 Objects.requireNonNull(value, "session must not be null"),
-                budget, invocation, eventPublisher, cancellation);
+                budget, invocation, eventPublisher, cancellation, artifacts);
     }
 
     /** 返回切换执行 Agent 标识后的新上下文，供 Workflow Agent 派生子 Agent 作用域。 */
@@ -94,7 +112,7 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId,
                 Objects.requireNonNull(
                         requireText(value, "agentId"), "agentId must not be null"),
-                taskId, session, budget, invocation, eventPublisher, cancellation);
+                taskId, session, budget, invocation, eventPublisher, cancellation, artifacts);
     }
 
     /** 返回替换执行预算后的新上下文。 */
@@ -102,7 +120,7 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId, agentId, taskId,
                 session,
                 Objects.requireNonNull(value, "budget must not be null"),
-                invocation, eventPublisher, cancellation);
+                invocation, eventPublisher, cancellation, artifacts);
     }
 
     /** 返回同时绑定 Invocation 与 Runner 领域事件发布器的新上下文。 */
@@ -112,7 +130,7 @@ public record InvocationContext(
                 session, budget,
                 Objects.requireNonNull(value, "invocation must not be null"),
                 Objects.requireNonNull(publisher, "publisher must not be null"),
-                cancellation);
+                cancellation, artifacts);
     }
 
     /** 返回绑定指定 Invocation 的新上下文。 */
@@ -120,14 +138,21 @@ public record InvocationContext(
         return new InvocationContext(teamId, userId, agentId, taskId,
                 session, budget,
                 Objects.requireNonNull(value, "invocation must not be null"),
-                eventPublisher, cancellation);
+                eventPublisher, cancellation, artifacts);
     }
 
     /** 返回绑定指定取消令牌的新上下文。 */
     public InvocationContext withCancellation(CancellationToken value) {
         return new InvocationContext(teamId, userId, agentId, taskId,
                 session, budget, invocation, eventPublisher,
-                Objects.requireNonNull(value, "cancellation must not be null"));
+                Objects.requireNonNull(value, "cancellation must not be null"), artifacts);
+    }
+
+    /** 返回绑定指定产物存储的新上下文。 */
+    public InvocationContext withArtifacts(ArtifactService value) {
+        return new InvocationContext(teamId, userId, agentId, taskId,
+                session, budget, invocation, eventPublisher, cancellation,
+                Objects.requireNonNull(value, "artifacts must not be null"));
     }
 
     /** 返回 Runner 注入的 Invocation 标识，未进入 Runner 时返回空字符串。 */

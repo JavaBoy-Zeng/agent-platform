@@ -1,7 +1,13 @@
 package com.github.agentos.tool.builtin.file;
 
+import com.github.agentos.kernel.Artifact;
+import com.github.agentos.kernel.ArtifactContent;
+import com.github.agentos.kernel.ArtifactService;
+import com.github.agentos.kernel.InvocationContext;
+import com.github.agentos.kernel.LocalArtifactService;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
+import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
@@ -16,7 +22,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -146,6 +154,66 @@ class FileWriteToolTest {
                 .containsExactly("path", "content", "mode", "createParentDirectories");
         assertThat(tool.parameters()).extracting(parameter -> parameter.required())
                 .containsExactly(true, true, false, false);
+    }
+
+    @Test
+    void registersWrittenFileAsSessionArtifact() throws Exception {
+        Path file = directory.resolve("notes.md");
+        LocalArtifactService artifacts = new LocalArtifactService(directory.resolve("artifact-store"));
+        FileWriteTool tool = tool();
+        ToolContext context = ToolContexts.testContext(
+                tool, InvocationContext.of("test-agent").withArtifacts(artifacts));
+
+        ToolResult result = tool.execute(context, call(file, "# 标题", Map.of()));
+
+        assertThat(result.success()).isTrue();
+        Map<?, ?> data = (Map<?, ?>) result.data();
+        assertThat(data.get("artifactId")).asString().isNotBlank();
+        assertThat(data.get("artifactFilename")).isEqualTo("notes.md");
+
+        List<Artifact> listed = artifacts.list("test-session");
+        assertThat(listed).hasSize(1);
+        assertThat(listed.get(0).artifactId()).isEqualTo(data.get("artifactId"));
+        assertThat(listed.get(0).contentType()).isEqualTo("text/markdown");
+        ArtifactContent content = artifacts.load(listed.get(0).artifactId()).orElseThrow();
+        assertThat(new String(content.bytes(), StandardCharsets.UTF_8)).isEqualTo("# 标题");
+    }
+
+    @Test
+    void artifactRegistrationFailureDoesNotAffectWriteSuccess() throws Exception {
+        Path file = directory.resolve("plain.txt");
+        ArtifactService broken = new ArtifactService() {
+            @Override
+            public Optional<Artifact> save(
+                    String sessionId, String invocationId,
+                    String filename, String contentType, byte[] bytes) {
+                throw new IllegalStateException("artifact storage unavailable");
+            }
+
+            @Override
+            public Optional<ArtifactContent> load(String artifactId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public List<Artifact> list(String sessionId) {
+                return List.of();
+            }
+
+            @Override
+            public boolean delete(String artifactId) {
+                return false;
+            }
+        };
+        FileWriteTool tool = tool();
+        ToolContext context = ToolContexts.testContext(
+                tool, InvocationContext.of("test-agent").withArtifacts(broken));
+
+        ToolResult result = tool.execute(context, call(file, "内容", Map.of()));
+
+        assertThat(result.success()).isTrue();
+        assertThat(Files.readString(file, StandardCharsets.UTF_8)).isEqualTo("内容");
+        assertThat(((Map<?, ?>) result.data()).containsKey("artifactId")).isFalse();
     }
 
     private FileWriteTool tool() {

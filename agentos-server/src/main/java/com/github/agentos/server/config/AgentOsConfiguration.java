@@ -320,12 +320,28 @@ public class AgentOsConfiguration {
     }
 
     /**
+     * 创建本地文件系统产物存储。
+     *
+     * <p>工具写入的文件在执行边界自动登记为会话产物，
+     * 可经 {@code /api/artifacts} 查询与下载。</p>
+     *
+     * @param root 产物存储根目录
+     * @return 本地产物存储
+     */
+    @Bean
+    com.github.agentos.kernel.LocalArtifactService localArtifactService(
+            @Value("${agentos.artifacts.root:.agentos/artifacts}") String root) {
+        return new com.github.agentos.kernel.LocalArtifactService(Path.of(root));
+    }
+
+    /**
      * 创建面向 REST 接口的 Agent 运行器。
      *
      * @param routingAgentLoop 意图路由 Agent 循环；具体行为见 {@link RoutingAgentLoop}
      * @param checkpointStore 审批恢复 Checkpoint 存储
      * @param agentExecutionLimits 单次运行累计执行预算
      * @param pluginManager 横切能力插件集合（记账、追踪等）
+     * @param artifactService 会话产物存储
      * @return Agent 运行器
      */
     @Bean
@@ -336,10 +352,11 @@ public class AgentOsConfiguration {
             CheckpointStore checkpointStore,
             com.github.agentos.kernel.SessionService sessionService,
             AgentExecutionLimits agentExecutionLimits,
-            com.github.agentos.kernel.AgentPluginManager pluginManager) {
+            com.github.agentos.kernel.AgentPluginManager pluginManager,
+            com.github.agentos.kernel.ArtifactService artifactService) {
         return new AgentRunner(
                 routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore,
-                sessionService, agentExecutionLimits, pluginManager);
+                sessionService, agentExecutionLimits, pluginManager, artifactService);
     }
 
     /**

@@ -2,6 +2,7 @@ package com.github.agentos.tool.api;
 
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.ArtifactService;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.SessionState;
 
@@ -13,8 +14,9 @@ import java.util.Objects;
  *
  * <p>工具执行时不再只收到裸参数，而是同时拿到 Invocation 上下文（身份、会话、
  * 预算、事件发布器）、计划步骤定位、会话状态视图与解析后的工具自身。
- * 文件类工具可以读取 {@link #state()}，记忆类工具可以借助 {@link #invocation()}
- * 定位会话，HITL 类工具通过 {@link ToolActions} 返回审批请求，无需各自注入 Bean。</p>
+ * 文件类工具可以读取 {@link #state()} 或经 {@link #artifacts()} 登记产出产物，
+ * 记忆类工具可以借助 {@link #invocation()} 定位会话，HITL 类工具通过
+ * {@link ToolActions} 返回审批请求，无需各自注入 Bean。</p>
  *
  * @param request 本次用户请求
  * @param invocation 本次运行的 Invocation 上下文
@@ -63,5 +65,10 @@ public record ToolContext(
     /** 返回结构化会话状态；会话未注入时返回空状态。 */
     public SessionState sessionState() {
         return invocation.sessionState();
+    }
+
+    /** 返回本次运行的产物存储；Runner 未装配时为空实现。 */
+    public ArtifactService artifacts() {
+        return invocation.artifacts();
     }
 }

@@ -292,14 +292,21 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     private static List<Map<String, Object>> requestMessages(LlmRequest request) {
         List<Map<String, Object>> messages = new ArrayList<>();
         request.instruction().ifPresent(instruction -> messages.add(
-                Map.of("role", "system", "content", instruction)));
+                message("system", instruction)));
         for (LlmMessage message : request.messages()) {
-            messages.add(Map.of(
-                    "role", message.role().name().toLowerCase(
-                            java.util.Locale.ROOT),
-                    "content", message.content()));
+            messages.add(message(
+                    message.role().name().toLowerCase(java.util.Locale.ROOT),
+                    message.content()));
         }
         return messages;
+    }
+
+    /** 构造键序固定的消息体（role 在前、content 在后）；Map.of 的迭代顺序不稳定。 */
+    private static Map<String, Object> message(String role, String content) {
+        Map<String, Object> message = new java.util.LinkedHashMap<>();
+        message.put("role", role);
+        message.put("content", content);
+        return message;
     }
 
     private JsonNode parseJson(String responseBody) {
