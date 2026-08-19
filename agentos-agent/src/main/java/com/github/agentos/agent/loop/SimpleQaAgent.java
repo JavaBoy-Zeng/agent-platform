@@ -29,6 +29,14 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
     /** 注册到 AgentRegistry 的稳定标识，供路由决策引用。 */
     public static final String ID = "simple-qa-agent";
 
+    /**
+     * {@link AgentRequest#attributes()} 中携带会话历史的键。
+     *
+     * <p>值为从早到晚排列的“用户/助手”多行文本；直答路径用它理解
+     * “那明天呢”这类依赖上一轮的指代。服务端在进入运行时前注入。</p>
+     */
+    public static final String CONVERSATION_HISTORY_ATTRIBUTE = "conversationHistory";
+
     private static final Logger LOGGER = LoggerFactory.getLogger(SimpleQaAgent.class);
 
     private final ChatClient chatClient;
@@ -82,7 +90,7 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
             java.util.concurrent.atomic.AtomicInteger deltaSequence = new java.util.concurrent.atomic.AtomicInteger();
             ChatClient.ChatResponse response = chatClient.chatStream(
                     request.sessionId(),
-                    request.objective(),
+                    directAnswerPrompt(request),
                     delta -> eventSink.emit(AgentRunEvent.of(
                             AgentRunEvent.Type.OUTPUT_DELTA,
                             request.sessionId(),
@@ -131,5 +139,20 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
                     Map.of("agentId", ID, "router", "direct-chat")));
             return runningState.fail(message);
         }
+    }
+
+    /**
+     * 构造直答 prompt：携带会话历史时把历史与当前问题拼接成单条用户消息，
+     * 让轻量直答模型也能解析上一轮的指代；无历史时保持原样，零额外 token。
+     */
+    private static String directAnswerPrompt(AgentRequest request) {
+        Object history = request.attributes().get(CONVERSATION_HISTORY_ATTRIBUTE);
+        if (history instanceof String text && !text.isBlank()) {
+            return "以下是当前会话之前的对话记录（从早到晚）：\n"
+                    + text
+                    + "\n\n请结合以上对话记录理解当前问题中的指代并直接回答。\n当前问题："
+                    + request.objective();
+        }
+        return request.objective();
     }
 }

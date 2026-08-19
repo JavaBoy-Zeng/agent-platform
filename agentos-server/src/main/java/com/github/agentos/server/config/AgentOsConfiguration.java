@@ -343,6 +343,23 @@ public class AgentOsConfiguration {
     }
 
     /**
+     * 创建会话多轮历史服务，供控制器在运行前把最近轮次注入请求属性。
+     *
+     * @param agentEventStore 领域事件存储
+     * @param maxTurns 最多保留的完整轮次数
+     * @param maxMessageChars 单条消息截断上限
+     * @return 会话历史服务
+     */
+    @Bean
+    com.github.agentos.server.history.SessionHistoryService sessionHistoryService(
+            AgentEventStore agentEventStore,
+            @Value("${agentos.history.max-turns:5}") int maxTurns,
+            @Value("${agentos.history.max-message-chars:400}") int maxMessageChars) {
+        return new com.github.agentos.server.history.SessionHistoryService(
+                agentEventStore, maxTurns, maxMessageChars);
+    }
+
+    /**
      * 为 SSE Agent 运行创建轻量虚拟线程执行器。
      */
     @Bean(destroyMethod = "close")

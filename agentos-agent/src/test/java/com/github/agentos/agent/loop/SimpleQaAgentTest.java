@@ -150,4 +150,45 @@ class SimpleQaAgentTest {
         assertThat(events).extracting(AgentRunEvent::type)
                 .doesNotContain(AgentRunEvent.Type.USAGE);
     }
+
+    @Test
+    void prependsConversationHistoryWhenAttributePresent() {
+        List<String> prompts = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, m) -> {
+            prompts.add(m);
+            return "ok";
+        });
+
+        agent.run(
+                new AgentRequest("s1", "那明天呢", Map.of(
+                        SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE,
+                        "用户：今天几号\n助手：今天是 2026-08-19 星期三")),
+                AgentContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                AgentEventSink.NOOP);
+
+        assertThat(prompts).singleElement().satisfies(prompt -> {
+            assertThat(prompt).contains("用户：今天几号");
+            assertThat(prompt).contains("助手：今天是 2026-08-19 星期三");
+            assertThat(prompt).endsWith("当前问题：那明天呢");
+        });
+    }
+
+    @Test
+    void keepsPlainObjectiveWithoutHistoryAttribute() {
+        List<String> prompts = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, m) -> {
+            prompts.add(m);
+            return "ok";
+        });
+
+        agent.run(
+                new AgentRequest("s1", "1+1 等于几", Map.of(
+                        SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE, "  ")),
+                AgentContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                AgentEventSink.NOOP);
+
+        assertThat(prompts).containsExactly("1+1 等于几");
+    }
 }

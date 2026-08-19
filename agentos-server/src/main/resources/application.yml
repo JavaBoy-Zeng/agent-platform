@@ -36,6 +36,11 @@ agentos:
     max-model-calls: 10
     max-observation-chars: 4000
     max-observation-total-chars: 24000
+  history:
+    # 多轮上下文：运行前从事件存储回放的最近完整轮次数（用户+助手各算一行）。
+    max-turns: 5
+    # 历史中单条消息的截断上限，防止长输出拖爆 prompt。
+    max-message-chars: 400
   router:
     short-circuit:
       # 触发短路的请求文本长度上限；0 表示关闭短路。

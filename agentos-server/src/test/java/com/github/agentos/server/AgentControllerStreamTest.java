@@ -1,17 +1,23 @@
 package com.github.agentos.server;
 
+import com.github.agentos.agent.loop.SimpleQaAgent;
+import com.github.agentos.kernel.AgentCheckpoint;
 import com.github.agentos.kernel.AgentContext;
+import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentEventSink;
+import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRuntime;
 import com.github.agentos.kernel.AgentState;
-import com.github.agentos.kernel.AgentCheckpoint;
+import com.github.agentos.kernel.InMemoryAgentEventStore;
+import com.github.agentos.kernel.InMemoryCheckpointStore;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.kernel.PendingActionType;
 import com.github.agentos.server.controller.AgentController;
+import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -19,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 
@@ -59,7 +66,8 @@ class AgentControllerStreamTest {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
                     new AgentController(
-                            new AgentRuntime(loop), executor, new AgentRunTaskRegistry())).build();
+                            new AgentRuntime(loop), executor, new AgentRunTaskRegistry(),
+                            historyService())).build();
             MvcResult started = mockMvc.perform(post("/api/agents/runs/stream")
                             .contentType(MediaType.APPLICATION_JSON)
                             .accept(MediaType.TEXT_EVENT_STREAM)
@@ -104,7 +112,8 @@ class AgentControllerStreamTest {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             AgentRuntime runtime = new AgentRuntime(loop);
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
-                    new AgentController(runtime, executor, new AgentRunTaskRegistry())).build();
+                    new AgentController(runtime, executor, new AgentRunTaskRegistry(),
+                            historyService())).build();
 
             mockMvc.perform(post("/api/agents/runs")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -133,5 +142,62 @@ class AgentControllerStreamTest {
                     .andExpect(content().string(containsString("\"status\":\"COMPLETED\"")))
                     .andExpect(content().string(containsString("\"output\":\"written\"")));
         }
+    }
+
+    @Test
+    void injectsConversationHistoryIntoSecondRunOfSameSession() throws Exception {
+        List<AgentRequest> seenRequests = new java.util.ArrayList<>();
+        AgentLoop loop = new AgentLoop() {
+            @Override
+            public AgentState run(
+                    AgentRequest request, AgentContext context, AgentState runningState) {
+                return run(request, context, runningState, AgentEventSink.NOOP);
+            }
+
+            @Override
+            public AgentState run(
+                    AgentRequest request, AgentContext context, AgentState runningState,
+                    AgentEventSink eventSink) {
+                seenRequests.add(request);
+                return runningState.complete("answer-" + seenRequests.size());
+            }
+        };
+        AgentEventStore eventStore = new InMemoryAgentEventStore();
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRuntime runtime = new AgentRuntime(
+                    loop, AgentEventPublisher.NOOP, eventStore, new InMemoryCheckpointStore());
+            MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
+                    new AgentController(
+                            runtime, executor, new AgentRunTaskRegistry(),
+                            new SessionHistoryService(eventStore, 5, 400))).build();
+
+            mockMvc.perform(post("/api/agents/runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"sessionId":"history-session","input":"第一轮问题"}
+                                    """))
+                    .andExpect(status().isCreated());
+            mockMvc.perform(post("/api/agents/runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"sessionId":"history-session","input":"第二轮问题"}
+                                    """))
+                    .andExpect(status().isCreated());
+
+            org.junit.jupiter.api.Assertions.assertEquals(2, seenRequests.size());
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    seenRequests.get(0).attributes().containsKey(
+                            SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE));
+            Object history = seenRequests.get(1).attributes()
+                    .get(SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE);
+            org.junit.jupiter.api.Assertions.assertTrue(history instanceof String text
+                    && text.contains("用户：第一轮问题")
+                    && text.contains("助手：answer-1"));
+        }
+    }
+
+    private static SessionHistoryService historyService() {
+        return new SessionHistoryService(new InMemoryAgentEventStore(), 5, 400);
     }
 }

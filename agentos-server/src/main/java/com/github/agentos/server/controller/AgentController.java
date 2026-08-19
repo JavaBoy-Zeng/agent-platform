@@ -10,6 +10,8 @@ import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRunStatus;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
+import com.github.agentos.agent.loop.SimpleQaAgent;
+import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
@@ -41,19 +43,23 @@ public class AgentController {
     private final AgentRuntime runtime;
     private final ExecutorService streamExecutor;
     private final AgentRunTaskRegistry taskRegistry;
+    private final SessionHistoryService sessionHistoryService;
 
     /**
      * 创建 Agent REST 控制器。
      *
      * @param runtime Agent 统一运行入口
+     * @param sessionHistoryService 会话多轮历史服务
      */
     public AgentController(
             AgentRuntime runtime,
             ExecutorService streamExecutor,
-            AgentRunTaskRegistry taskRegistry) {
+            AgentRunTaskRegistry taskRegistry,
+            SessionHistoryService sessionHistoryService) {
         this.runtime = runtime;
         this.streamExecutor = streamExecutor;
         this.taskRegistry = taskRegistry;
+        this.sessionHistoryService = sessionHistoryService;
     }
 
     /**
@@ -150,7 +156,7 @@ public class AgentController {
         }
     }
 
-    private static RunInvocation normalize(RunRequest request) {
+    private RunInvocation normalize(RunRequest request) {
         if (request == null || request.input() == null || request.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
         }
@@ -167,9 +173,11 @@ public class AgentController {
                 ? "default-user"
                 : request.userId();
         String taskId = request.taskId() == null ? "" : request.taskId();
-        Map<String, Object> attributes = request.attributes() == null
-                ? Map.of()
-                : request.attributes();
+        Map<String, Object> attributes = new java.util.LinkedHashMap<>(
+                request.attributes() == null ? Map.of() : request.attributes());
+        // 注入会话历史：直答路径据此理解指代，规划路径随 attributes 进入规划上下文。
+        sessionHistoryService.history(sessionId).ifPresent(history -> attributes.put(
+                SimpleQaAgent.CONVERSATION_HISTORY_ATTRIBUTE, history));
         return new RunInvocation(
                 new AgentRequest(sessionId, request.input(), attributes),
                 new AgentContext(teamId, userId, agentId, taskId));
