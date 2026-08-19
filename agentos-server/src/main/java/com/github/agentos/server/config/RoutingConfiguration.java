@@ -8,6 +8,7 @@ import com.github.agentos.agent.registry.InMemoryAgentRegistry;
 import com.github.agentos.agent.routing.HeuristicIntentClassifier;
 import com.github.agentos.agent.routing.IntentClassifier;
 import com.github.agentos.agent.routing.RoutingAgentLoop;
+import com.github.agentos.agent.specialist.SupervisorAgent;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.OpenAiCompatibleChatClient;
@@ -25,7 +26,8 @@ import java.net.http.HttpClient;
  * <p>该配置把 {@link RoutingAgentLoop} 接入到 {@code AgentRunner} 之前，
  * 让请求先经过 {@link IntentClassifier} 决策再进入执行循环。
  * 意图分级顺序：寒暄短路（零调用）→ 简单问答（{@link SimpleQaAgent} 单次直答）
- * → 复杂任务（{@link MainAgent} 规划执行）。</p>
+ * → 复杂任务（{@link SupervisorAgent} LLM 分类 + 专业 Agent 派发，
+ * 或回退到 {@link MainAgent} 全量规划）。</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class RoutingConfiguration {
@@ -70,7 +72,7 @@ public class RoutingConfiguration {
     /**
      * 创建进程内 AgentRegistry，把 Spring 容器内全部 Agent 注入到注册表。
      *
-     * <p>主 Agent 默认被注册，标识为 {@link MainAgent#id()}。</p>
+     * <p>主 Agent、简单问答 Agent 和专业 Agent 均被注册。</p>
      */
     @Bean
     @ConditionalOnMissingBean(AgentRegistry.class)
@@ -83,15 +85,17 @@ public class RoutingConfiguration {
     /**
      * 创建意图路由器，将短路、Agent派发和 fallback 三类决策统一封装为 AgentLoop。
      *
-     * <p>fallback 直接绑定到 {@link MainAgent} bean，避免与本 {@link RoutingAgentLoop} bean
-     * 自身同为 {@code AgentLoop} 实现而引发 Spring 注入歧义。</p>
+     * <p>fallback 绑定到 {@link SupervisorAgent}，后者通过单次 LLM 调用将任务
+     * 分类到专业 Agent 或回退到 {@link MainAgent} 走完整规划循环。
+     * 显式绑定避免与 {@link RoutingAgentLoop} 自身同为 {@code AgentLoop}
+     * 实现而引发 Spring 注入歧义。</p>
      */
     @Bean
     @ConditionalOnMissingBean(RoutingAgentLoop.class)
     RoutingAgentLoop routingAgentLoop(
             IntentClassifier classifier,
             AgentRegistry registry,
-            MainAgent mainAgent) {
-        return new RoutingAgentLoop(classifier, registry, mainAgent);
+            SupervisorAgent supervisorAgent) {
+        return new RoutingAgentLoop(classifier, registry, supervisorAgent);
     }
 }

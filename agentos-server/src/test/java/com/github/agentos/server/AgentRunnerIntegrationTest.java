@@ -12,6 +12,7 @@ import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.planner.ChatClient;
 import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.ModelPlan;
 import com.github.agentos.planner.PlanOutcome;
@@ -51,9 +52,15 @@ class AgentRunnerIntegrationTest {
      * <p>输入 {@code "I prefer Java"}（12 字符、无工具关键词）默认会被
      * {@code HeuristicIntentClassifier} 短路返回 canned answer，从而绕过 LLM 调用；
      * 这里 mock 出固定的 fallback，让既有对完整 plan-and-execute 周期的断言仍然成立。</p>
+     *
+     * <p>同时 mock {@link ChatClient} 让 {@link com.github.agentos.agent.specialist.SupervisorAgent}
+     * 始终回退到 MainAgent，跳过 LLM 分类。</p>
      */
     @MockitoBean
     private IntentClassifier intentClassifier;
+
+    @MockitoBean
+    private ChatClient chatClient;
 
     @Test
     void replansAfterExecutionThenFinalizesAndCapturesOnlyCompletedTurn() {
@@ -61,6 +68,10 @@ class AgentRunnerIntegrationTest {
                         org.mockito.ArgumentMatchers.any(),
                         org.mockito.ArgumentMatchers.any()))
                 .thenReturn(IntentClassification.fallback("integration-test"));
+        org.mockito.Mockito.when(chatClient.chat(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn("main-agent");
         AgentRequest request = AgentRequest.of("session-1", "I prefer Java");
         InvocationContext context = InvocationContext.of("main-agent");
 
