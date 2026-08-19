@@ -5,6 +5,9 @@
 ## 主要职责
 
 - 创建和切换 Agent 会话。
+- 通过 12 个管理 Tab 统一查看 Agents、Runs、Sessions、Tools、MCP、Skills、Memory、Plans、Traces、Artifacts、Approvals 和 Models。
+- 从运行时只读目录展示真实工具、技能、MCP、模型与执行预算配置。
+- 查询分层记忆、链路追踪、模型用量和会话产物，并支持审批处理、产物下载与删除。
 - 向 `POST /api/agent-runs` 创建后台任务，并通过 GET SSE 按事件游标持续订阅。
 - 页面刷新后按 `runId` 查询快照、补播缺失事件并恢复实时展示。
 - 实时展示 Plan、Tool、Observation、Decision、最终输出和失败信息。
@@ -27,6 +30,7 @@ agentos-console
 ├── src
 │   ├── components
 │   │   ├── SystemHeader.vue
+│   │   ├── AppSidebar.vue
 │   │   ├── SessionRail.vue
 │   │   ├── CommandDeck.vue
 │   │   ├── TranscriptPanel.vue
@@ -34,8 +38,13 @@ agentos-console
 │   ├── composables
 │   │   └── useAgentConsole.js
 │   ├── services
-│   │   └── agentApi.js
+│   │   ├── agentApi.js
+│   │   └── consoleApi.js
+│   ├── views
+│   │   ├── ChatView.vue
+│   │   └── ManagementView.vue
 │   ├── App.vue
+│   ├── router.js
 │   ├── main.js
 │   └── styles.css
 ├── index.html

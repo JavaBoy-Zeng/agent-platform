@@ -32,7 +32,7 @@ onUnmounted(() => window.clearInterval(timer))
 
 <template>
   <header class="masthead">
-    <a class="brand" href="/" aria-label="AgentOS 首页">
+    <router-link class="brand" to="/chat" aria-label="AgentOS 首页">
       <span class="brand-mark" aria-hidden="true">
         <span>AO</span>
         <i></i>
@@ -41,13 +41,13 @@ onUnmounted(() => window.clearInterval(timer))
         <strong>AGENT/OS</strong>
         <small>MISSION CONSOLE</small>
       </span>
-    </a>
+    </router-link>
 
     <div class="system-strip" aria-label="系统状态">
       <span class="signal" :class="connection"></span>
       <span>{{ connectionLabel }}</span>
       <span class="system-divider"></span>
-      <span>RUNTIME 01</span>
+      <span>CONTROL PLANE / 01</span>
     </div>
 
     <div class="header-tools">

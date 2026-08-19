@@ -29,6 +29,7 @@
 | `BackgroundAgentRunController` | 暴露后台运行创建、快照、事件补播和取消 API。 |
 | `ArtifactController` | 暴露会话产物列举、下载与删除 API。 |
 | `EvaluationController / EvaluationService` | 回放 Invocation 事件流并按评估用例比对工具轨迹。 |
+| `ConsoleCatalogController` | 为 Console 管理面板提供不含密钥的运行时只读目录（`/api/console/catalog`）。 |
 | `SkillConfiguration` | 装配技能注册表与 `load_skill` 工具；本地目录优先于 classpath 内置技能。 |
 | `CodeExecutorConfiguration` | 按 mode 装配代码执行器（docker 沙箱 / 本地进程 / auto）与 `execute_code` 工具。 |
 | `UsageController / UsageRecorder` | 模型 token 用量记账与按会话查询。 |
@@ -168,6 +169,23 @@ Content-Type: application/json
 响应包含 `passed`、`score`（通过检查数 / 已执行检查数）、逐项 `findings` 明细、
 实际工具序列与最终回答。所有字段均可省略；Invocation 无事件记录时返回 `404`。
 评估语义详见 [`agentos-kernel`](../agentos-kernel/README.md)。
+
+### Console 管理面板目录
+
+```http
+GET /api/console/catalog
+```
+
+为 Console 管理面板提供运行时只读快照，响应不含任何密钥：
+
+- `agents`：当前 Agent 摘要（id、名称、状态、职责说明）。
+- `tools`：已注册工具的名称、说明、风险等级与参数列表。
+- `skills`：技能摘要（id、名称、说明、来源）；技能正文不通过该接口暴露，
+  技能体系未启用时为空列表。
+- `mcpServers`：MCP Server 配置摘要；仅暴露可执行程序名，不暴露启动参数。
+- `models`：规划与直答两条链路的模型、provider（取 endpoint 主机名）与用途；
+  不含 API Key 与完整端点。
+- `limits`：运行预算（maxReplans / maxSteps / maxToolCalls / maxModelCalls）。
 
 ### 查询记忆快照
 

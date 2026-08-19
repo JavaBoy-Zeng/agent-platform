@@ -1,80 +1,29 @@
 <script setup>
-import CommandDeck from './components/CommandDeck.vue'
-import SessionRail from './components/SessionRail.vue'
+import { provide } from 'vue'
+import { useRouter } from 'vue-router'
 import SystemHeader from './components/SystemHeader.vue'
-import TelemetryRail from './components/TelemetryRail.vue'
-import TranscriptPanel from './components/TranscriptPanel.vue'
+import AppSidebar from './components/AppSidebar.vue'
 import { useAgentConsole } from './composables/useAgentConsole.js'
 
-const {
-  sessions,
-  currentSessionId,
-  agentId,
-  sessionId,
-  prompt,
-  busy,
-  connection,
-  activeStage,
-  messages,
-  canStop,
-  runtimeState,
-  createSession,
-  renameSession,
-  deleteSession,
-  selectSession,
-  execute,
-  cancelCurrentRun,
-  resolveApproval,
-  clearTranscript
-} = useAgentConsole()
+const agentConsole = useAgentConsole()
+const router = useRouter()
+provide('agentConsole', agentConsole)
+
+function createChatSession() {
+  agentConsole.createSession()
+  router.push('/chat')
+}
 </script>
 
 <template>
   <a class="skip-link" href="#workspace">跳到操作区</a>
 
   <div class="app-shell">
-    <SystemHeader :connection="connection" @new-session="createSession" />
+    <SystemHeader :connection="agentConsole.connection.value" @new-session="createChatSession" />
 
-    <main id="workspace" class="console-layout">
-      <SessionRail
-        :sessions="sessions"
-        :current-session-id="currentSessionId"
-        :busy="busy"
-        @select="selectSession"
-        @create="createSession"
-        @rename="renameSession($event.id, $event.title)"
-        @delete="deleteSession"
-      />
-
-      <section class="mission-workspace reveal reveal-2" aria-labelledby="consoleTitle">
-        <header class="mission-intro">
-          <div class="eyebrow"><span></span> LIVE AGENT RUNNER</div>
-          <h1 id="consoleTitle">意图进入，<em>行动发生。</em></h1>
-          <p>向主 Agent 下达任务。运行时将建立上下文、生成计划、调用工具，并留下可追踪的状态结果。</p>
-        </header>
-
-        <CommandDeck
-          :agent-id="agentId"
-          :session-id="sessionId"
-          :prompt="prompt"
-          :busy="busy"
-          :can-stop="canStop"
-          @update:agent-id="agentId = $event"
-          @update:session-id="sessionId = $event"
-          @update:prompt="prompt = $event"
-          @run="execute"
-          @stop="cancelCurrentRun"
-        />
-
-        <TranscriptPanel
-          :messages="messages"
-          :busy="busy"
-          @clear="clearTranscript"
-          @resolve-approval="resolveApproval($event.messageId, $event.approved)"
-        />
-      </section>
-
-      <TelemetryRail :runtime-state="runtimeState" :active-stage="activeStage" />
+    <main id="workspace" class="main-layout">
+      <AppSidebar />
+      <router-view />
     </main>
 
     <footer class="status-footer">
@@ -84,3 +33,11 @@ const {
     </footer>
   </div>
 </template>
+
+<style scoped>
+.main-layout {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+</style>
