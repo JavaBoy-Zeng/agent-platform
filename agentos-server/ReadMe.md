@@ -8,6 +8,7 @@
 - 将路由、规划器、工具、记忆、审批服务、主 Agent 和运行时装配为 Bean。
 - 提供创建 Agent 运行和查询会话状态的 REST API。
 - 提供 Planner、Tool、Observation、Decision 阶段的 SSE 流式运行 API。
+- 提供按会话或 Invocation 查询领域事件轨迹的只读 API。
 - 提供按作用域查看 L0-L3 数据的只读记忆管理 API。
 - 提供会话产物（Artifact）的列举、下载与删除 API。
 - 提供按会话汇总的模型 token 用量查询 API。
@@ -28,8 +29,10 @@
 | `AgentController` | 暴露 Agent 运行和状态查询 API。 |
 | `BackgroundAgentRunController` | 暴露后台运行创建、快照、事件补播和取消 API。 |
 | `ArtifactController` | 暴露会话产物列举、下载与删除 API。 |
+| `AgentEventController` | 暴露按会话/Invocation 分组的领域事件轨迹查询 API。 |
+| `SessionController` | 暴露会话列表与单会话状态快照查询 API。 |
 | `EvaluationController / EvaluationService` | 回放 Invocation 事件流并按评估用例比对工具轨迹。 |
-| `ConsoleCatalogController` | 为 Console 管理面板提供不含密钥的运行时只读目录（`/api/console/catalog`）。 |
+| `ConsoleCatalogController` | 为 Console 管理面板提供不含密钥的运行时只读目录（`/api/console/catalog`、`/api/console/agents/{id}`）。 |
 | `SkillConfiguration` | 装配技能注册表与 `load_skill` 工具；本地目录优先于 classpath 内置技能。 |
 | `CodeExecutorConfiguration` | 按 mode 装配代码执行器（docker 沙箱 / 本地进程 / auto）与 `execute_code` 工具。 |
 | `UsageController / UsageRecorder` | 模型 token 用量记账与按会话查询。 |
@@ -115,14 +118,16 @@ Content-Type: application/json
 {"sessionId":"session-1","input":"阅读当前项目并总结功能"}
 ```
 
-创建接口返回 `202 Accepted` 和 `runId`。随后可查询快照、从指定游标补播事件或显式取消：
+创建接口返回 `202 Accepted` 和 `runId`。随后可列出全部运行、查询快照、从指定游标补播事件或显式取消：
 
 ```http
+GET  /api/agent-runs
 GET  /api/agent-runs/{runId}
 GET  /api/agent-runs/{runId}/events?after=42
 POST /api/agent-runs/{runId}/cancel
 ```
 
+列表按创建时间倒序返回进程内保留的全部运行，供管理面板展示执行台账；进程重启后清空。
 事件包含单调递增的 `sequence`，SSE 的 `id` 与该序号一致。断开事件连接不会取消任务；
 重新连接时传入最后成功处理的序号即可补播遗漏事件。`cancel` 触发协作式取消令牌，
 运行中的循环与工具在下一个检查点进入 `CANCELLED` 终态。
@@ -174,11 +179,13 @@ Content-Type: application/json
 
 ```http
 GET /api/console/catalog
+GET /api/console/agents/{agentId}
 ```
 
 为 Console 管理面板提供运行时只读快照，响应不含任何密钥：
 
-- `agents`：当前 Agent 摘要（id、名称、状态、职责说明）。
+- `agents`：`AgentRegistry` 中全部已注册 Agent 的摘要（id、展示名、状态、职责说明、
+  形态 `kind`、是否已工具化 `exposedAsTool`、子 Agent 数量）。注册表为空时退化为仅主 Agent。
 - `tools`：已注册工具的名称、说明、风险等级与参数列表。
 - `skills`：技能摘要（id、名称、说明、来源）；技能正文不通过该接口暴露，
   技能体系未启用时为空列表。
@@ -186,6 +193,41 @@ GET /api/console/catalog
 - `models`：规划与直答两条链路的模型、provider（取 endpoint 主机名）与用途；
   不含 API Key 与完整端点。
 - `limits`：运行预算（maxReplans / maxSteps / maxToolCalls / maxModelCalls）。
+
+`/api/console/agents/{agentId}` 返回单个 Agent 详情，额外包含 `subAgents`（编排 Agent 的
+子 Agent 标识）与 `tools`（YAML 配置化 Agent 声明的工具名）；未注册时返回 `404`。
+
+`kind` 取值：`planner`（main-agent）、`supervisor`、`direct`（simple-qa-agent）、
+`workflow`（含子 Agent 的编排 Agent）、`specialist`，以及 YAML 配置化 Agent 自带的
+`specialist` / `sequential`。
+
+### 查询会话
+
+```http
+GET /api/sessions?limit=50
+GET /api/sessions/{sessionId}
+```
+
+列表按最后活跃时间倒序返回，`limit` 取值范围 1-200（默认 50，超出范围返回 `400`）。
+单个会话不存在时返回 `404`。响应包含会话身份、状态键列表和事件增量合并后的结构化状态
+（`lastObjective`、`lastStatus`、`turnCount` 及工具写入的 `stateDelta`）。
+
+### 查询领域事件轨迹
+
+```http
+GET /api/events?sessionId=session-1&type=tool_call_completed
+GET /api/events/{invocationId}
+```
+
+按会话查询时结果以 Invocation 分组，最近的 Invocation 排在最前；每组包含
+`agentId`、起止时间、`eventCount`、终态类型 `terminalType`（`AGENT_COMPLETED` /
+`AGENT_FAILED`，未收口时为空）和按时间排序的完整事件列表。`type` 参数可选，
+大小写不敏感，不合法的名称按未过滤处理。按 Invocation 查询时无事件记录返回 `404`。
+
+事件 JSON 包含 `eventId`、`sessionId`、`invocationId`、`agentId`、`timestamp`、
+`type`、`message`、`data` 和 `actions`（`stateDelta` / `transferToAgent` /
+`endInvocation` / `requireApproval`）。该接口读取 `AgentEventStore` 当前快照，
+`memory` 持久化模式下进程重启后清空。
 
 ### 查询记忆快照
 

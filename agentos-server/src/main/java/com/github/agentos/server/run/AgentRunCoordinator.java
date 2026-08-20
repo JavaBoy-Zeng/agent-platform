@@ -82,6 +82,19 @@ public final class AgentRunCoordinator {
     }
 
     /**
+     * 列出当前进程内保留的全部后台运行，按创建时间倒序。
+     *
+     * <p>供管理面板展示运行台账；进程重启后列表清空。</p>
+     */
+    public List<RunSnapshot> list() {
+        return runs.values().stream()
+                .map(run -> run.snapshot(currentInvocation(run)))
+                .sorted(java.util.Comparator.comparing(
+                        RunSnapshot::createdAt).reversed())
+                .toList();
+    }
+
+    /**
      * 从指定事件序号之后订阅运行事件；历史事件会先补播，然后继续发送实时事件。
      */
     public Optional<SseEmitter> stream(String runId, long afterSequence) {

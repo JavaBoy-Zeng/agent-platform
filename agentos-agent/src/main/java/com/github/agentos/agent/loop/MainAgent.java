@@ -83,7 +83,9 @@ public final class MainAgent implements AgentLoop, Agent {
                 observationSummarizer, ContinuationStore.NOOP);
     }
 
-    /** 创建带续跑状态持久化的主 Agent；重启后审批恢复依赖该存储。 */
+    /**
+     * 创建带续跑状态持久化的主 Agent；重启后审批恢复依赖该存储。
+     */
     public MainAgent(
             AgentPlanner planner,
             PlanExecutor planExecutor,
@@ -108,19 +110,25 @@ public final class MainAgent implements AgentLoop, Agent {
         return run(request, context, runningState, AgentEventSink.NOOP);
     }
 
-    /** 返回默认主 Agent 标识。 */
+    /**
+     * 返回默认主 Agent 标识。
+     */
     @Override
     public String id() {
         return "main-agent";
     }
 
-    /** 返回当前主 Agent 的能力说明。 */
+    /**
+     * 返回当前主 Agent 的能力说明。
+     */
     @Override
     public String description() {
         return "AgentOS default planning and tool execution agent";
     }
 
-    /** 通过统一 Agent 抽象执行当前完整 Plan-and-Execute 流程。 */
+    /**
+     * 通过统一 Agent 抽象执行当前完整 Plan-and-Execute 流程。
+     */
     @Override
     public AgentExecutionResult run(
             AgentRequest request,
@@ -328,8 +336,8 @@ public final class MainAgent implements AgentLoop, Agent {
                         == PlanExecutor.ExecutionStatus.REPLAN_REQUIRED
                         ? execution.replanReason()
                         : plan.type() == PlanType.DISCOVERY
-                                ? ReplanReason.DISCOVERY_COMPLETED
-                                : ReplanReason.EXECUTION_COMPLETED;
+                        ? ReplanReason.DISCOVERY_COMPLETED
+                        : ReplanReason.EXECUTION_COMPLETED;
                 PlanStep currentStep = Objects.requireNonNull(
                         execution.currentStep(), "completed execution must have currentStep");
                 StepResult lastResult = Objects.requireNonNull(
@@ -460,7 +468,9 @@ public final class MainAgent implements AgentLoop, Agent {
         }
     }
 
-    /** 取出续跑状态：优先内存，其次持久化存储（同时删除，语义与内存 remove 对齐）。 */
+    /**
+     * 取出续跑状态：优先内存，其次持久化存储（同时删除，语义与内存 remove 对齐）。
+     */
     private Continuation takeContinuation(String invocationId) {
         Continuation inMemory = continuations.remove(invocationId);
         if (inMemory != null) {
@@ -479,7 +489,9 @@ public final class MainAgent implements AgentLoop, Agent {
                 .orElse(null);
     }
 
-    /** 只读查看续跑状态，不改变内存或存储。 */
+    /**
+     * 只读查看续跑状态，不改变内存或存储。
+     */
     private Continuation peekContinuation(String invocationId) {
         Continuation inMemory = continuations.get(invocationId);
         if (inMemory != null) {
@@ -494,7 +506,9 @@ public final class MainAgent implements AgentLoop, Agent {
                 .orElse(null);
     }
 
-    /** 写透持久化；失败只记日志，不中断已进入 WAITING 的运行。 */
+    /**
+     * 写透持久化；失败只记日志，不中断已进入 WAITING 的运行。
+     */
     private void saveContinuationQuietly(String invocationId, Continuation continuation) {
         try {
             continuationStore.save(invocationId, new ContinuationStore.PersistedContinuation(

@@ -1,5 +1,6 @@
 package com.github.agentos.kernel;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -17,6 +18,15 @@ public interface SessionService {
 
     /** 查找指定会话。 */
     Optional<Session> find(String sessionId);
+
+    /**
+     * 按最后活跃时间倒序返回会话快照。
+     *
+     * <p>供管理面板列出服务端已知会话；{@code limit} 之外的会话不返回。</p>
+     *
+     * @param limit 最大返回数量，必须为正数
+     */
+    List<Session> recent(int limit);
 
     /**
      * 把状态增量合并进会话并刷新活跃时间。

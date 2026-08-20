@@ -2,7 +2,7 @@ package com.github.agentos.tool.builtin;
 
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContexts;
-import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.builtin.date.TodayTool;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;

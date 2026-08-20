@@ -27,8 +27,8 @@ flowchart LR
 - [`agentos-tool`](agentos-tool/ReadMe.md)：工具 API（`ToolContext`）、统一调度运行时、结构化失败、产物登记和内置工具。
 - [`agentos-memory`](agentos-memory/ReadMe.md)：L0–L3 分层记忆、混合召回、持久化 Pipeline 与统一服务。
 - [`agentos-hitl`](agentos-hitl/ReadMe.md)：风险策略与人工审批端口；shell 命令按内容级策略放行只读命令、审批破坏性命令。
-- [`agentos-console`](agentos-console/ReadMe.md)：基于 Vue 3 的独立 Agent 操作控制台；含对话页与 12 个管理面板（Agents/Runs/Sessions/Tools/MCP/Skills/Memory/Plans/Traces/Artifacts/Approvals/Models）。
-- [`agentos-server`](agentos-server/ReadMe.md)：Spring Boot 依赖注入、REST API（运行/事件流/产物/用量/记忆/评估/Console 目录）、持久化与鉴权。
+- [`agentos-console`](agentos-console/ReadMe.md)：基于 Vue 3 的独立 Agent 操作控制台；含对话页与 13 个管理面板（Agents/Runs/Sessions/Tools/MCP/Skills/Memory/Plans/Traces/Artifacts/Approvals/Models/Evals）。
+- [`agentos-server`](agentos-server/ReadMe.md)：Spring Boot 依赖注入、REST API（运行/事件流/事件轨迹/会话/产物/用量/记忆/评估/Console 目录）、持久化与鉴权。
 
 ## 代码流转
 

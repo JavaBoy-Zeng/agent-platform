@@ -1,6 +1,8 @@
 package com.github.agentos.kernel;
 
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -21,6 +23,17 @@ public final class InMemorySessionService implements SessionService {
     @Override
     public Optional<Session> find(String sessionId) {
         return Optional.ofNullable(sessions.get(sessionId));
+    }
+
+    @Override
+    public List<Session> recent(int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        return sessions.values().stream()
+                .sorted(Comparator.comparing(Session::lastActiveAt).reversed())
+                .limit(limit)
+                .toList();
     }
 
     @Override

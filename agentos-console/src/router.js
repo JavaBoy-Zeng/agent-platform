@@ -7,7 +7,7 @@ const routes = [
   { path: '/', redirect: '/chat' },
   { path: '/chat', component: ChatView, name: 'Chat' },
   ...['agents', 'runs', 'sessions', 'tools', 'mcp', 'skills', 'memory', 'plans',
-    'traces', 'artifacts', 'approvals', 'models'].map(section => ({
+    'traces', 'artifacts', 'approvals', 'models', 'evals'].map(section => ({
     path: `/${section}`,
     component: ManagementView,
     name: section,

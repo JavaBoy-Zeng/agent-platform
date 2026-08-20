@@ -1,4 +1,4 @@
-package com.github.agentos.tool.builtin;
+package com.github.agentos.tool.builtin.date;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
@@ -62,7 +62,7 @@ public final class TodayTool implements AgentTool {
     }
 
     /** 格式化日期为 “yyyy年MM月dd日 星期X”；星期直接取 JDK 本地化名称，避免手工映射错位。 */
-    static String format(LocalDate date) {
+    public static String format(LocalDate date) {
         return date.format(FORMATTER) + " "
                 + date.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.CHINESE);
     }

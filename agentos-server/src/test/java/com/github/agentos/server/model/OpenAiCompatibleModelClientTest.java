@@ -9,7 +9,7 @@ import com.github.agentos.planner.PlanType;
 import com.github.agentos.planner.PlanningRequest;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolDefinition;
-import com.github.agentos.tool.builtin.EchoTool;
+import com.github.agentos.tool.builtin.other.EchoTool;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;

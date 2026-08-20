@@ -12,7 +12,7 @@ import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
-import com.github.agentos.tool.builtin.EchoTool;
+import com.github.agentos.tool.builtin.other.EchoTool;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;

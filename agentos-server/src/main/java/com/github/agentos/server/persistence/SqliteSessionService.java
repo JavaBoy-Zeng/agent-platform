@@ -13,6 +13,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -46,6 +47,28 @@ public final class SqliteSessionService implements SessionService {
     public Optional<Session> find(String sessionId) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         return select(sessionId);
+    }
+
+    @Override
+    public List<Session> recent(int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        try (Connection connection = SqliteSupport.open(dataSource);
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms "
+                                + "FROM agent_sessions ORDER BY last_active_at_ms DESC LIMIT ?")) {
+            statement.setInt(1, limit);
+            try (ResultSet result = statement.executeQuery()) {
+                List<Session> sessions = new java.util.ArrayList<>();
+                while (result.next()) {
+                    sessions.add(mapRow(result));
+                }
+                return List.copyOf(sessions);
+            }
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("listing recent sessions", exception);
+        }
     }
 
     @Override

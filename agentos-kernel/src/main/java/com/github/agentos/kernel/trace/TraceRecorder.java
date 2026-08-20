@@ -215,7 +215,7 @@ public final class TraceRecorder implements AgentPlugin {
     private void recordEventOnTop(Deque<OpenSpan> stack, String name, AgentEvent event) {
         OpenSpan top = stack.peek();
         if (top != null) {
-            top.events.put(event.timestamp().toString(), name + ": " + event.message());
+            top.recordEvent(event.timestamp(), name + ": " + event.message());
         }
     }
 
@@ -282,6 +282,20 @@ public final class TraceRecorder implements AgentPlugin {
             this.name = name;
             this.kind = kind;
             this.start = start;
+        }
+
+        /**
+         * 以时间戳为键记录事件，同一瞬间的多个事件追加序号后缀。
+         *
+         * <p>Windows 的 {@code Instant.now()} 精度不足以区分相邻调用，
+         * 直接用时间戳做键会让后写入的事件覆盖前一条。</p>
+         */
+        void recordEvent(Instant timestamp, String description) {
+            String key = timestamp.toString();
+            int suffix = 1;
+            while (events.putIfAbsent(key, description) != null) {
+                key = timestamp + "#" + suffix++;
+            }
         }
     }
 }

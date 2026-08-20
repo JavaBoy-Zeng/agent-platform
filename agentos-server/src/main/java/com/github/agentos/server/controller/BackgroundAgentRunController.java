@@ -18,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.net.URI;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -47,6 +48,12 @@ public final class BackgroundAgentRunController {
         } catch (AgentRunCoordinator.SessionAlreadyRunningException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, exception.getMessage());
         }
+    }
+
+    /** 列出进程内保留的全部后台运行，按创建时间倒序。 */
+    @GetMapping
+    public List<AgentRunCoordinator.RunSnapshot> list() {
+        return coordinator.list();
     }
 
     /** 查询运行状态、最终结果和当前事件游标。 */

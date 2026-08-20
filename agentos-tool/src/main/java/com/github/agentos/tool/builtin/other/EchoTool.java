@@ -1,4 +1,4 @@
-package com.github.agentos.tool.builtin;
+package com.github.agentos.tool.builtin.other;
 
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;

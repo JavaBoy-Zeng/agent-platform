@@ -112,6 +112,11 @@ class AgentRunnerSessionStateTest {
             }
 
             @Override
+            public java.util.List<Session> recent(int limit) {
+                return java.util.List.of();
+            }
+
+            @Override
             public Session applyDelta(String sessionId, Map<String, Object> delta) {
                 throw new IllegalStateException("session service unavailable");
             }

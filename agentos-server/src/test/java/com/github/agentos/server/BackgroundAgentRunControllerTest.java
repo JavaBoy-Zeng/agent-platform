@@ -30,6 +30,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -146,6 +147,36 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator.RunSnapshot cancelled = awaitTerminal(
                     coordinator, cancellableRun.runId());
             assertThat(cancelled.state().status()).isEqualTo(AgentState.Status.CANCELLED);
+        }
+    }
+
+    @Test
+    void listsRunsNewestFirst() throws Exception {
+        AgentLoop loop = (request, context, runningState) -> runningState.complete("done");
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRunCoordinator coordinator = new AgentRunCoordinator(
+                    new AgentRunner(loop), executor, new AgentRunTaskRegistry());
+            MockMvc mvc = MockMvcBuilders.standaloneSetup(
+                    new BackgroundAgentRunController(coordinator)).build();
+
+            AgentRunCoordinator.RunSnapshot first = coordinator.start(
+                    new AgentRequest("list-1", "hello", Map.of()),
+                    InvocationContext.of("agent"));
+            awaitTerminal(coordinator, first.runId());
+            // 创建时间以毫秒记录；显式间隔保证两次运行的排序稳定。
+            Thread.sleep(5);
+            AgentRunCoordinator.RunSnapshot second = coordinator.start(
+                    new AgentRequest("list-2", "hello", Map.of()),
+                    InvocationContext.of("agent"));
+            awaitTerminal(coordinator, second.runId());
+
+            mvc.perform(get("/api/agent-runs"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.length()").value(2))
+                    .andExpect(jsonPath("$[0].sessionId").value("list-2"))
+                    .andExpect(jsonPath("$[1].sessionId").value("list-1"))
+                    .andExpect(jsonPath("$[0].state.status").value("COMPLETED"));
         }
     }
 

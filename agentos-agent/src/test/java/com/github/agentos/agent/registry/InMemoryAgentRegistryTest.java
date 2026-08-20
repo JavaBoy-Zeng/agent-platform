@@ -27,6 +27,20 @@ class InMemoryAgentRegistryTest {
                 .hasMessageContaining("already registered");
     }
 
+    @Test
+    void listsAllRegisteredAgentsSortedById() {
+        InMemoryAgentRegistry registry = new InMemoryAgentRegistry(
+                List.of(agent("main-agent"), agent("code-agent"), agent("search-agent")));
+
+        assertThat(registry.all()).extracting(Agent::id)
+                .containsExactly("code-agent", "main-agent", "search-agent");
+    }
+
+    @Test
+    void listsEmptyWhenNothingRegistered() {
+        assertThat(new InMemoryAgentRegistry().all()).isEmpty();
+    }
+
     private static Agent agent(String id) {
         return new Agent() {
             @Override public String id() { return id; }

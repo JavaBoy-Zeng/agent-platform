@@ -3,6 +3,8 @@ package com.github.agentos.agent.registry;
 import com.github.agentos.agent.Agent;
 
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,5 +38,13 @@ public final class InMemoryAgentRegistry implements AgentRegistry {
     @Override
     public Optional<Agent> find(String agentId) {
         return Optional.ofNullable(agents.get(agentId));
+    }
+
+    /** 按标识排序返回全部已注册 Agent，使管理面板展示顺序稳定。 */
+    @Override
+    public List<Agent> all() {
+        return agents.values().stream()
+                .sorted(Comparator.comparing(Agent::id))
+                .toList();
     }
 }

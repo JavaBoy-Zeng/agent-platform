@@ -70,4 +70,29 @@ class SqliteSessionServiceTest {
 
         assertThat(service.find("no-such-session")).isEmpty();
     }
+
+    @Test
+    void recentReturnsSessionsOrderedByLastActiveDescending() throws InterruptedException {
+        SqliteSessionService service = service(tempDir.resolve("sessions.sqlite"));
+        service.getOrCreate("session-1", "user-1");
+        service.getOrCreate("session-2", "user-1");
+        // 活跃时间存的是毫秒；显式间隔避免相邻两次写入落在同一毫秒。
+        service.applyDelta("session-1", Map.of("step", 1L));
+        Thread.sleep(5);
+        service.applyDelta("session-2", Map.of("step", 2L));
+
+        assertThat(service.recent(10)).extracting(Session::sessionId)
+                .containsExactly("session-2", "session-1");
+        assertThat(service.recent(1)).extracting(Session::sessionId)
+                .containsExactly("session-2");
+    }
+
+    @Test
+    void recentRejectsNonPositiveLimit() {
+        SqliteSessionService service = service(tempDir.resolve("sessions.sqlite"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.recent(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("limit must be positive");
+    }
 }

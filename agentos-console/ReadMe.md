@@ -5,8 +5,12 @@
 ## 主要职责
 
 - 创建和切换 Agent 会话。
-- 通过 12 个管理 Tab 统一查看 Agents、Runs、Sessions、Tools、MCP、Skills、Memory、Plans、Traces、Artifacts、Approvals 和 Models。
-- 从运行时只读目录展示真实工具、技能、MCP、模型与执行预算配置。
+- 通过 13 个管理 Tab 统一查看 Agents、Runs、Sessions、Tools、MCP、Skills、Memory、Plans、Traces、Artifacts、Approvals、Models 和 Evals。
+- 从运行时只读目录展示真实 Agent 拓扑、工具、技能、MCP、模型与执行预算配置。
+- 从 `AgentRegistry` 读取 Agent 形态（planner / supervisor / specialist / workflow / specialist 配置化）与工具化状态，点击可查看子 Agent 与声明工具。
+- 从服务端读取运行台账（`GET /api/agent-runs`）与会话列表（`GET /api/sessions`），不再以浏览器本地档案推断服务端状态。
+- 以后端领域事件（`GET /api/events`）渲染计划与执行轨迹时间线，替代解析前端展示文本。
+- 提交工具轨迹评估（`POST /api/evaluations/{invocationId}`）：声明期望工具序列、禁用工具、调用预算与回答关键词，逐项查看检查结论。
 - 查询分层记忆、链路追踪、模型用量和会话产物，并支持审批处理、产物下载与删除。
 - 向 `POST /api/agent-runs` 创建后台任务，并通过 GET SSE 按事件游标持续订阅。
 - 页面刷新后按 `runId` 查询快照、补播缺失事件并恢复实时展示。
@@ -81,3 +85,5 @@ npm run build
 ## 数据边界
 
 浏览器中的会话消息只用于控制台展示，不等同于后端 `MemoryService`。运行中的 `runId` 和最后消费的事件序号会随会话一并保存，因此刷新页面不会取消任务；控制台会补播缺失事件并继续订阅。切换浏览器、清理站点数据或重启后端仍会丢失相应的本地或进程内恢复信息。
+
+Runs、Sessions、Plans 和 Evals 四个面板的数据来自服务端而非浏览器：Runs 读 `AgentRunCoordinator` 的进程内台账，Sessions 读 `SessionService`，Plans 与 Evals 读 `AgentEventStore`。因此 `memory` 持久化模式下后端重启会清空这些面板；`sqlite` 模式下会话与事件仍可查询，但后台运行台账始终是进程内状态。
