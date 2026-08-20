@@ -37,9 +37,14 @@ public class RoutingConfiguration {
     @ConditionalOnMissingBean(IntentClassifier.class)
     IntentClassifier intentClassifier(
             @Value("${agentos.router.short-circuit.max-chars:16}") int maxChars,
-            @Value("${agentos.router.short-circuit.message:收到，我已记录你的输入。}") String message,
+            @Value("${agentos.router.short-circuit.greeting-message:你好！有什么我可以帮你的吗？}") String greetingMessage,
+            @Value("${agentos.router.short-circuit.acknowledgement-message:好的。}") String acknowledgementMessage,
+            @Value("${agentos.router.short-circuit.thanks-message:不客气！有需要随时告诉我。}") String thanksMessage,
+            @Value("${agentos.router.short-circuit.farewell-message:晚安，祝你好梦。}") String farewellMessage,
             @Value("${agentos.router.simple-qa.max-chars:64}") int simpleQaMaxChars) {
-        return new HeuristicIntentClassifier(maxChars, message, simpleQaMaxChars, SimpleQaAgent.ID);
+        return new HeuristicIntentClassifier(
+                maxChars, simpleQaMaxChars, SimpleQaAgent.ID,
+                greetingMessage, acknowledgementMessage, thanksMessage, farewellMessage);
     }
 
     /**

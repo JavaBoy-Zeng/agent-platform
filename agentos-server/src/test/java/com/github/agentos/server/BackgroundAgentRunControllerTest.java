@@ -38,6 +38,65 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class BackgroundAgentRunControllerTest {
 
     @Test
+    void boundsRunAndEventRetention() throws Exception {
+        AgentLoop loop = new AgentLoop() {
+            @Override
+            public AgentState run(
+                    AgentRequest request, InvocationContext context, AgentState runningState) {
+                return runningState.complete("done");
+            }
+
+            @Override
+            public AgentState run(
+                    AgentRequest request,
+                    InvocationContext context,
+                    AgentState runningState,
+                    AgentEventSink eventSink) {
+                for (int index = 1; index <= 3; index++) {
+                    eventSink.emit(AgentRunEvent.of(
+                            AgentRunEvent.Type.OUTPUT_DELTA,
+                            request.sessionId(),
+                            "delta-" + index,
+                            Map.of("sequence", index)));
+                }
+                return runningState.complete("done");
+            }
+        };
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRunCoordinator coordinator = new AgentRunCoordinator(
+                    new AgentRunner(loop), executor, new AgentRunTaskRegistry(), 1, 2);
+            MockMvc mvc = MockMvcBuilders.standaloneSetup(
+                    new BackgroundAgentRunController(coordinator)).build();
+
+            AgentRunCoordinator.RunSnapshot first = coordinator.start(
+                    AgentRequest.of("retention-1", "first"),
+                    InvocationContext.of("agent"));
+            awaitTerminal(coordinator, first.runId());
+            AgentRunCoordinator.RunSnapshot second = coordinator.start(
+                    AgentRequest.of("retention-2", "second"),
+                    InvocationContext.of("agent"));
+            awaitTerminal(coordinator, second.runId());
+
+            assertThat(coordinator.find(first.runId())).isEmpty();
+            assertThat(coordinator.list()).hasSize(1);
+
+            MvcResult subscribed = mvc.perform(get(
+                                    "/api/agent-runs/{runId}/events?after=0", second.runId())
+                            .accept(MediaType.TEXT_EVENT_STREAM))
+                    .andExpect(request().asyncStarted())
+                    .andReturn();
+            subscribed.getAsyncResult(2_000);
+            mvc.perform(asyncDispatch(subscribed))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(not(containsString("id:1\n"))))
+                    .andExpect(content().string(not(containsString("id:2\n"))))
+                    .andExpect(content().string(containsString("id:3")))
+                    .andExpect(content().string(containsString("id:4")));
+        }
+    }
+
+    @Test
     void replaysOnlyEventsAfterCursorAndReturnsFinalSnapshot() throws Exception {
         AgentLoop loop = new AgentLoop() {
             @Override

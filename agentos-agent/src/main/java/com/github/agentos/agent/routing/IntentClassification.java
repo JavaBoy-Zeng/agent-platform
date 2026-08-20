@@ -36,15 +36,35 @@ public record IntentClassification(
         if (intent.isBlank()) {
             throw new IllegalArgumentException("intent must not be blank");
         }
+        intent = intent.trim();
+        if (agentId != null) {
+            if (agentId.isBlank()) {
+                throw new IllegalArgumentException("agentId must not be blank");
+            }
+            agentId = agentId.trim();
+        }
+        if (directAnswer != null && directAnswer.isBlank()) {
+            throw new IllegalArgumentException("directAnswer must not be blank");
+        }
+        if (agentId != null && directAnswer != null) {
+            throw new IllegalArgumentException(
+                    "agentId and directAnswer must not be set at the same time");
+        }
         attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
-        if (confidence != null && (confidence < 0.0 || confidence > 1.0)) {
+        if (confidence != null && (!Double.isFinite(confidence)
+                || confidence < 0.0 || confidence > 1.0)) {
             throw new IllegalArgumentException("confidence must be within [0.0, 1.0]");
         }
     }
 
     /** 构造短路决策，直接返回 canned answer，不调 LLM。 */
     public static IntentClassification shortCircuit(String answer) {
-        return new IntentClassification("trivial-qa", null, null, 1.0, answer, Map.of());
+        return shortCircuit("trivial-qa", answer);
+    }
+
+    /** 构造带明确意图标签的短路决策。 */
+    public static IntentClassification shortCircuit(String intent, String answer) {
+        return new IntentClassification(intent, null, null, 1.0, answer, Map.of());
     }
 
     /** 构造派发到指定 Agent 的路由决策。 */

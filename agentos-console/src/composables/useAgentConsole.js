@@ -8,9 +8,17 @@ import {
   resolvePendingAction,
   streamAgentRun
 } from '../services/agentApi.js'
+import {
+  deleteSessionRecord,
+  getSessionEvents,
+  getSessionPage,
+  updateSessionTitle
+} from '../services/consoleApi.js'
 
 const STORAGE_KEY = 'agentos.console.sessions.v1'
 const ACTIVE_SESSION_KEY = 'agentos.console.active-session.v1'
+const SESSION_PAGE_SIZE = 20
+const SESSION_CACHE_SIZE = 20
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING'])
 
 function randomId(prefix) {
@@ -38,8 +46,46 @@ function newSession(id = randomId('session')) {
     createdAt: nowIso(),
     updatedAt: nowIso(),
     state: null,
+    activeStage: 0,
+    submitting: false,
     messages: []
   }
+}
+
+function isSessionBusy(session) {
+  return Boolean(session?.activeRunId || session?.submitting)
+}
+
+function sessionTitle(remote, cached) {
+  const displayTitle = String(remote.state?.displayTitle || '').trim()
+  if (displayTitle) return displayTitle
+  if (cached?.title && cached.title !== '未命名任务') return cached.title
+  const objective = String(remote.state?.lastObjective || '').trim()
+  if (!objective) return '未命名任务'
+  return objective.length > 28 ? `${objective.slice(0, 28)}…` : objective
+}
+
+function mergeRemoteSession(remote, cached) {
+  return {
+    ...newSession(remote.sessionId),
+    ...cached,
+    id: remote.sessionId,
+    title: sessionTitle(remote, cached),
+    createdAt: remote.createdAt || cached?.createdAt || nowIso(),
+    updatedAt: remote.lastActiveAt || cached?.updatedAt || nowIso(),
+    serverBacked: true,
+    serverState: remote.state || {},
+    submitting: false,
+    activeStage: cached?.activeRunId ? Number(cached.activeStage || 1) : 0,
+    messages: Array.isArray(cached?.messages) ? cached.messages : []
+  }
+}
+
+function isUnsavedDraft(session) {
+  return !session.serverBacked
+    && !session.activeRunId
+    && !session.state
+    && (!Array.isArray(session.messages) || session.messages.length === 0)
 }
 
 export function useAgentConsole() {
@@ -48,15 +94,21 @@ export function useAgentConsole() {
   const agentId = ref('main-agent')
   const sessionId = ref('')
   const prompt = ref('')
-  const busy = ref(false)
   const connection = ref('standby')
-  const activeStage = ref(0)
+  const loadingSessions = ref(false)
+  const sessionHistoryError = ref('')
+  const serverSessionTotal = ref(0)
+  const loadedServerSessions = ref(0)
+  const serverHasMoreSessions = ref(false)
   const monitoredRuns = new Map()
+  const pipelineTimers = new Map()
 
   const currentSession = computed(() =>
     sessions.value.find((session) => session.id === currentSessionId.value) || null)
 
   const messages = computed(() => currentSession.value?.messages || [])
+  const busy = computed(() => isSessionBusy(currentSession.value))
+  const activeStage = computed(() => Number(currentSession.value?.activeStage || 0))
   const canStop = computed(() => Boolean(currentSession.value?.activeRunId))
   const runtimeState = computed(() => currentSession.value?.state || {
     status: 'READY',
@@ -65,11 +117,107 @@ export function useAgentConsole() {
     error: '',
     updatedAt: null
   })
+  const hasMoreSessions = computed(() => serverHasMoreSessions.value)
 
   function persist() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions.value.slice(0, 20)))
+    const recent = sessions.value.slice(0, SESSION_CACHE_SIZE)
+    const active = currentSession.value
+    const cache = active && !recent.some(session => session.id === active.id)
+      ? [...recent.slice(0, SESSION_CACHE_SIZE - 1), active]
+      : recent
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cache))
     if (currentSessionId.value) {
       localStorage.setItem(ACTIVE_SESSION_KEY, currentSessionId.value)
+    }
+  }
+
+  function mergeSessionPage(items, reset) {
+    const cachedById = new Map(sessions.value.map(session => [session.id, session]))
+    const remoteSessions = items.map(remote => mergeRemoteSession(remote, cachedById.get(remote.sessionId)))
+
+    if (reset) {
+      const remoteIds = new Set(remoteSessions.map(session => session.id))
+      const localOnly = sessions.value.filter(session =>
+        (isUnsavedDraft(session) || session.id === currentSessionId.value)
+          && !remoteIds.has(session.id))
+      sessions.value = [...localOnly, ...remoteSessions]
+      return
+    }
+
+    const existingIds = new Set(sessions.value.map(session => session.id))
+    sessions.value.push(...remoteSessions.filter(session => !existingIds.has(session.id)))
+  }
+
+  async function loadSessionPage(reset = false) {
+    if (loadingSessions.value) return
+    loadingSessions.value = true
+    sessionHistoryError.value = ''
+    const offset = reset ? 0 : loadedServerSessions.value
+    try {
+      const page = await getSessionPage(offset, SESSION_PAGE_SIZE)
+      connection.value = 'online'
+      mergeSessionPage(Array.isArray(page?.items) ? page.items : [], reset)
+      serverSessionTotal.value = Number(page?.total || 0)
+      loadedServerSessions.value = offset + Number(page?.items?.length || 0)
+      serverHasMoreSessions.value = Boolean(page?.hasMore)
+      persist()
+    } catch (error) {
+      connection.value = error instanceof TypeError ? 'offline' : connection.value
+      sessionHistoryError.value = '无法读取服务端会话，当前显示浏览器缓存。'
+    } finally {
+      loadingSessions.value = false
+    }
+  }
+
+  function loadMoreSessions() {
+    return loadSessionPage(false)
+  }
+
+  async function hydrateTranscript(session) {
+    if (!session.serverBacked || session.historyLoaded || session.messages.length) return
+    session.historyLoading = true
+    try {
+      const traces = await getSessionEvents(session.id)
+      const recovered = []
+      const ordered = [...(Array.isArray(traces) ? traces : [])]
+        .sort((left, right) => new Date(left.startedAt) - new Date(right.startedAt))
+      for (const trace of ordered) {
+        const events = Array.isArray(trace.events) ? trace.events : []
+        const started = events.find(event => event.type === 'AGENT_STARTED')
+        const completed = [...events].reverse().find(event => event.type === 'AGENT_COMPLETED')
+        const failed = [...events].reverse().find(event => event.type === 'AGENT_FAILED')
+        if (started?.message) {
+          recovered.push({
+            id: `${trace.invocationId}:user`,
+            role: 'user',
+            content: started.message,
+            createdAt: started.timestamp || trace.startedAt
+          })
+        }
+        if (completed?.message) {
+          recovered.push({
+            id: `${trace.invocationId}:assistant`,
+            role: 'assistant',
+            content: completed.message,
+            createdAt: completed.timestamp || trace.endedAt
+          })
+        } else if (failed?.message) {
+          recovered.push({
+            id: `${trace.invocationId}:failed`,
+            role: 'error',
+            content: failed.message,
+            createdAt: failed.timestamp || trace.endedAt
+          })
+        }
+      }
+      session.messages = recovered
+      session.historyLoaded = true
+      connection.value = 'online'
+      persist()
+    } catch (error) {
+      connection.value = error instanceof TypeError ? 'offline' : connection.value
+    } finally {
+      session.historyLoading = false
     }
   }
 
@@ -88,18 +236,46 @@ export function useAgentConsole() {
     return session
   }
 
-  function renameSession(id, title) {
+  async function renameSession(id, title) {
     const session = sessions.value.find((item) => item.id === id)
     const normalizedTitle = String(title || '').trim()
     if (!session || !normalizedTitle) return
+    const previousTitle = session.title
     session.title = normalizedTitle
     session.updatedAt = nowIso()
     persist()
+    if (!session.serverBacked) return
+    try {
+      await updateSessionTitle(id, normalizedTitle)
+      connection.value = 'online'
+    } catch (error) {
+      session.title = previousTitle
+      connection.value = error instanceof TypeError ? 'offline' : connection.value
+      sessionHistoryError.value = '会话重命名未能保存到服务端。'
+      persist()
+    }
   }
 
-  function deleteSession(id) {
-    const index = sessions.value.findIndex((item) => item.id === id)
-    if (index < 0 || (busy.value && id === currentSessionId.value)) return
+  async function deleteSession(id) {
+    let index = sessions.value.findIndex((item) => item.id === id)
+    if (index < 0 || isSessionBusy(sessions.value[index])) return false
+
+    const target = sessions.value[index]
+    if (target.serverBacked) {
+      try {
+        await deleteSessionRecord(id)
+        serverSessionTotal.value = Math.max(0, serverSessionTotal.value - 1)
+        loadedServerSessions.value = Math.max(0, loadedServerSessions.value - 1)
+        connection.value = 'online'
+      } catch (error) {
+        connection.value = error instanceof TypeError ? 'offline' : connection.value
+        sessionHistoryError.value = '会话未能从服务端删除。'
+        return false
+      }
+    }
+
+    index = sessions.value.findIndex((item) => item.id === id)
+    if (index < 0) return false
 
     const deletingCurrentSession = id === currentSessionId.value
     sessions.value.splice(index, 1)
@@ -111,17 +287,31 @@ export function useAgentConsole() {
         prompt.value = ''
       } else {
         createSession()
-        return
+        return true
       }
     }
 
     persist()
+    return true
+  }
+
+  async function deleteSessions(ids) {
+    const uniqueIds = [...new Set(Array.isArray(ids) ? ids : [])]
+    let failed = 0
+    for (const id of uniqueIds) {
+      if (!await deleteSession(id)) failed += 1
+    }
+    if (failed > 0) {
+      sessionHistoryError.value = '部分会话未能从服务端删除。'
+    }
+    return { deleted: uniqueIds.length - failed, failed }
   }
 
   async function selectSession(id) {
     const session = sessions.value.find((item) => item.id === id)
     if (!session) return
     activateSession(session)
+    void hydrateTranscript(session)
 
     if (session.activeRunId) {
       void monitorRun(session)
@@ -168,18 +358,28 @@ export function useAgentConsole() {
     session.updatedAt = nowIso()
   }
 
-  function startPipeline() {
-    activeStage.value = 1
+  function startPipeline(session) {
+    const pendingTimer = pipelineTimers.get(session.id)
+    if (pendingTimer) window.clearTimeout(pendingTimer)
+    pipelineTimers.delete(session.id)
+    session.activeStage = 1
   }
 
-  function stopPipeline() {
-    activeStage.value = 5
-    window.setTimeout(() => {
-      activeStage.value = 0
+  function stopPipeline(session) {
+    session.activeStage = 5
+    const pendingTimer = pipelineTimers.get(session.id)
+    if (pendingTimer) window.clearTimeout(pendingTimer)
+    const timer = window.setTimeout(() => {
+      pipelineTimers.delete(session.id)
+      if (!isSessionBusy(session)) {
+        session.activeStage = 0
+        persist()
+      }
     }, 700)
+    pipelineTimers.set(session.id, timer)
   }
 
-  function streamStage(event) {
+  function streamStage(event, session) {
     return {
       run_started: 1,
       plan_created: 2,
@@ -190,7 +390,7 @@ export function useAgentConsole() {
       replan: 2,
       run_completed: 5,
       run_failed: 5
-    }[event] || activeStage.value
+    }[event] || session.activeStage || 0
   }
 
   function eventMessage(event, data) {
@@ -215,7 +415,7 @@ export function useAgentConsole() {
   }
 
   function handleStreamEvent(session, packet, messageId = '') {
-    activeStage.value = streamStage(packet.event)
+    session.activeStage = streamStage(packet.event, session)
     if (packet.event === 'output_delta') {
       const runId = session.activeRunId || 'run'
       const assistantId = `${runId}:assistant`
@@ -330,8 +530,7 @@ export function useAgentConsole() {
     if (monitoredRuns.has(runId)) return monitoredRuns.get(runId)
 
     const monitoring = (async () => {
-      busy.value = true
-      startPipeline()
+      startPipeline(session)
       let retryCount = 0
       while (session.activeRunId === runId) {
         try {
@@ -365,10 +564,7 @@ export function useAgentConsole() {
       return null
     })().finally(() => {
       monitoredRuns.delete(runId)
-      if (currentSessionId.value === session.id) {
-        busy.value = false
-        stopPipeline()
-      }
+      if (!session.activeRunId) stopPipeline(session)
       persist()
     })
 
@@ -422,9 +618,9 @@ export function useAgentConsole() {
       error: '',
       updatedAt: nowIso()
     }
+    session.submitting = true
     prompt.value = ''
-    busy.value = true
-    startPipeline()
+    startPipeline(session)
     persist()
 
     try {
@@ -436,6 +632,7 @@ export function useAgentConsole() {
       })
       connection.value = 'online'
       session.activeRunId = run.runId
+      session.submitting = false
       session.lastSequence = 0
       applyRunSnapshot(session, run)
       await monitorRun(session)
@@ -450,8 +647,8 @@ export function useAgentConsole() {
       }
       addMessage(session, 'error', message)
     } finally {
-      busy.value = false
-      if (!session.activeRunId) stopPipeline()
+      session.submitting = false
+      if (!session.activeRunId) stopPipeline(session)
       persist()
     }
   }
@@ -461,8 +658,8 @@ export function useAgentConsole() {
     const session = currentSession.value
     const message = session.messages.find(item => item.id === messageId)
     if (!message || message.role !== 'approval' || message.resolved) return
-    busy.value = true
-    startPipeline()
+    session.submitting = true
+    startPipeline(session)
     try {
       const response = await resolvePendingAction(
         message.invocationId, message.pendingActionId, approved)
@@ -484,8 +681,8 @@ export function useAgentConsole() {
       connection.value = error instanceof TypeError ? 'offline' : 'online'
       addMessage(session, 'error', error.message || '处理审批操作失败')
     } finally {
-      busy.value = false
-      stopPipeline()
+      session.submitting = false
+      stopPipeline(session)
       persist()
     }
   }
@@ -517,17 +714,30 @@ export function useAgentConsole() {
     persist()
   }
 
-  onMounted(() => {
+  onMounted(async () => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
       sessions.value = Array.isArray(stored) ? stored : []
+      sessions.value.forEach(session => {
+        session.submitting = false
+        session.activeStage = session.activeRunId
+          ? Number(session.activeStage || 1)
+          : 0
+      })
     } catch {
       sessions.value = []
     }
 
+    const preferredSessionId = localStorage.getItem(ACTIVE_SESSION_KEY)
+    const cachedInitial = sessions.value.find(session => session.id === preferredSessionId)
+      || sessions.value[0]
+    if (cachedInitial) activateSession(cachedInitial)
+
+    await loadSessionPage(true)
+
     if (sessions.value.length) {
-      const activeSessionId = localStorage.getItem(ACTIVE_SESSION_KEY)
-      const initial = sessions.value.find(session => session.id === activeSessionId)
+      const initial = sessions.value.find(session => session.id === preferredSessionId)
+        || sessions.value.find(session => session.id === currentSessionId.value)
         || sessions.value[0]
       void selectSession(initial.id)
     } else {
@@ -547,10 +757,16 @@ export function useAgentConsole() {
     messages,
     canStop,
     runtimeState,
+    loadingSessions,
+    sessionHistoryError,
+    serverSessionTotal,
+    hasMoreSessions,
     createSession,
     renameSession,
     deleteSession,
+    deleteSessions,
     selectSession,
+    loadMoreSessions,
     execute,
     cancelCurrentRun,
     resolveApproval,

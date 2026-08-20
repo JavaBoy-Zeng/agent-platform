@@ -145,11 +145,13 @@ flowchart LR
   - 页面刷新后按 `runId` 查询快照、补播缺失事件并恢复实时展示。
   - 实时展示 Plan / Tool / Observation / Decision / 最终输出 / 失败信息。
   - 可视化 MainAgent → Planner → Tool → Observation → Decision 执行管线。
-  - `localStorage` 保存最近 20 个会话及消息。
+  - 从服务端分页加载会话，`localStorage` 仅缓存最近 20 个会话用于快速恢复和断网兜底。
+  - 本地缓存缺失时，从服务端领域事件恢复完整的用户/助手对话轮次。
+  - 顶部提供中英文全局切换，桌面端使用双段按钮，移动端压缩为单按钮。
   - 展示当前 HITL 风险门禁策略。
 - 目录结构：`src/components`（SystemHeader / SessionRail / CommandDeck / TranscriptPanel / TelemetryRail）、`src/composables/useAgentConsole.js`、`src/services/agentApi.js`、`App.vue`、`main.js`、`styles.css`。
 - 开发：Vite 将 `/api` 代理到 `http://localhost:8080`；生产构建产物在 `agentos-console/dist`。
-- 数据边界：浏览器中的会话消息只用于控制台展示，不等同于后端 `MemoryService`；切换浏览器、清理站点数据或重启后端会丢失相应的本地或进程内恢复信息。
+- 数据边界：浏览器中的会话缓存只用于快速展示，不等同于后端 `MemoryService`；清理站点数据不会删除服务端会话与领域事件，但未提交的新会话草稿会丢失。
 
 ## 3. 核心特性概览
 

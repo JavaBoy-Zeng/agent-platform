@@ -1,7 +1,9 @@
 <script setup>
 import { computed, inject } from 'vue'
+import { useLocale } from '../composables/useLocale.js'
 
 const consoleState = inject('agentConsole')
+const { isEnglish, t } = useLocale()
 const activeRuns = computed(() => consoleState.sessions.value.filter(item => item.activeRunId).length)
 const waiting = computed(() => consoleState.sessions.value.filter(item => item.state?.status === 'WAITING').length)
 
@@ -19,21 +21,30 @@ const icons = {
 }
 
 const groups = [
-  { label: 'OPERATE', items: [{ path: '/chat', label: 'Chat', icon: 'chat' }, { path: '/agents', label: 'Agents', icon: 'agents' }, { path: '/runs', label: 'Runs', icon: 'runs', badge: activeRuns }, { path: '/sessions', label: 'Sessions', icon: 'sessions' }] },
-  { label: 'EXTEND', items: [{ path: '/tools', label: 'Tools', icon: 'tools' }, { path: '/mcp', label: 'MCP', icon: 'mcp' }, { path: '/skills', label: 'Skills', icon: 'skills' }, { path: '/models', label: 'Models', icon: 'models' }] },
-  { label: 'OBSERVE', items: [{ path: '/memory', label: 'Memory', icon: 'memory' }, { path: '/plans', label: 'Plans', icon: 'plans' }, { path: '/traces', label: 'Traces', icon: 'traces' }, { path: '/artifacts', label: 'Artifacts', icon: 'artifacts' }, { path: '/approvals', label: 'Approvals', icon: 'approvals', badge: waiting }, { path: '/evals', label: 'Evals', icon: 'evals' }] }
+  { label: { zh: '操作', en: 'OPERATE' }, items: [{ path: '/chat', label: { zh: '对话', en: 'Chat' }, icon: 'chat' }, { path: '/agents', label: { zh: '智能体', en: 'Agents' }, icon: 'agents' }, { path: '/runs', label: { zh: '运行', en: 'Runs' }, icon: 'runs', badge: activeRuns }, { path: '/sessions', label: { zh: '会话', en: 'Sessions' }, icon: 'sessions' }] },
+  { label: { zh: '扩展', en: 'EXTEND' }, items: [{ path: '/tools', label: { zh: '工具', en: 'Tools' }, icon: 'tools' }, { path: '/mcp', label: { zh: 'MCP', en: 'MCP' }, icon: 'mcp' }, { path: '/skills', label: { zh: '技能', en: 'Skills' }, icon: 'skills' }, { path: '/models', label: { zh: '模型', en: 'Models' }, icon: 'models' }] },
+  { label: { zh: '观察', en: 'OBSERVE' }, items: [{ path: '/memory', label: { zh: '记忆', en: 'Memory' }, icon: 'memory' }, { path: '/plans', label: { zh: '计划', en: 'Plans' }, icon: 'plans' }, { path: '/traces', label: { zh: '追踪', en: 'Traces' }, icon: 'traces' }, { path: '/artifacts', label: { zh: '产物', en: 'Artifacts' }, icon: 'artifacts' }, { path: '/approvals', label: { zh: '审批', en: 'Approvals' }, icon: 'approvals', badge: waiting }, { path: '/evals', label: { zh: '评估', en: 'Evals' }, icon: 'evals' }] }
 ]
+
+const sidebarStatus = {
+  runtime: { zh: '本地运行时', en: 'LOCAL RUNTIME' },
+  health: { zh: '节点 / 健康', en: 'NODE / HEALTHY' }
+}
+
+function localizedLabel(label) {
+  return isEnglish.value ? label.en : label.zh
+}
 </script>
 
 <template>
-  <aside class="app-sidebar" aria-label="Console 主导航">
+  <aside class="app-sidebar" :aria-label="t('Console 主导航')">
     <div class="sidebar-scroll">
-      <section v-for="group in groups" :key="group.label" class="nav-group">
-        <p>{{ group.label }}</p>
+      <section v-for="group in groups" :key="group.label.en" class="nav-group">
+        <p>{{ localizedLabel(group.label) }}</p>
         <nav>
-          <router-link v-for="item in group.items" :key="item.path" :to="item.path" class="nav-link">
+          <router-link v-for="item in group.items" :key="item.path" :to="item.path" class="nav-link" :aria-label="localizedLabel(item.label)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path :d="icons[item.icon]" /></svg>
-            <span>{{ item.label }}</span>
+            <span>{{ localizedLabel(item.label) }}</span>
             <b v-if="item.badge?.value">{{ item.badge.value }}</b>
           </router-link>
         </nav>
@@ -41,7 +52,7 @@ const groups = [
     </div>
     <div class="sidebar-node">
       <span class="node-pulse"></span>
-      <div><strong>LOCAL RUNTIME</strong><small>NODE / HEALTHY</small></div>
+      <div><strong>{{ localizedLabel(sidebarStatus.runtime) }}</strong><small>{{ localizedLabel(sidebarStatus.health) }}</small></div>
     </div>
   </aside>
 </template>

@@ -112,7 +112,9 @@ AgentOS 是一个基于 Java 21、Maven 多模块与 Spring Boot 的模块化 Ag
   - 页面刷新后使用持久化的 `runId` 和最后事件序号恢复运行视图。
   - 实时展示 Plan、Tool、Observation、Decision、最终输出和失败信息。
   - 可视化 MainAgent → Planner → Tool → Observation → Decision 管线。
-  - `localStorage` 持久化最近 20 个会话及消息（仅前端展示，不等同于后端 MemoryService）。
+  - 服务端分页提供会话索引；`localStorage` 仅缓存最近 20 个会话用于快速恢复和断网兜底。
+  - 本地缓存缺失时，从服务端领域事件恢复完整的用户/助手对话轮次。
+  - 顶部提供中英文全局切换，持久化语言偏好并同步无障碍语言属性与日期格式。
   - 展示当前 HITL 风险门禁策略。
 - Markdown 渲染：使用 `marked` + `DOMPurify` 安全渲染 Agent 输出。
 - 开发与构建：`npm install` + `npm run dev`（Vite 把 `/api` 代理到 `http://localhost:8080`）；`npm run build` 产出 `dist`。

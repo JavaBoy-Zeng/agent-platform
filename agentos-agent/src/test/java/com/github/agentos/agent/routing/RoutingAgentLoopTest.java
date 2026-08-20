@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -76,6 +77,32 @@ class RoutingAgentLoopTest {
         assertThat(result.output()).isEqualTo("echo:hello");
         assertThat(echo.calls.get()).isEqualTo(1);
         assertThat(fallbackCalls.get()).isZero();
+    }
+
+    @Test
+    void dispatchUpdatesContextAndPropagatesClassificationAttributes() {
+        AtomicReference<InvocationContext> seenContext = new AtomicReference<>();
+        AtomicReference<AgentRequest> seenRequest = new AtomicReference<>();
+        AgentRegistry registry = new InMemoryAgentRegistry();
+        registry.register(new CapturingAgent(seenRequest, seenContext));
+        IntentClassifier classifier = (req, ctx) -> new IntentClassification(
+                "capture", "capture-agent", ExecutionMode.REACT, 0.9, null,
+                Map.of("routerAttribute", "present"));
+        RoutingAgentLoop router = new RoutingAgentLoop(
+                classifier, registry, (req, ctx, running) -> running.complete("fallback"));
+
+        AgentState result = router.run(
+                new AgentRequest("s1", "hello", Map.of("callerAttribute", "kept")),
+                InvocationContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                AgentEventSink.NOOP);
+
+        assertThat(result.output()).isEqualTo("captured");
+        assertThat(seenContext.get().agentId()).isEqualTo("capture-agent");
+        assertThat(seenRequest.get().attributes())
+                .containsEntry("routerAttribute", "present")
+                .containsEntry("callerAttribute", "kept")
+                .containsEntry("executionMode", "REACT");
     }
 
     @Test
@@ -196,6 +223,16 @@ class RoutingAgentLoopTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void intentClassificationRejectsContradictoryAndNonFiniteValues() {
+        assertThatThrownBy(() -> new IntentClassification(
+                "x", "agent", null, 0.5, "answer", Map.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IntentClassification(
+                "x", null, null, Double.NaN, null, Map.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     /** 同时实现 Agent 与 AgentLoop 的回显 Agent，用于验证注册派发路径。 */
     private static final class EchoAgent implements Agent, AgentLoop {
         final AtomicInteger calls = new AtomicInteger();
@@ -230,6 +267,41 @@ class RoutingAgentLoopTest {
                     AgentRunEvent.Type.RUN_COMPLETED, req.sessionId(),
                     "echo:" + req.objective(), Map.of("agentId", "echo-agent")));
             return running.complete("echo:" + req.objective());
+        }
+    }
+
+    private static final class CapturingAgent implements Agent, AgentLoop {
+        private final AtomicReference<AgentRequest> request;
+        private final AtomicReference<InvocationContext> context;
+
+        private CapturingAgent(
+                AtomicReference<AgentRequest> request,
+                AtomicReference<InvocationContext> context) {
+            this.request = request;
+            this.context = context;
+        }
+
+        @Override
+        public String id() {
+            return "capture-agent";
+        }
+
+        @Override
+        public String description() {
+            return "captures routed input";
+        }
+
+        @Override
+        public AgentExecutionResult run(AgentRequest req, InvocationContext ctx) {
+            return AgentExecutionResult.from(
+                    AgentState.ready().complete("captured"), null);
+        }
+
+        @Override
+        public AgentState run(AgentRequest req, InvocationContext ctx, AgentState running) {
+            request.set(req);
+            context.set(ctx);
+            return running.complete("captured");
         }
     }
 }

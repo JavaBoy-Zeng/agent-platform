@@ -378,6 +378,19 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.history.max-turns` | — | `5` |
 | `agentos.router.simple-qa.max-chars` | — | `64` |
 | `agentos.router.short-circuit.max-chars` | — | `16` |
+| `agentos.router.short-circuit.greeting-message` | — | `你好！有什么我可以帮你的吗？` |
+| `agentos.router.short-circuit.acknowledgement-message` | — | `好的。` |
+| `agentos.router.short-circuit.thanks-message` | — | `不客气！有需要随时告诉我。` |
+| `agentos.router.short-circuit.farewell-message` | — | `晚安，祝你好梦。` |
+| `agentos.runtime.max-concurrent-runs` | — | `128` |
+| `agentos.runtime.stream.max-concurrent-runs` | — | `128` |
+| `agentos.runtime.stream.queue-capacity` | — | `256` |
+| `agentos.runtime.retention.max-runs` | — | `1000` |
+| `agentos.runtime.retention.max-events-per-run` | — | `2000` |
+| `agentos.runtime.retention.max-invocations` | — | `10000` |
+| `agentos.runtime.retention.max-sessions` | — | `5000` |
+| `agentos.runtime.retention.max-events-per-invocation` | — | `200` |
+| `agentos.runtime.retention.max-events-per-session` | — | `2000` |
 
 默认适配器根据当前注册工具动态生成计划 JSON Schema。若兼容服务不支持 `json_schema`，可将
 `AGENTOS_MODEL_RESPONSE_FORMAT` 改为 `JSON_OBJECT`；连 `response_format` 参数也不支持时改为 `NONE`。
@@ -395,7 +408,8 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 
 请求先经规则三级分类，避免任务被误判为简单问答：
 
-1. 问候白名单（≤16 字符，如 "你好"）直接短路返回固定应答，不调用模型。
+1. 问候、感谢、确认和告别白名单（≤16 字符）按类别返回自然应答，不调用模型；
+   `yes/no` 等上下文回答在存在会话历史时不会直接短路。
 2. 简单 QA（≤64 字符且不含任务信号词）派发到 `simple-qa-agent` 单次直答，
    不携带工具定义、不进入规划循环。
 3. 其余请求（含 "帮我看下…"、"今天/几号" 等任务信号）进入 MainAgent 规划链路。

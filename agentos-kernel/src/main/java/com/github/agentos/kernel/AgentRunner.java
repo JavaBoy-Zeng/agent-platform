@@ -5,7 +5,10 @@ import java.util.Optional;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 全系统真正的 Agent 执行入口（Runner）。
@@ -15,14 +18,18 @@ import java.util.concurrent.ConcurrentMap;
  * {@link CancellationToken}，再交给 {@link AgentLoop} 执行。事件携带的状态增量由
  * {@link StateMergingEventPublisher} 统一合并进会话状态。</p>
  *
- * <p>运行时按 {@code sessionId} 保存最新状态，并通过并发 Map 的原子计算保证同一会话的
- * 状态更新串行执行。业务循环抛出的运行时异常会被转换为失败状态，避免异常越过运行边界。</p>
+ * <p>运行时按 {@code sessionId} 保存最新状态；同一会话已有活跃执行时快速拒绝，
+ * 不允许取消令牌和 Invocation 元数据相互覆盖。跨会话执行受全局并发许可证保护。
+ * 业务循环抛出的运行时异常会被转换为失败状态，避免异常越过运行边界。</p>
  *
  * <p>横切能力经 {@link AgentPluginManager} 接入：执行边界触发生命周期钩子，
  * 领域事件发布时通知插件观察。外部通过 {@link #cancel(String, String)} 请求协作式取消，
  * 令牌随 {@link InvocationContext} 传播到执行链各协作点。</p>
  */
 public final class AgentRunner {
+
+    private static final int DEFAULT_MAX_CONCURRENT_RUNS = 128;
+    private static final int DEFAULT_MAX_RETAINED_INVOCATIONS = 10_000;
 
     private final AgentLoop agentLoop;
     private final AgentEventPublisher eventPublisher;
@@ -31,6 +38,12 @@ public final class AgentRunner {
     private final AgentExecutionLimits budget;
     private final AgentPluginManager plugins;
     private final ArtifactService artifacts;
+    private final Semaphore runPermits;
+    private final int maxRetainedInvocations;
+    private final ConcurrentLinkedQueue<String> completedInvocationIds =
+            new ConcurrentLinkedQueue<>();
+    private final AtomicInteger completedInvocationCount = new AtomicInteger();
+    private final ConcurrentMap<String, Boolean> activeSessions = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentState> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AgentInvocation> invocations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
@@ -110,6 +123,30 @@ public final class AgentRunner {
                 checkpointStore, sessionService, budget, plugins, artifacts);
     }
 
+    /** 完整构造：额外限制跨会话同时执行的任务数。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore,
+            SessionService sessionService, AgentExecutionLimits budget,
+            AgentPluginManager plugins, ArtifactService artifacts,
+            int maxConcurrentRuns) {
+        this(agentLoop, storingPublisher(eventPublisher, eventStore),
+                checkpointStore, sessionService, budget, plugins, artifacts,
+                maxConcurrentRuns);
+    }
+
+    /** 完整构造：额外配置并发和终态 Invocation 保留上限。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            AgentEventStore eventStore, CheckpointStore checkpointStore,
+            SessionService sessionService, AgentExecutionLimits budget,
+            AgentPluginManager plugins, ArtifactService artifacts,
+            int maxConcurrentRuns, int maxRetainedInvocations) {
+        this(agentLoop, storingPublisher(eventPublisher, eventStore),
+                checkpointStore, sessionService, budget, plugins, artifacts,
+                maxConcurrentRuns, maxRetainedInvocations);
+    }
+
     /** 规范构造：事件发布器已就绪（含落库通道），会话服务负责消费状态增量。 */
     public AgentRunner(
             AgentLoop agentLoop, AgentEventPublisher eventPublisher,
@@ -142,6 +179,33 @@ public final class AgentRunner {
             CheckpointStore checkpointStore, SessionService sessionService,
             AgentExecutionLimits budget, AgentPluginManager plugins,
             ArtifactService artifacts) {
+        this(agentLoop, eventPublisher, checkpointStore, sessionService, budget, plugins,
+                artifacts, DEFAULT_MAX_CONCURRENT_RUNS);
+    }
+
+    /** 最完整构造：额外限制跨会话同时执行的任务数。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore, SessionService sessionService,
+            AgentExecutionLimits budget, AgentPluginManager plugins,
+            ArtifactService artifacts, int maxConcurrentRuns) {
+        this(agentLoop, eventPublisher, checkpointStore, sessionService, budget, plugins,
+                artifacts, maxConcurrentRuns, DEFAULT_MAX_RETAINED_INVOCATIONS);
+    }
+
+    /** 最完整构造：额外配置并发和终态 Invocation 保留上限。 */
+    public AgentRunner(
+            AgentLoop agentLoop, AgentEventPublisher eventPublisher,
+            CheckpointStore checkpointStore, SessionService sessionService,
+            AgentExecutionLimits budget, AgentPluginManager plugins,
+            ArtifactService artifacts, int maxConcurrentRuns,
+            int maxRetainedInvocations) {
+        if (maxConcurrentRuns <= 0) {
+            throw new IllegalArgumentException("maxConcurrentRuns must be positive");
+        }
+        if (maxRetainedInvocations <= 0) {
+            throw new IllegalArgumentException("maxRetainedInvocations must be positive");
+        }
         this.agentLoop = Objects.requireNonNull(agentLoop, "agentLoop must not be null");
         this.eventPublisher = Objects.requireNonNull(
                 eventPublisher, "eventPublisher must not be null");
@@ -152,6 +216,8 @@ public final class AgentRunner {
         this.budget = Objects.requireNonNull(budget, "budget must not be null");
         this.plugins = Objects.requireNonNull(plugins, "plugins must not be null");
         this.artifacts = artifacts == null ? ArtifactService.NOOP : artifacts;
+        this.runPermits = new Semaphore(maxConcurrentRuns, true);
+        this.maxRetainedInvocations = maxRetainedInvocations;
     }
 
     private static AgentEventPublisher storingPublisher(
@@ -198,11 +264,31 @@ public final class AgentRunner {
             InvocationContext context,
             AgentEventSink eventSink,
             AgentEventPublisher invocationEventPublisher) {
+        return runDetailed(request, context, eventSink, invocationEventPublisher).state();
+    }
+
+    /** 执行 Agent，并返回与状态绑定的准确 Invocation 标识。 */
+    public AgentRunResult runDetailed(
+            AgentRequest request,
+            InvocationContext context,
+            AgentEventSink eventSink,
+            AgentEventPublisher invocationEventPublisher) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(eventSink, "eventSink must not be null");
         Objects.requireNonNull(
                 invocationEventPublisher, "invocationEventPublisher must not be null");
+        try (RunPermit runPermit = acquireRunPermit(request.sessionId())) {
+            return runAdmitted(
+                    request, context, eventSink, invocationEventPublisher);
+        }
+    }
+
+    private AgentRunResult runAdmitted(
+            AgentRequest request,
+            InvocationContext context,
+            AgentEventSink eventSink,
+            AgentEventPublisher invocationEventPublisher) {
         AgentInvocation invocation = new AgentInvocation(
                 UUID.randomUUID().toString(), request.sessionId(), context.agentId(),
                 context.taskId(), Instant.now());
@@ -272,7 +358,8 @@ public final class AgentRunner {
             activeCancellations.remove(request.sessionId(), token);
         }
         plugins.afterRun(request, invocationContext, result);
-        return result;
+        retainTerminalInvocation(invocation, result);
+        return new AgentRunResult(invocation.invocationId(), result);
     }
 
     /** Runner 在执行边界组装 InvocationContext：注入执行预算、产物存储与当前会话快照。 */
@@ -322,6 +409,17 @@ public final class AgentRunner {
         Objects.requireNonNull(resolution, "resolution must not be null");
         AgentCheckpoint checkpoint = checkpointStore.load(invocationId).orElseThrow(
                 () -> new IllegalArgumentException("checkpoint not found: " + invocationId));
+        try (RunPermit runPermit = acquireRunPermit(checkpoint.sessionId())) {
+            return resumeAdmitted(
+                    invocationId, resolution, eventSink, checkpoint);
+        }
+    }
+
+    private AgentState resumeAdmitted(
+            String invocationId,
+            PendingActionResolution resolution,
+            AgentEventSink eventSink,
+            AgentCheckpoint checkpoint) {
         PendingAction pending = Objects.requireNonNull(
                 checkpoint.pendingAction(), "checkpoint has no pending action");
         if (!pending.pendingActionId().equals(resolution.pendingActionId())) {
@@ -364,6 +462,7 @@ public final class AgentRunner {
                     "lastObjective", checkpoint.objective(),
                     "lastStatus", rejected.status().name()));
             plugins.afterRun(request, context, rejected);
+            retainTerminalInvocation(invocation, rejected);
             return rejected;
         }
         activeCancellations.put(checkpoint.sessionId(), token);
@@ -395,6 +494,7 @@ public final class AgentRunner {
             activeCancellations.remove(checkpoint.sessionId(), token);
         }
         plugins.afterRun(request, context, result);
+        retainTerminalInvocation(invocation, result);
         return result;
     }
 
@@ -417,6 +517,72 @@ public final class AgentRunner {
         }
         token.cancel(cancelReason);
         return true;
+    }
+
+    private RunPermit acquireRunPermit(String sessionId) {
+        if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
+            throw new AgentRunRejectedException(
+                    AgentRunRejectedException.Reason.SESSION_BUSY,
+                    "session already has an active run: " + sessionId);
+        }
+        if (!runPermits.tryAcquire()) {
+            activeSessions.remove(sessionId, Boolean.TRUE);
+            throw new AgentRunRejectedException(
+                    AgentRunRejectedException.Reason.CAPACITY_EXCEEDED,
+                    "agent run capacity exceeded");
+        }
+        return new RunPermit(sessionId);
+    }
+
+    /** 有界保留终态运行；WAITING 必须保留到人工处理完成。 */
+    private void retainTerminalInvocation(
+            AgentInvocation invocation, AgentState result) {
+        if (result.status() == AgentState.Status.WAITING) {
+            return;
+        }
+        completedInvocationIds.add(invocation.invocationId());
+        completedInvocationCount.incrementAndGet();
+        while (completedInvocationCount.get() > maxRetainedInvocations) {
+            String expiredId = completedInvocationIds.poll();
+            if (expiredId == null) {
+                return;
+            }
+            completedInvocationCount.decrementAndGet();
+            AgentInvocation expired = invocations.remove(expiredId);
+            if (expired != null
+                    && latestInvocationIds.remove(expired.sessionId(), expiredId)) {
+                states.remove(expired.sessionId());
+            }
+        }
+    }
+
+    private final class RunPermit implements AutoCloseable {
+        private final String sessionId;
+        private boolean closed;
+
+        private RunPermit(String sessionId) {
+            this.sessionId = sessionId;
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            runPermits.release();
+            activeSessions.remove(sessionId, Boolean.TRUE);
+        }
+    }
+
+    /** 单次执行的稳定结果，避免调用方通过 latest 查询串到后续运行。 */
+    public record AgentRunResult(String invocationId, AgentState state) {
+        public AgentRunResult {
+            if (invocationId == null || invocationId.isBlank()) {
+                throw new IllegalArgumentException("invocationId must not be blank");
+            }
+            Objects.requireNonNull(state, "state must not be null");
+        }
     }
 
     /** 按 Invocation 标识查询当前 Checkpoint。 */

@@ -4,6 +4,9 @@ import CommandDeck from '../components/CommandDeck.vue'
 import SessionRail from '../components/SessionRail.vue'
 import TelemetryRail from '../components/TelemetryRail.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
+import { useLocale } from '../composables/useLocale.js'
+
+const { t } = useLocale()
 
 const {
   sessions,
@@ -16,10 +19,15 @@ const {
   messages,
   canStop,
   runtimeState,
+  loadingSessions,
+  sessionHistoryError,
+  hasMoreSessions,
   createSession,
   renameSession,
   deleteSession,
+  deleteSessions,
   selectSession,
+  loadMoreSessions,
   execute,
   cancelCurrentRun,
   resolveApproval,
@@ -32,18 +40,22 @@ const {
     <SessionRail
       :sessions="sessions"
       :current-session-id="currentSessionId"
-      :busy="busy"
+      :loading="loadingSessions"
+      :has-more="hasMoreSessions"
+      :history-error="sessionHistoryError"
       @select="selectSession"
       @create="createSession"
       @rename="renameSession($event.id, $event.title)"
       @delete="deleteSession"
+      @delete-many="deleteSessions"
+      @load-more="loadMoreSessions"
     />
 
     <section class="mission-workspace reveal reveal-2" aria-labelledby="consoleTitle">
       <header class="mission-intro">
         <div class="eyebrow"><span></span> LIVE AGENT RUNNER</div>
-        <h1 id="consoleTitle">意图进入，<em>行动发生。</em></h1>
-        <p>向主 Agent 下达任务。运行时将建立上下文、生成计划、调用工具，并留下可追踪的状态结果。</p>
+        <h1 id="consoleTitle">{{ t('意图进入，') }} <em>{{ t('行动发生。') }}</em></h1>
+        <p>{{ t('向主 Agent 下达任务。运行时将建立上下文、生成计划、调用工具，并留下可追踪的状态结果。') }}</p>
       </header>
 
       <CommandDeck

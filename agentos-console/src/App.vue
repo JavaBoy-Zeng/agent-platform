@@ -4,9 +4,11 @@ import { useRouter } from 'vue-router'
 import SystemHeader from './components/SystemHeader.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import { useAgentConsole } from './composables/useAgentConsole.js'
+import { useLocale } from './composables/useLocale.js'
 
 const agentConsole = useAgentConsole()
 const router = useRouter()
+const { t } = useLocale()
 provide('agentConsole', agentConsole)
 
 function createChatSession() {
@@ -16,7 +18,7 @@ function createChatSession() {
 </script>
 
 <template>
-  <a class="skip-link" href="#workspace">跳到操作区</a>
+  <a class="skip-link" href="#workspace">{{ t('跳到操作区') }}</a>
 
   <div class="app-shell">
     <SystemHeader :connection="agentConsole.connection.value" @new-session="createChatSession" />

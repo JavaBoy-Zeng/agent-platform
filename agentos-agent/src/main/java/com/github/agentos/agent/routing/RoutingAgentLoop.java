@@ -63,7 +63,8 @@ public final class RoutingAgentLoop implements AgentLoop {
         Objects.requireNonNull(runningState, "runningState must not be null");
         Objects.requireNonNull(eventSink, "eventSink must not be null");
 
-        IntentClassification classification = classifier.classify(request, context);
+        IntentClassification classification = Objects.requireNonNull(
+                classifier.classify(request, context), "classifier returned null");
 
         if (classification.isShortCircuit()) {
             return shortCircuit(request, classification, runningState, eventSink);
@@ -74,7 +75,8 @@ public final class RoutingAgentLoop implements AgentLoop {
         LOGGER.debug(
                 "intent router falls back sessionId={} intent={} confidence={}",
                 request.sessionId(), classification.intent(), classification.confidence());
-        return fallback.run(request, context, runningState, eventSink);
+        return fallback.run(
+                routedRequest(request, classification), context, runningState, eventSink);
     }
 
     @Override
@@ -147,6 +149,30 @@ public final class RoutingAgentLoop implements AgentLoop {
                 classification.intent(),
                 agentId,
                 classification.confidence());
-        return targetLoop.run(request, context, runningState, eventSink);
+        return targetLoop.run(
+                routedRequest(request, classification),
+                context.withAgentId(agentId),
+                runningState,
+                eventSink);
+    }
+
+    /**
+     * 将分类器给出的执行模式与扩展属性显式传入后续执行链。
+     *
+     * <p>调用方原始属性优先保留；路由属性用于补充分类阶段产生的信息，
+     * executionMode 则属于明确的路由决策，覆盖同名请求属性。</p>
+     */
+    private static AgentRequest routedRequest(
+            AgentRequest request, IntentClassification classification) {
+        if (classification.attributes().isEmpty() && classification.executionMode() == null) {
+            return request;
+        }
+        Map<String, Object> attributes = new java.util.LinkedHashMap<>(
+                classification.attributes());
+        attributes.putAll(request.attributes());
+        if (classification.executionMode() != null) {
+            attributes.put("executionMode", classification.executionMode().name());
+        }
+        return new AgentRequest(request.sessionId(), request.objective(), attributes);
     }
 }

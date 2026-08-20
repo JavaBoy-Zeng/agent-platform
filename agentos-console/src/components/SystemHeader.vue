@@ -1,11 +1,14 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useLocale } from '../composables/useLocale.js'
 
 const props = defineProps({
   connection: { type: String, default: 'standby' }
 })
 
 defineEmits(['new-session'])
+
+const { locale, localeTag, isEnglish, setLocale, toggleLocale, t } = useLocale()
 
 const clock = ref('--:--:--')
 let timer
@@ -17,7 +20,7 @@ const connectionLabel = computed(() => ({
 })[props.connection] || 'API STANDBY')
 
 function updateClock() {
-  clock.value = new Intl.DateTimeFormat('zh-CN', {
+  clock.value = new Intl.DateTimeFormat(localeTag.value, {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
   }).format(new Date())
 }
@@ -28,11 +31,12 @@ onMounted(() => {
 })
 
 onUnmounted(() => window.clearInterval(timer))
+watch(locale, updateClock)
 </script>
 
 <template>
   <header class="masthead">
-    <router-link class="brand" to="/chat" aria-label="AgentOS 首页">
+    <router-link class="brand" to="/chat" :aria-label="t('AgentOS 首页')">
       <span class="brand-mark" aria-hidden="true">
         <span>AO</span>
         <i></i>
@@ -43,7 +47,7 @@ onUnmounted(() => window.clearInterval(timer))
       </span>
     </router-link>
 
-    <div class="system-strip" aria-label="系统状态">
+    <div class="system-strip" :aria-label="t('系统状态')">
       <span class="signal" :class="connection"></span>
       <span>{{ connectionLabel }}</span>
       <span class="system-divider"></span>
@@ -51,11 +55,31 @@ onUnmounted(() => window.clearInterval(timer))
     </div>
 
     <div class="header-tools">
-      <div class="clock" aria-label="当前时间">
+      <div class="locale-switch" role="group" :aria-label="t('界面语言')">
+        <button
+          type="button"
+          :class="{ active: locale === 'zh' }"
+          :aria-pressed="locale === 'zh'"
+          @click="setLocale('zh')"
+        >中</button>
+        <button
+          type="button"
+          :class="{ active: locale === 'en' }"
+          :aria-pressed="locale === 'en'"
+          @click="setLocale('en')"
+        >EN</button>
+      </div>
+      <button
+        class="locale-mobile-button"
+        type="button"
+        :aria-label="t(isEnglish ? '切换为中文' : '切换为英文')"
+        @click="toggleLocale"
+      >{{ isEnglish ? '中' : 'EN' }}</button>
+      <div class="clock" :aria-label="t('当前时间')">
         <span>LOCAL</span>
         <strong>{{ clock }}</strong>
       </div>
-      <button class="icon-button" type="button" aria-label="新建会话" title="新建会话"
+      <button class="icon-button" type="button" :aria-label="t('新建会话')" :title="t('新建会话')"
               @click="$emit('new-session')">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 5v14M5 12h14" />

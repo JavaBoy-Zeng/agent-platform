@@ -51,14 +51,24 @@ public final class SqliteSessionService implements SessionService {
 
     @Override
     public List<Session> recent(int limit) {
+        return recent(0, limit);
+    }
+
+    @Override
+    public List<Session> recent(int offset, int limit) {
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must not be negative");
+        }
         if (limit < 1) {
             throw new IllegalArgumentException("limit must be positive");
         }
         try (Connection connection = SqliteSupport.open(dataSource);
                 PreparedStatement statement = connection.prepareStatement(
                         "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms "
-                                + "FROM agent_sessions ORDER BY last_active_at_ms DESC LIMIT ?")) {
+                                + "FROM agent_sessions ORDER BY last_active_at_ms DESC "
+                                + "LIMIT ? OFFSET ?")) {
             statement.setInt(1, limit);
+            statement.setInt(2, offset);
             try (ResultSet result = statement.executeQuery()) {
                 List<Session> sessions = new java.util.ArrayList<>();
                 while (result.next()) {
@@ -68,6 +78,31 @@ public final class SqliteSessionService implements SessionService {
             }
         } catch (SQLException exception) {
             throw SqliteSupport.failure("listing recent sessions", exception);
+        }
+    }
+
+    @Override
+    public long count() {
+        try (Connection connection = SqliteSupport.open(dataSource);
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM agent_sessions");
+                ResultSet result = statement.executeQuery()) {
+            return result.next() ? result.getLong(1) : 0;
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("counting sessions", exception);
+        }
+    }
+
+    @Override
+    public boolean delete(String sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId must not be null");
+        try (Connection connection = SqliteSupport.open(dataSource);
+                PreparedStatement statement = connection.prepareStatement(
+                        "DELETE FROM agent_sessions WHERE session_id = ?")) {
+            statement.setString(1, sessionId);
+            return statement.executeUpdate() > 0;
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("deleting session " + sessionId, exception);
         }
     }
 

@@ -201,6 +201,7 @@ npm run dev
 - [架构说明](docs/ARCHITECTURE.md)
 - [功能清单](docs/FEATURES.md)
 - [功能摘要](docs/FEATURES_SUMMARY.md)
+- [AgentOS × Google ADK Java 对照研究路线](docs/ADK_JAVA_RESEARCH_ROADMAP.md)
 - [分层记忆系统面试项目总结](docs/AGENT_MEMORY_INTERVIEW.md)
 
 

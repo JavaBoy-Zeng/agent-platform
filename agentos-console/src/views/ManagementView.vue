@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getPendingAction, resolvePendingAction } from '../services/agentApi.js'
+import { useLocale } from '../composables/useLocale.js'
 import {
   deleteArtifact, downloadArtifact, evaluateInvocation, getAgentDetail, getAgentRuns,
   getArtifacts, getConsoleCatalog, getMemory, getSessionEvents, getSessions, getTraces, getUsage
@@ -9,6 +10,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const { localeTag, t } = useLocale()
 const consoleState = inject('agentConsole')
 const section = computed(() => route.meta.section)
 const sessions = consoleState.sessions
@@ -34,27 +36,27 @@ const evalForm = ref({
   requireCompleted: true
 })
 
-const pages = {
-  agents: { index: '01', title: 'Agents', kicker: 'ORCHESTRATION', description: '查看运行时注册的 Agent 拓扑、形态与工具化状态。' },
-  runs: { index: '02', title: 'Runs', kicker: 'EXECUTION LEDGER', description: '检查服务端后台运行的状态、迭代次数与事件游标。' },
-  sessions: { index: '03', title: 'Sessions', kicker: 'STATEFUL CONTEXT', description: '浏览服务端会话快照、状态键与最后活动时间。' },
-  tools: { index: '04', title: 'Tools', kicker: 'CAPABILITY REGISTRY', description: '审计运行时已注册工具、风险等级与参数。' },
-  mcp: { index: '05', title: 'MCP', kicker: 'EXTERNAL PROTOCOL', description: '观察 MCP Server 配置和传输状态。' },
-  skills: { index: '06', title: 'Skills', kicker: 'INSTRUCTION LIBRARY', description: '查看可按需注入 Agent 上下文的技能目录。' },
-  memory: { index: '07', title: 'Memory', kicker: 'COGNITIVE LAYERS', description: '沿 L0–L3 检查最近对话、原子记忆、场景与画像。', session: true },
-  plans: { index: '08', title: 'Plans', kicker: 'DECISION GRAPH', description: '按领域事件复盘计划创建、步骤执行与重规划轨迹。', session: true },
-  traces: { index: '09', title: 'Traces', kicker: 'TIME / CAUSALITY', description: '以 Span 时间线定位一次调用链的耗时与故障。', session: true },
-  artifacts: { index: '10', title: 'Artifacts', kicker: 'OUTPUT VAULT', description: '下载或治理 Agent 在运行中登记的文件产物。', session: true },
-  approvals: { index: '11', title: 'Approvals', kicker: 'HUMAN GATE', description: '集中处理被风险策略挂起的外部动作。' },
-  models: { index: '12', title: 'Models', kicker: 'INFERENCE ROUTING', description: '查看模型路由、Provider 与当前会话 Token 用量。', session: true },
-  evals: { index: '13', title: 'Evals', kicker: 'TRAJECTORY CHECK', description: '对单次执行回放工具轨迹，校验路径而不只校验答案。', session: true }
-}
-const page = computed(() => pages[section.value])
+const pages = computed(() => ({
+  agents: { index: '01', title: 'Agents', kicker: 'ORCHESTRATION', description: t('查看运行时注册的 Agent 拓扑、形态与工具化状态。') },
+  runs: { index: '02', title: 'Runs', kicker: 'EXECUTION LEDGER', description: t('检查服务端后台运行的状态、迭代次数与事件游标。') },
+  sessions: { index: '03', title: 'Sessions', kicker: 'STATEFUL CONTEXT', description: t('浏览服务端会话快照、状态键与最后活动时间。') },
+  tools: { index: '04', title: 'Tools', kicker: 'CAPABILITY REGISTRY', description: t('审计运行时已注册工具、风险等级与参数。') },
+  mcp: { index: '05', title: 'MCP', kicker: 'EXTERNAL PROTOCOL', description: t('观察 MCP Server 配置和传输状态。') },
+  skills: { index: '06', title: 'Skills', kicker: 'INSTRUCTION LIBRARY', description: t('查看可按需注入 Agent 上下文的技能目录。') },
+  memory: { index: '07', title: 'Memory', kicker: 'COGNITIVE LAYERS', description: t('沿 L0–L3 检查最近对话、原子记忆、场景与画像。'), session: true },
+  plans: { index: '08', title: 'Plans', kicker: 'DECISION GRAPH', description: t('按领域事件复盘计划创建、步骤执行与重规划轨迹。'), session: true },
+  traces: { index: '09', title: 'Traces', kicker: 'TIME / CAUSALITY', description: t('以 Span 时间线定位一次调用链的耗时与故障。'), session: true },
+  artifacts: { index: '10', title: 'Artifacts', kicker: 'OUTPUT VAULT', description: t('下载或治理 Agent 在运行中登记的文件产物。'), session: true },
+  approvals: { index: '11', title: 'Approvals', kicker: 'HUMAN GATE', description: t('集中处理被风险策略挂起的外部动作。') },
+  models: { index: '12', title: 'Models', kicker: 'INFERENCE ROUTING', description: t('查看模型路由、Provider 与当前会话 Token 用量。'), session: true },
+  evals: { index: '13', title: 'Evals', kicker: 'TRAJECTORY CHECK', description: t('对单次执行回放工具轨迹，校验路径而不只校验答案。'), session: true }
+}))
+const page = computed(() => pages.value[section.value])
 
 const sessionLabel = computed(() =>
   sessionOptions.value.find(item => item.id === selectedSessionId.value)?.title
-  || selectedSessionId.value || '暂无会话')
-const searchPlaceholder = computed(() => `搜索 ${page.value?.title || ''}…`)
+  || selectedSessionId.value || t('暂无会话'))
+const searchPlaceholder = computed(() => `${t('搜索')} ${page.value?.title || ''}…`)
 const normalizedQuery = computed(() => query.value.trim().toLowerCase())
 
 /**
@@ -63,7 +65,7 @@ const normalizedQuery = computed(() => query.value.trim().toLowerCase())
  * <p>Plans、Traces 等面板的数据来自服务端，因此可选范围不能限制在浏览器档案内。</p>
  */
 const sessionOptions = computed(() => {
-  const options = sessions.value.map(item => ({ id: item.id, title: item.title, local: true }))
+  const options = sessions.value.map(item => ({ id: item.id, title: t(item.title), local: true }))
   const known = new Set(options.map(item => item.id))
   for (const remote of knownSessions.value) {
     if (known.has(remote.sessionId)) continue
@@ -101,7 +103,7 @@ const sessionRows = computed(() => (data.value?.sessions || []).map(remote => {
   return {
     ...remote,
     id: remote.sessionId,
-    title: local?.title || remote.state?.lastObjective || remote.sessionId,
+    title: t(local?.title || remote.state?.lastObjective || remote.sessionId),
     known: Boolean(local)
   }
 }).filter(row => !normalizedQuery.value || JSON.stringify(row).toLowerCase().includes(normalizedQuery.value)))
@@ -141,10 +143,10 @@ const memoryCount = computed(() => Object.values(data.value?.memory?.counts || {
 const memoryLayers = computed(() => {
   const memory = data.value?.memory || {}
   return [
-    { id: 'L0', name: 'Recent turns', hint: '会话工作记忆', items: memory.recentTurns || [] },
-    { id: 'L1', name: 'Atomic memory', hint: '稳定事实与偏好', items: memory.atomicMemories || [] },
-    { id: 'L2', name: 'Scenarios', hint: '可复用任务经验', items: memory.scenarios || [] },
-    { id: 'L3', name: 'Profile', hint: '长期核心画像', items: memory.profile ? [memory.profile] : [] }
+    { id: 'L0', name: 'Recent turns', hint: t('会话工作记忆'), items: memory.recentTurns || [] },
+    { id: 'L1', name: 'Atomic memory', hint: t('稳定事实与偏好'), items: memory.atomicMemories || [] },
+    { id: 'L2', name: 'Scenarios', hint: t('可复用任务经验'), items: memory.scenarios || [] },
+    { id: 'L3', name: 'Profile', hint: t('长期核心画像'), items: memory.profile ? [memory.profile] : [] }
   ]
 })
 
@@ -165,7 +167,7 @@ const isEmpty = computed(() => ({
 function formatDate(value) {
   if (!value) return '—'
   const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date)
+  return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(localeTag.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date)
 }
 function formatBytes(bytes = 0) {
   if (!bytes) return '0 B'
@@ -173,7 +175,7 @@ function formatBytes(bytes = 0) {
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return `${(bytes / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`
 }
-function formatNumber(value = 0) { return new Intl.NumberFormat('zh-CN').format(value) }
+function formatNumber(value = 0) { return new Intl.NumberFormat(localeTag.value).format(value) }
 function statusTone(status = '') {
   const value = String(status).toUpperCase()
   if (['COMPLETED', 'READY', 'CONFIGURED', 'OK'].includes(value)) return 'success'
@@ -367,10 +369,10 @@ onMounted(load)</script>
             <button v-for="item in sessionOptions" :key="item.id" type="button" role="option" :aria-selected="item.id === selectedSessionId" @click="chooseSession(item.id)">
               <span>{{ item.title }}</span><small>{{ item.local ? item.id : `${item.id} · server` }}</small>
             </button>
-            <p v-if="!sessionOptions.length">先在 Chat 中创建一个会话</p>
+            <p v-if="!sessionOptions.length">{{ t('先在 Chat 中创建一个会话') }}</p>
           </div>
         </div>
-        <button class="refresh-button" type="button" :disabled="loading" aria-label="刷新数据" @click="load">
+        <button class="refresh-button" type="button" :disabled="loading" :aria-label="t('刷新数据')" @click="load">
           <svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18 9a7 7 0 0 0-12-2l-2 5m2 3a7 7 0 0 0 12 2l2-5" /></svg>
         </button>
       </div>
@@ -380,7 +382,7 @@ onMounted(load)</script>
       <div><small>TOTAL</small><strong>{{ summary[0] }}</strong><span>{{ summary[1] }}</span></div>
       <div><small>SIGNAL</small><strong>{{ summary[2] }}</strong><span>{{ summary[3] }}</span></div>
       <div><small>RUNTIME</small><strong class="online-text">ONLINE</strong><span>local node</span></div>
-      <div><small>UPDATED</small><strong>{{ new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</strong><span>live snapshot</span></div>
+      <div><small>UPDATED</small><strong>{{ new Date().toLocaleTimeString(localeTag, { hour: '2-digit', minute: '2-digit' }) }}</strong><span>live snapshot</span></div>
     </div>
 
     <div class="content-toolbar">
@@ -392,10 +394,10 @@ onMounted(load)</script>
     </div>
 
     <div v-if="error" class="state-banner error-banner">
-      <div><strong>DATA LINK INTERRUPTED</strong><p>{{ error }}</p></div>
-      <button type="button" @click="load">重试</button>
+      <div><strong>DATA LINK INTERRUPTED</strong><p>{{ t(error) }}</p></div>
+      <button type="button" @click="load">{{ t('重试') }}</button>
     </div>
-    <div v-else-if="loading" class="loading-grid" aria-label="正在加载">
+    <div v-else-if="loading" class="loading-grid" :aria-label="t('正在加载')">
       <i v-for="n in 6" :key="n"></i>
     </div>
 
@@ -439,14 +441,14 @@ onMounted(load)</script>
       <div v-else-if="section === 'sessions'" class="data-table sessions-table" role="table" aria-label="Sessions">
         <div class="table-row table-head" role="row"><span>SESSION</span><span>USER</span><span>STATE</span><span>LAST ACTIVE</span><span></span></div>
         <div v-for="row in sessionRows" :key="row.id" class="table-row" role="row">
-          <span><strong>{{ row.title }}</strong><small>{{ row.sessionId }}</small></span><span>{{ row.userId || 'default-user' }}</span><span>{{ row.stateKeys?.length || 0 }} keys</span><span>{{ formatDate(row.lastActiveAt) }}</span><span><button type="button" :disabled="!row.known" :title="row.known ? '在 Chat 中打开' : '该会话不在本地档案中'" @click="openSession(row.id)">OPEN ↗</button></span>
+          <span><strong>{{ row.title }}</strong><small>{{ row.sessionId }}</small></span><span>{{ row.userId || 'default-user' }}</span><span>{{ row.stateKeys?.length || 0 }} keys</span><span>{{ formatDate(row.lastActiveAt) }}</span><span><button type="button" :disabled="!row.known" :title="t(row.known ? '在 Chat 中打开' : '该会话不在本地档案中')" @click="openSession(row.id)">OPEN ↗</button></span>
         </div>
       </div>
 
       <div v-else-if="section === 'memory'" class="memory-stack">
         <article v-for="layer in memoryLayers" :key="layer.id" class="memory-layer">
           <header><b>{{ layer.id }}</b><div><h2>{{ layer.name }}</h2><p>{{ layer.hint }}</p></div><span>{{ layer.items.length }}</span></header>
-          <div class="memory-items"><button v-for="(item, index) in layer.items" :key="index" type="button" @click="detail = item"><small>{{ layer.id }}.{{ String(index + 1).padStart(2, '0') }}</small><p>{{ concise(item) }}</p></button><p v-if="!layer.items.length" class="inline-empty">该层暂未形成记忆</p></div>
+          <div class="memory-items"><button v-for="(item, index) in layer.items" :key="index" type="button" @click="detail = item"><small>{{ layer.id }}.{{ String(index + 1).padStart(2, '0') }}</small><p>{{ concise(item) }}</p></button><p v-if="!layer.items.length" class="inline-empty">{{ t('该层暂未形成记忆') }}</p></div>
         </article>
       </div>
 
@@ -482,10 +484,10 @@ onMounted(load)</script>
           <label><small>CASE ID</small><input v-model="evalForm.caseId" type="text" /></label>
           <label><small>EXPECTED TOOL SEQUENCE</small><input v-model="evalForm.expectedToolSequence" type="text" placeholder="web_search, file_write" /></label>
           <label><small>FORBIDDEN TOOLS</small><input v-model="evalForm.forbiddenTools" type="text" placeholder="run_command" /></label>
-          <label><small>MAX TOOL CALLS</small><input v-model="evalForm.maxToolCalls" type="number" min="1" placeholder="不限制" /></label>
-          <label><small>RESPONSE KEYWORDS</small><input v-model="evalForm.requiredResponseKeywords" type="text" placeholder="结论, 建议" /></label>
-          <label class="eval-check"><input v-model="evalForm.requireCompleted" type="checkbox" /><span>要求运行成功收口</span></label>
-          <button type="submit" :disabled="!evalTarget || evalBusy">{{ evalBusy ? '评估中…' : '运行评估' }}</button>
+          <label><small>MAX TOOL CALLS</small><input v-model="evalForm.maxToolCalls" type="number" min="1" :placeholder="t('不限制')" /></label>
+          <label><small>RESPONSE KEYWORDS</small><input v-model="evalForm.requiredResponseKeywords" type="text" :placeholder="t('结论, 建议')" /></label>
+          <label class="eval-check"><input v-model="evalForm.requireCompleted" type="checkbox" /><span>{{ t('要求运行成功收口') }}</span></label>
+          <button type="submit" :disabled="!evalTarget || evalBusy">{{ t(evalBusy ? '评估中…' : '运行评估') }}</button>
         </form>
 
         <aside v-if="evalResult" class="eval-result">
@@ -494,7 +496,7 @@ onMounted(load)</script>
             <strong>{{ (evalResult.score * 100).toFixed(0) }}%</strong>
           </header>
           <dl>
-            <div><dt>Tool calls</dt><dd>{{ evalResult.toolCallCount }}（失败 {{ evalResult.failedToolCallCount }}）</dd></div>
+            <div><dt>Tool calls</dt><dd>{{ evalResult.toolCallCount }} ({{ t('失败 {count}', { count: String(evalResult.failedToolCallCount) }) }})</dd></div>
             <div><dt>Trajectory</dt><dd>{{ evalResult.actualToolSequence.join(' → ') || '—' }}</dd></div>
           </dl>
           <ul>
@@ -503,12 +505,12 @@ onMounted(load)</script>
               <span><strong>{{ finding.check }}</strong><small>{{ finding.detail }}</small></span>
             </li>
           </ul>
-          <button class="text-button" type="button" @click="detail = evalResult">查看完整结果</button>
+          <button class="text-button" type="button" @click="detail = evalResult">{{ t('查看完整结果') }}</button>
         </aside>
         <aside v-else class="eval-hint">
-          <h2>轨迹优先的回归校验</h2>
-          <p>最终答案正确不代表执行路径正确。选择一次 Invocation，声明期望的工具序列、禁用工具与调用预算，服务端会回放已存储的领域事件逐项比对。</p>
-          <p v-if="!invocationOptions.length">当前会话还没有已存储的执行事件，先在 Chat 中运行一次任务。</p>
+          <h2>{{ t('轨迹优先的回归校验') }}</h2>
+          <p>{{ t('最终答案正确不代表执行路径正确。选择一次 Invocation，声明期望的工具序列、禁用工具与调用预算，服务端会回放已存储的领域事件逐项比对。') }}</p>
+          <p v-if="!invocationOptions.length">{{ t('当前会话还没有已存储的执行事件，先在 Chat 中运行一次任务。') }}</p>
         </aside>
       </div>
 
@@ -527,7 +529,7 @@ onMounted(load)</script>
       </div>
 
       <div v-else-if="section === 'approvals'" class="approval-list">
-        <article v-for="approval in data.approvals" :key="approval.pendingAction?.pendingActionId"><span class="approval-mark">!</span><div><small>RISK GATE / {{ approval.sessionId }}</small><h2>{{ approval.pendingAction?.title || approval.pendingAction?.description || '外部动作等待确认' }}</h2><p>{{ approval.pendingAction?.description || '该动作需要人工确认后才能继续运行。' }}</p></div><footer><button type="button" @click="decide(approval, false)">REJECT</button><button class="approve" type="button" @click="decide(approval, true)">APPROVE</button></footer></article>
+        <article v-for="approval in data.approvals" :key="approval.pendingAction?.pendingActionId"><span class="approval-mark">!</span><div><small>RISK GATE / {{ approval.sessionId }}</small><h2>{{ approval.pendingAction?.title || approval.pendingAction?.description || t('外部动作等待确认') }}</h2><p>{{ approval.pendingAction?.description || t('该动作需要人工确认后才能继续运行。') }}</p></div><footer><button type="button" @click="decide(approval, false)">REJECT</button><button class="approve" type="button" @click="decide(approval, true)">APPROVE</button></footer></article>
       </div>
 
       <div v-else-if="section === 'models'" class="models-layout">
@@ -536,13 +538,13 @@ onMounted(load)</script>
       </div>
 
       <div v-if="isEmpty" class="empty-state">
-        <span>∅</span><h2>NO RECORDS IN SCOPE</h2><p>当前范围没有可展示的数据。运行一个 Agent 任务后再刷新此面板。</p>
+        <span>∅</span><h2>NO RECORDS IN SCOPE</h2><p>{{ t('当前范围没有可展示的数据。运行一个 Agent 任务后再刷新此面板。') }}</p>
       </div>
     </div>
 
     <transition name="inspector">
-      <aside v-if="detail" class="detail-inspector" aria-label="详情检查器">
-        <header><div><small>OBJECT INSPECTOR</small><strong>{{ detail.name || detail.title || detail.id || detail.spanId || 'DETAIL' }}</strong></div><button type="button" aria-label="关闭详情" @click="detail = null">×</button></header>
+      <aside v-if="detail" class="detail-inspector" :aria-label="t('详情检查器')">
+        <header><div><small>OBJECT INSPECTOR</small><strong>{{ detail.name || detail.title || detail.id || detail.spanId || 'DETAIL' }}</strong></div><button type="button" :aria-label="t('关闭详情')" @click="detail = null">×</button></header>
         <pre>{{ JSON.stringify(detail, null, 2) }}</pre>
       </aside>
     </transition>
@@ -550,8 +552,8 @@ onMounted(load)</script>
     <transition name="dialog-fade">
       <div v-if="deleteTarget" class="dialog-backdrop" @click.self="deleteTarget = null">
         <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="deleteArtifactTitle">
-          <div class="confirm-dialog-icon">!</div><div class="confirm-dialog-copy"><h2 id="deleteArtifactTitle">删除产物？</h2><p>将永久删除 {{ deleteTarget.filename }}，下载链接会立即失效。此操作不可撤销。</p></div>
-          <div class="confirm-dialog-actions"><button class="dialog-cancel" type="button" @click="deleteTarget = null">取消</button><button class="dialog-confirm" type="button" @click="confirmDelete">确认删除</button></div>
+          <div class="confirm-dialog-icon">!</div><div class="confirm-dialog-copy"><h2 id="deleteArtifactTitle">{{ t('删除产物？') }}</h2><p>{{ t('将永久删除 {filename}，下载链接会立即失效。此操作不可撤销。', { filename: deleteTarget.filename }) }}</p></div>
+          <div class="confirm-dialog-actions"><button class="dialog-cancel" type="button" @click="deleteTarget = null">{{ t('取消') }}</button><button class="dialog-confirm" type="button" @click="confirmDelete">{{ t('确认删除') }}</button></div>
         </section>
       </div>
     </transition>

@@ -7,6 +7,20 @@ server:
 
 agentos:
   runtime:
+    # 全部入口共享的实际执行并发上限；超限快速返回 429。
+    max-concurrent-runs: 128
+    stream:
+      # 流式/后台任务的执行槽位与等待队列均有界。
+      max-concurrent-runs: 128
+      queue-capacity: 256
+    retention:
+      # 仅保留最近的终态运行及每次运行最近的流式事件，防止堆内存无界增长。
+      max-runs: 1000
+      max-events-per-run: 2000
+      max-invocations: 10000
+      max-sessions: 5000
+      max-events-per-invocation: 200
+      max-events-per-session: 2000
     # 单次 Agent 运行的累计预算；工具重试也计入 max-tool-calls。
     max-replan-count: 3
     max-step-count: 30
@@ -15,6 +29,16 @@ agentos:
     # 仅将摘要后的工具结果反馈给模型，避免多轮规划持续放大上下文。
     max-observation-chars: 4000
     max-observation-total-chars: 24000
+
+  router:
+    short-circuit:
+      max-chars: 16
+      greeting-message: "你好！有什么我可以帮你的吗？"
+      acknowledgement-message: "好的。"
+      thanks-message: "不客气！有需要随时告诉我。"
+      farewell-message: "晚安，祝你好梦。"
+    simple-qa:
+      max-chars: 64
 
   model:
     # MiniMax 中国区 OpenAI-compatible 配置。

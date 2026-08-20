@@ -16,7 +16,9 @@
 - 页面刷新后按 `runId` 查询快照、补播缺失事件并恢复实时展示。
 - 实时展示 Plan、Tool、Observation、Decision、最终输出和失败信息。
 - 可视化 MainAgent、Planner、Tool、Observation、Decision 执行管线。
-- 将最近 20 个会话及消息保存在浏览器 `localStorage` 中。
+- 从服务端分页加载会话；浏览器仅缓存最近 20 个会话用于快速恢复和断网兜底。
+- 本地缓存缺失时，从服务端领域事件恢复完整的用户/助手对话轮次。
+- 支持简体中文与英文即时切换；语言偏好保存在 `agentos.console.locale.v1`，并同步页面 `lang` 属性与日期格式。
 - 展示当前 HITL 风险门禁策略。
 
 ## 技术栈

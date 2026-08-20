@@ -60,11 +60,19 @@ public class PersistenceConfiguration {
     AgentEventStore agentEventStore(
             @Value("${agentos.persistence.mode:memory}") String mode,
             ObjectProvider<DataSource> dataSource,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            @Value("${agentos.runtime.retention.max-invocations:10000}") int maxInvocations,
+            @Value("${agentos.runtime.retention.max-sessions:5000}") int maxSessions,
+            @Value("${agentos.runtime.retention.max-events-per-invocation:200}")
+            int maxEventsPerInvocation,
+            @Value("${agentos.runtime.retention.max-events-per-session:2000}")
+            int maxEventsPerSession) {
         if (isSqlite(mode)) {
             return new SqliteAgentEventStore(dataSource.getObject(), objectMapper);
         }
-        return new InMemoryAgentEventStore();
+        return new InMemoryAgentEventStore(
+                maxInvocations, maxSessions,
+                maxEventsPerInvocation, maxEventsPerSession);
     }
 
     /** 审批恢复 Checkpoint 存储：sqlite 落库，memory 留在进程内。 */

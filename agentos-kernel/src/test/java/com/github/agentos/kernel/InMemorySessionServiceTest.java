@@ -34,12 +34,39 @@ class InMemorySessionServiceTest {
     }
 
     @Test
+    void recentSupportsOffsetAndReportsTotalCount() throws InterruptedException {
+        InMemorySessionService service = new InMemorySessionService();
+        service.getOrCreate("session-1", "user-1");
+        Thread.sleep(5);
+        service.getOrCreate("session-2", "user-1");
+        Thread.sleep(5);
+        service.getOrCreate("session-3", "user-1");
+
+        assertThat(service.count()).isEqualTo(3);
+        assertThat(service.recent(1, 1)).extracting(Session::sessionId)
+                .containsExactly("session-2");
+    }
+
+    @Test
+    void deleteRemovesSessionSnapshot() {
+        InMemorySessionService service = new InMemorySessionService();
+        service.getOrCreate("session-1", "user-1");
+
+        assertThat(service.delete("session-1")).isTrue();
+        assertThat(service.delete("session-1")).isFalse();
+        assertThat(service.count()).isZero();
+    }
+
+    @Test
     void recentRejectsNonPositiveLimit() {
         InMemorySessionService service = new InMemorySessionService();
 
         assertThatThrownBy(() -> service.recent(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("limit must be positive");
+        assertThatThrownBy(() -> service.recent(-1, 10))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("offset must not be negative");
     }
 
     @Test

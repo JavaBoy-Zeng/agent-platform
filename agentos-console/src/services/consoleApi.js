@@ -20,6 +20,18 @@ export const getAgentDetail = (agentId) =>
 export const getSession = (sessionId) => request(`/api/sessions/${encodeURIComponent(sessionId)}`)
 export const getSessions = (limit = 50) =>
   request(`/api/sessions?limit=${encodeURIComponent(limit)}`)
+export const getSessionPage = (offset = 0, limit = 20) => {
+  const query = new URLSearchParams({ offset: String(offset), limit: String(limit) })
+  return request(`/api/sessions/page?${query}`)
+}
+export const updateSessionTitle = (sessionId, title) =>
+  request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title })
+  })
+export const deleteSessionRecord = (sessionId) =>
+  request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
 export const getUsage = (sessionId) => request(`/api/usage/${encodeURIComponent(sessionId)}`)
 export const getTraces = (sessionId) => request(`/api/traces?sessionId=${encodeURIComponent(sessionId)}`)
 export const getArtifacts = (sessionId) => request(`/api/artifacts?sessionId=${encodeURIComponent(sessionId)}`)

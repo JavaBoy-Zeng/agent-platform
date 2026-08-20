@@ -2,6 +2,8 @@ package com.github.agentos.server.controller;
 
 import com.github.agentos.kernel.AgentCheckpoint;
 import com.github.agentos.kernel.InvocationContext;
+import com.github.agentos.kernel.AgentEventSink;
+import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentRequest;
@@ -74,8 +76,13 @@ public class AgentController {
     @PostMapping("/runs")
     public ResponseEntity<RunResponse> run(@RequestBody RunRequest request) {
         RunInvocation invocation = normalize(request);
-        AgentState state = runner.run(invocation.request(), invocation.context());
-        RunResponse response = response(invocation.request().sessionId(), state);
+        AgentRunner.AgentRunResult result = runner.runDetailed(
+                invocation.request(),
+                invocation.context(),
+                AgentEventSink.NOOP,
+                AgentEventPublisher.NOOP);
+        RunResponse response = response(
+                invocation.request().sessionId(), result.state(), result.invocationId());
         return ResponseEntity.created(URI.create(
                 "/api/agents/" + invocation.request().sessionId() + "/state")).body(response);
     }
@@ -98,12 +105,15 @@ public class AgentController {
         boolean started = taskRegistry.start(
                 invocation.request().sessionId(), streamExecutor, () -> {
             try {
-                AgentState state = runner.run(
+                AgentRunner.AgentRunResult result = runner.runDetailed(
                         invocation.request(),
                         invocation.context(),
-                        event -> sendEvent(emitter, connected, event));
+                        event -> sendEvent(emitter, connected, event),
+                        AgentEventPublisher.NOOP);
                 send(emitter, connected, "state", response(
-                        invocation.request().sessionId(), state));
+                        invocation.request().sessionId(),
+                        result.state(),
+                        result.invocationId()));
                 if (connected.get()) {
                     emitter.complete();
                 }
@@ -236,11 +246,13 @@ public class AgentController {
         return ResponseEntity.ok(resolvedResponse(sessionId, invocationId, state));
     }
 
-    private RunResponse response(String sessionId, AgentState state) {
-        AgentInvocation invocation = runner.latestInvocation(sessionId).orElse(null);
+    /** 使用执行结果携带的 InvocationId，避免并发完成边界查询到下一次运行。 */
+    private RunResponse response(
+            String sessionId, AgentState state, String invocationId) {
+        AgentInvocation invocation = runner.invocation(invocationId).orElse(null);
         return new RunResponse(
                 sessionId,
-                invocation == null ? "" : invocation.invocationId(),
+                invocationId,
                 state,
                 state.status() == AgentState.Status.WAITING && invocation != null
                         ? invocation.pendingAction() : null);

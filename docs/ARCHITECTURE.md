@@ -390,7 +390,7 @@ agentApi.js                REST 调用、后台运行与可恢复 SSE 流解析
 
 控制台先通过 `POST /api/agent-runs` 获得 `runId`，再使用 GET SSE 订阅事件。每个事件都有递增 `sequence`；前端持续保存 `activeRunId` 和 `lastSequence`，刷新后先查询快照，再以 `after=lastSequence` 补播缺失事件并继续订阅。
 
-浏览器最多保存最近 20 个会话及展示消息，键为 `agentos.console.sessions.v1`，并单独保存刷新前选中的会话。事件使用 `runId:sequence` 去重，最终回答使用稳定消息标识覆盖流式草稿。运行中的停止按钮调用显式取消接口。这些本地消息不等同于后端记忆；切换浏览器或清理站点数据会丢失。
+聊天侧栏通过 `/api/sessions/page` 从服务端分页加载会话，服务端会话索引是列表的权威数据源。浏览器使用 `agentos.console.sessions.v1` 缓存最近 20 个会话及展示消息，并单独保存刷新前选中的会话；缓存缺失时，前端从 `/api/events` 恢复完整的用户/助手对话轮次。事件使用 `runId:sequence` 去重，最终回答使用稳定消息标识覆盖流式草稿。运行中的停止按钮调用显式取消接口。浏览器缓存不等同于后端记忆，清理站点数据不会删除服务端会话与领域事件。
 
 开发环境由 Vite 将 `/api` 代理到 `http://localhost:8080`。生产构建产物位于 `agentos-console/dist`，需要独立静态托管并把 `/api` 反向代理到后端。
 

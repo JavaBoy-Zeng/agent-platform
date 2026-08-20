@@ -45,7 +45,9 @@ import org.springframework.context.annotation.Configuration;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AgentOS 默认组件的 Spring 装配配置。
@@ -353,10 +355,13 @@ public class AgentOsConfiguration {
             com.github.agentos.kernel.SessionService sessionService,
             AgentExecutionLimits agentExecutionLimits,
             com.github.agentos.kernel.AgentPluginManager pluginManager,
-            com.github.agentos.kernel.ArtifactService artifactService) {
+            com.github.agentos.kernel.ArtifactService artifactService,
+            @Value("${agentos.runtime.max-concurrent-runs:128}") int maxConcurrentRuns,
+            @Value("${agentos.runtime.retention.max-invocations:10000}") int maxRetainedInvocations) {
         return new AgentRunner(
                 routingAgentLoop, agentEventPublisher, agentEventStore, checkpointStore,
-                sessionService, agentExecutionLimits, pluginManager, artifactService);
+                sessionService, agentExecutionLimits, pluginManager, artifactService,
+                maxConcurrentRuns, maxRetainedInvocations);
     }
 
     /**
@@ -410,8 +415,21 @@ public class AgentOsConfiguration {
      * 为 SSE Agent 运行创建轻量虚拟线程执行器。
      */
     @Bean(destroyMethod = "close")
-    ExecutorService agentStreamExecutor() {
-        return Executors.newVirtualThreadPerTaskExecutor();
+    ExecutorService agentStreamExecutor(
+            @Value("${agentos.runtime.stream.max-concurrent-runs:128}") int maxConcurrentRuns,
+            @Value("${agentos.runtime.stream.queue-capacity:256}") int queueCapacity) {
+        if (maxConcurrentRuns <= 0 || queueCapacity <= 0) {
+            throw new IllegalArgumentException(
+                    "stream max concurrency and queue capacity must be positive");
+        }
+        return new ThreadPoolExecutor(
+                maxConcurrentRuns,
+                maxConcurrentRuns,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queueCapacity),
+                Thread.ofVirtual().name("agent-run-", 0).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     /**
@@ -427,7 +445,11 @@ public class AgentOsConfiguration {
     AgentRunCoordinator agentRunCoordinator(
             AgentRunner runner,
             ExecutorService agentStreamExecutor,
-            AgentRunTaskRegistry taskRegistry) {
-        return new AgentRunCoordinator(runner, agentStreamExecutor, taskRegistry);
+            AgentRunTaskRegistry taskRegistry,
+            @Value("${agentos.runtime.retention.max-runs:1000}") int maxRetainedRuns,
+            @Value("${agentos.runtime.retention.max-events-per-run:2000}") int maxEventsPerRun) {
+        return new AgentRunCoordinator(
+                runner, agentStreamExecutor, taskRegistry,
+                maxRetainedRuns, maxEventsPerRun);
     }
 }

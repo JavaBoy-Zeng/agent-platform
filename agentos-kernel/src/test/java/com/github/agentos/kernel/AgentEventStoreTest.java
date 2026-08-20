@@ -2,12 +2,35 @@ package com.github.agentos.kernel;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** EventStore 轨迹查询测试。 */
 class AgentEventStoreTest {
+
+    @Test
+    void boundsEventCountsAndIndexKeys() {
+        InMemoryAgentEventStore store = new InMemoryAgentEventStore(2, 2, 2, 3);
+        store.append(event("event-1", "session-1", "invocation-1"));
+        store.append(event("event-2", "session-1", "invocation-1"));
+        store.append(event("event-3", "session-1", "invocation-1"));
+
+        assertThat(store.findByInvocationId("invocation-1"))
+                .extracting(AgentEvent::eventId)
+                .containsExactly("event-2", "event-3");
+        assertThat(store.findBySessionId("session-1")).hasSize(3);
+
+        store.append(event("event-4", "session-2", "invocation-2"));
+        store.append(event("event-5", "session-3", "invocation-3"));
+
+        assertThat(store.findByInvocationId("invocation-1")).isEmpty();
+        assertThat(store.findBySessionId("session-1")).isEmpty();
+        assertThat(store.findByInvocationId("invocation-2")).hasSize(1);
+        assertThat(store.findByInvocationId("invocation-3")).hasSize(1);
+    }
 
     @Test
     void restoresCompleteInvocationTraceAndAggregatesSessionRuns() {
@@ -46,5 +69,17 @@ class AgentEventStoreTest {
         assertThat(store.findBySessionId("same-session")).extracting(AgentEvent::invocationId)
                 .containsExactly(firstId, firstId, firstId, secondId, secondId, secondId);
         assertThat(store.findByInvocationId("missing")).isEqualTo(List.of());
+    }
+
+    private static AgentEvent event(String eventId, String sessionId, String invocationId) {
+        return new DefaultAgentEvent(
+                eventId,
+                sessionId,
+                invocationId,
+                "main-agent",
+                Instant.now(),
+                AgentEventType.AGENT_STARTED,
+                eventId,
+                Map.of());
     }
 }

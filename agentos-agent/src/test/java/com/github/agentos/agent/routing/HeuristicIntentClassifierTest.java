@@ -15,7 +15,12 @@ class HeuristicIntentClassifierTest {
     private static final String MESSAGE = "收到，已记录。";
 
     private final HeuristicIntentClassifier classifier =
-            new HeuristicIntentClassifier(16, MESSAGE, 64, "simple-qa-agent");
+            new HeuristicIntentClassifier(
+                    16, 64, "simple-qa-agent",
+                    "你好！有什么我可以帮你的吗？",
+                    "好的。",
+                    "不客气！有需要随时告诉我。",
+                    "晚安，祝你好梦。");
 
     // ---------- 寒暄/确认白名单命中 ----------
 
@@ -63,9 +68,36 @@ class HeuristicIntentClassifierTest {
 
     @Test
     void shortCircuitsThankYou() {
-        assertThat(classifier.classify(
+        IntentClassification result = classifier.classify(
                 new AgentRequest("s1", "thank you", Map.of()),
-                InvocationContext.of("main-agent")).isShortCircuit()).isTrue();
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.isShortCircuit()).isTrue();
+        assertThat(result.intent()).isEqualTo("trivial-thanks");
+        assertThat(result.directAnswer()).isEqualTo("不客气！有需要随时告诉我。");
+    }
+
+    @Test
+    void usesGreetingSpecificReply() {
+        IntentClassification result = classifier.classify(
+                new AgentRequest("s1", "你好", Map.of()),
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.intent()).isEqualTo("trivial-greeting");
+        assertThat(result.directAnswer()).isEqualTo("你好！有什么我可以帮你的吗？");
+    }
+
+    @Test
+    void routesContextualYesToSimpleQaWhenHistoryExists() {
+        for (String input : new String[] {"yes", "no", "好的", "ok"}) {
+            IntentClassification result = classifier.classify(
+                    new AgentRequest("s1", input, Map.of(
+                            "conversationHistory", "助手：要继续执行吗？")),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(result.isShortCircuit()).as(input).isFalse();
+            assertThat(result.agentId()).as(input).isEqualTo("simple-qa-agent");
+        }
     }
 
     @Test
@@ -190,6 +222,8 @@ class HeuristicIntentClassifierTest {
         for (String input : new String[] {
                 "查天气", "读一下这个文件", "创建一个文件", "git 提交一下",
                 "search for cats", "run the tests", "open the config",
+                "现在几点", "最新新闻", "黄金价格", "北京现在堵车吗",
+                "what is the latest news", "current gold price",
                 // 日期/时间类：直答模型不知道当前日期，必须走 current_date 工具
                 "今天几号", "今天是哪年哪月哪日", "今天是星期几", "what's today's date"}) {
             IntentClassification result = classifier.classify(
@@ -200,6 +234,15 @@ class HeuristicIntentClassifierTest {
                     .as("input '%s' must fall back to MainAgent", input)
                     .isFalse();
         }
+    }
+
+    @Test
+    void englishSignalsUseWordBoundaries() {
+        IntentClassification result = classifier.classify(
+                new AgentRequest("s1", "what is a thread", Map.of()),
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.agentId()).isEqualTo("simple-qa-agent");
     }
 
     @Test

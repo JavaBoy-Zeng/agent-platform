@@ -1,19 +1,34 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useLocale } from '../composables/useLocale.js'
+
+const { localeTag, t } = useLocale()
 
 const props = defineProps({
   sessions: { type: Array, required: true },
   currentSessionId: { type: String, default: '' },
-  busy: { type: Boolean, default: false }
+  loading: { type: Boolean, default: false },
+  hasMore: { type: Boolean, default: false },
+  historyError: { type: String, default: '' }
 })
 
-const emit = defineEmits(['select', 'create', 'rename', 'delete'])
+const emit = defineEmits(['select', 'create', 'rename', 'delete', 'delete-many', 'load-more'])
 const openSessionId = ref('')
 const editingSessionId = ref('')
 const draftTitle = ref('')
 const renameInput = ref(null)
 const pendingDeleteSession = ref(null)
 const deleteConfirmButton = ref(null)
+const selectionMode = ref(false)
+const selectedSessionIds = ref(new Set())
+const pendingBulkDeleteIds = ref([])
+const bulkDeleteConfirmButton = ref(null)
+
+const selectableSessions = computed(() => props.sessions.filter(session => !sessionBusy(session)))
+const selectedSessions = computed(() => props.sessions.filter(session =>
+  selectedSessionIds.value.has(session.id) && !sessionBusy(session)))
+const allSelectableSelected = computed(() => selectableSessions.value.length > 0
+  && selectableSessions.value.every(session => selectedSessionIds.value.has(session.id)))
 
 function setRenameInput(element) {
   renameInput.value = element
@@ -56,7 +71,7 @@ function commitRename(session) {
 
 async function requestDelete(session) {
   closeMenu()
-  if (props.busy && session.id === props.currentSessionId) return
+  if (sessionBusy(session)) return
   pendingDeleteSession.value = session
   await nextTick()
   deleteConfirmButton.value?.focus()
@@ -72,14 +87,63 @@ function confirmDelete() {
   closeDeleteDialog()
 }
 
+function enterSelectionMode() {
+  closeMenu()
+  cancelRename()
+  selectionMode.value = true
+}
+
+function exitSelectionMode() {
+  selectionMode.value = false
+  selectedSessionIds.value = new Set()
+}
+
+function toggleSessionSelection(session) {
+  if (sessionBusy(session)) return
+  const next = new Set(selectedSessionIds.value)
+  if (next.has(session.id)) next.delete(session.id)
+  else next.add(session.id)
+  selectedSessionIds.value = next
+}
+
+function toggleSelectAll() {
+  selectedSessionIds.value = allSelectableSelected.value
+    ? new Set()
+    : new Set(selectableSessions.value.map(session => session.id))
+}
+
+async function requestBulkDelete() {
+  const ids = selectedSessions.value.map(session => session.id)
+  if (!ids.length) return
+  pendingBulkDeleteIds.value = ids
+  await nextTick()
+  bulkDeleteConfirmButton.value?.focus()
+}
+
+function closeBulkDeleteDialog() {
+  pendingBulkDeleteIds.value = []
+}
+
+function confirmBulkDelete() {
+  if (!pendingBulkDeleteIds.value.length) return
+  emit('delete-many', [...pendingBulkDeleteIds.value])
+  closeBulkDeleteDialog()
+  exitSelectionMode()
+}
+
 function onDocumentKeydown(event) {
   if (event.key === 'Escape') {
+    if (pendingBulkDeleteIds.value.length) {
+      closeBulkDeleteDialog()
+      return
+    }
     if (pendingDeleteSession.value) {
       closeDeleteDialog()
       return
     }
     closeMenu()
     cancelRename()
+    if (selectionMode.value) exitSelectionMode()
   }
 }
 
@@ -95,7 +159,7 @@ onUnmounted(() => {
 
 function timeLabel(value) {
   if (!value) return '--:--'
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(localeTag.value, {
     hour: '2-digit', minute: '2-digit', hour12: false
   }).format(new Date(value))
 }
@@ -103,19 +167,52 @@ function timeLabel(value) {
 function stateLabel(session) {
   return session.state?.status || 'READY'
 }
+
+function sessionBusy(session) {
+  return Boolean(session.activeRunId || session.submitting)
+}
 </script>
 
 <template>
-  <aside class="session-rail reveal reveal-1" aria-label="会话列表">
+  <aside class="session-rail reveal reveal-1" :aria-label="t('会话列表')">
     <div class="rail-heading">
       <div>
         <span class="section-index">01</span>
-        <h2>会话档案</h2>
+        <h2>{{ selectionMode ? t('已选 {count} 个', { count: selectedSessions.length }) : t('会话') }}</h2>
       </div>
-      <span class="count-badge">{{ String(sessions.length).padStart(2, '0') }}</span>
+      <button
+        class="rail-select-toggle"
+        type="button"
+        :aria-label="t(selectionMode ? '退出多选' : '选择')"
+        @click="selectionMode ? exitSelectionMode() : enterSelectionMode()"
+      >
+        {{ t(selectionMode ? '取消' : '选择') }}
+      </button>
     </div>
 
-    <div class="session-list">
+    <div v-if="selectionMode" class="session-bulk-bar" role="toolbar" :aria-label="t('删除所选')">
+      <button
+        class="bulk-select-all"
+        type="button"
+        role="checkbox"
+        :aria-checked="allSelectableSelected"
+        @click="toggleSelectAll"
+      >
+        <span class="session-check" :class="{ checked: allSelectableSelected }" aria-hidden="true"></span>
+        {{ t(allSelectableSelected ? '取消全选' : '全选') }}
+      </button>
+      <button
+        class="bulk-delete-button"
+        type="button"
+        :disabled="selectedSessions.length === 0"
+        @click="requestBulkDelete"
+      >
+        {{ t('删除所选') }}
+        <span>{{ selectedSessions.length }}</span>
+      </button>
+    </div>
+
+    <div class="session-list" :aria-busy="loading">
       <div
         v-for="(session, index) in sessions"
         :key="session.id"
@@ -123,18 +220,33 @@ function stateLabel(session) {
         :class="{
           selected: session.id === currentSessionId,
           'menu-open': openSessionId === session.id,
-          editing: editingSessionId === session.id
+          editing: editingSessionId === session.id,
+          'selection-mode': selectionMode,
+          'bulk-selected': selectedSessionIds.has(session.id),
+          'bulk-disabled': selectionMode && sessionBusy(session)
         }"
       >
         <button
           v-if="editingSessionId !== session.id"
           class="session-select"
+          :class="{ 'selection-control': selectionMode }"
           type="button"
-          @click="selectSession(session.id)"
+          :role="selectionMode ? 'checkbox' : undefined"
+          :aria-checked="selectionMode ? selectedSessionIds.has(session.id) : undefined"
+          :aria-label="selectionMode ? t('选择会话：{title}', { title: t(session.title) }) : undefined"
+          :disabled="selectionMode && sessionBusy(session)"
+          :title="selectionMode && sessionBusy(session) ? t('运行中的会话不可选择') : ''"
+          @click="selectionMode ? toggleSessionSelection(session) : selectSession(session.id)"
         >
+          <span
+            v-if="selectionMode"
+            class="session-check"
+            :class="{ checked: selectedSessionIds.has(session.id) }"
+            aria-hidden="true"
+          ></span>
           <span class="session-sequence">{{ String(index + 1).padStart(2, '0') }}</span>
           <span class="session-copy">
-            <strong>{{ session.title }}</strong>
+            <strong>{{ t(session.title) }}</strong>
             <small>{{ session.id }}</small>
           </span>
           <span class="session-meta">
@@ -150,7 +262,7 @@ function stateLabel(session) {
               v-model="draftTitle"
               class="session-rename-input"
               maxlength="60"
-              aria-label="会话名称"
+              :aria-label="t('会话名称')"
               @keydown.enter.prevent="commitRename(session)"
               @keydown.esc.prevent="cancelRename"
               @blur="commitRename(session)"
@@ -159,13 +271,13 @@ function stateLabel(session) {
           </span>
         </div>
 
-        <div class="session-actions" @click.stop>
+        <div v-if="!selectionMode" class="session-actions" @click.stop>
           <button
             class="session-more"
             type="button"
             :aria-expanded="openSessionId === session.id"
-            :aria-label="`${session.title}的更多操作`"
-            title="更多操作"
+            :aria-label="t('更多操作：{title}', { title: t(session.title) })"
+            :title="t('更多操作')"
             @click="toggleMenu(session.id)"
           >
             <span></span><span></span><span></span>
@@ -173,32 +285,42 @@ function stateLabel(session) {
 
           <div v-if="openSessionId === session.id" class="session-menu" role="menu">
             <button type="button" role="menuitem" @click="startRename(session)">
-              <span aria-hidden="true">✎</span> 重命名
+              <span aria-hidden="true">✎</span> {{ t('重命名') }}
             </button>
             <button
               type="button"
               role="menuitem"
               class="danger"
-              :disabled="busy && session.id === currentSessionId"
-              :title="busy && session.id === currentSessionId ? '运行中的会话无法删除' : '删除会话'"
+              :disabled="sessionBusy(session)"
+              :title="t(sessionBusy(session) ? '运行中的会话无法删除' : '删除会话')"
               @click="requestDelete(session)"
             >
-              <span aria-hidden="true">⌫</span> 删除
+              <span aria-hidden="true">⌫</span> {{ t('删除') }}
             </button>
           </div>
         </div>
       </div>
+
+      <p v-if="historyError" class="session-history-note error" role="status">
+        {{ t(historyError) }}
+      </p>
+
+      <button
+        v-if="hasMore || loading"
+        class="session-load-more"
+        type="button"
+        :disabled="loading"
+        @click="emit('load-more')"
+      >
+        <span v-if="loading" class="session-loader" aria-hidden="true"></span>
+        {{ t(loading ? '正在读取会话…' : '加载更早会话') }}
+      </button>
     </div>
 
     <button class="rail-create" type="button" @click="$emit('create')">
-      <span>＋</span> 新建任务通道
+      <span>＋</span> {{ t('新建任务通道') }}
     </button>
 
-    <div class="rail-footer">
-      <span>LOCAL ARCHIVE</span>
-      <span class="storage-meter"><i></i></span>
-      <small>最近 20 个会话保存在浏览器</small>
-    </div>
   </aside>
 
   <Teleport to="body">
@@ -217,20 +339,57 @@ function stateLabel(session) {
         >
           <div class="confirm-dialog-icon" aria-hidden="true">⌫</div>
           <div class="confirm-dialog-copy">
-            <h2 id="deleteDialogTitle">删除这个会话？</h2>
+            <h2 id="deleteDialogTitle">{{ t('删除这个会话？') }}</h2>
             <p id="deleteDialogDescription">
-              “{{ pendingDeleteSession.title }}”及其中的运行记录将从浏览器中移除，此操作无法撤销。
+              {{ t('“{title}”将从服务端会话列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { title: t(pendingDeleteSession.title) }) }}
             </p>
           </div>
           <div class="confirm-dialog-actions">
-            <button type="button" class="dialog-cancel" @click="closeDeleteDialog">取消</button>
+            <button type="button" class="dialog-cancel" @click="closeDeleteDialog">{{ t('取消') }}</button>
             <button
               ref="deleteConfirmButton"
               type="button"
               class="dialog-confirm"
               @click="confirmDelete"
             >
-              删除
+              {{ t('删除') }}
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div
+        v-if="pendingBulkDeleteIds.length"
+        class="dialog-backdrop"
+        @click.self="closeBulkDeleteDialog"
+      >
+        <section
+          class="confirm-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="bulkDeleteDialogTitle"
+          aria-describedby="bulkDeleteDialogDescription"
+        >
+          <div class="confirm-dialog-icon" aria-hidden="true">⌫</div>
+          <div class="confirm-dialog-copy">
+            <h2 id="bulkDeleteDialogTitle">{{ t('批量删除会话？') }}</h2>
+            <p id="bulkDeleteDialogDescription">
+              {{ t('选中的 {count} 个会话将从服务端会话列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { count: pendingBulkDeleteIds.length }) }}
+            </p>
+          </div>
+          <div class="confirm-dialog-actions">
+            <button type="button" class="dialog-cancel" @click="closeBulkDeleteDialog">{{ t('取消') }}</button>
+            <button
+              ref="bulkDeleteConfirmButton"
+              type="button"
+              class="dialog-confirm"
+              @click="confirmBulkDelete"
+            >
+              {{ t('删除 {count} 个会话', { count: pendingBulkDeleteIds.length }) }}
             </button>
           </div>
         </section>

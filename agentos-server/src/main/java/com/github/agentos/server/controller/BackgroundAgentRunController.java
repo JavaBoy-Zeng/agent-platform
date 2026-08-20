@@ -47,6 +47,9 @@ public final class BackgroundAgentRunController {
                     .body(run);
         } catch (AgentRunCoordinator.SessionAlreadyRunningException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, exception.getMessage());
+        } catch (AgentRunCoordinator.RunCapacityExceededException exception) {
+            throw new ResponseStatusException(
+                    HttpStatus.TOO_MANY_REQUESTS, exception.getMessage());
         }
     }
 

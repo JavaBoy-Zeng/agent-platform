@@ -29,6 +29,34 @@ public interface SessionService {
     List<Session> recent(int limit);
 
     /**
+     * 按最后活跃时间倒序分页返回会话快照。
+     *
+     * @param offset 跳过的会话数量，必须大于等于 0
+     * @param limit 最大返回数量，必须为正数
+     */
+    default List<Session> recent(int offset, int limit) {
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must not be negative");
+        }
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        long requested = (long) offset + limit;
+        int fetchLimit = requested > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) requested;
+        return recent(fetchLimit).stream().skip(offset).limit(limit).toList();
+    }
+
+    /** 返回当前保存的会话总数。 */
+    default long count() {
+        return recent(Integer.MAX_VALUE).size();
+    }
+
+    /** 删除指定会话快照；不存在时返回 false。 */
+    default boolean delete(String sessionId) {
+        return false;
+    }
+
+    /**
      * 把状态增量合并进会话并刷新活跃时间。
      *
      * @param sessionId 会话标识

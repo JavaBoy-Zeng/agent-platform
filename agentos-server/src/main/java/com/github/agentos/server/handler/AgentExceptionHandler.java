@@ -1,5 +1,6 @@
 package com.github.agentos.server.handler;
 
+import com.github.agentos.kernel.AgentRunRejectedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -10,6 +11,28 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  */
 @RestControllerAdvice
 public class AgentExceptionHandler {
+
+    /** 将 Runner 的并发保护映射为稳定、可重试的 HTTP 状态。 */
+    @ExceptionHandler(AgentRunRejectedException.class)
+    ProblemDetail handleRunRejected(AgentRunRejectedException exception) {
+        HttpStatus status = exception.reason()
+                == AgentRunRejectedException.Reason.SESSION_BUSY
+                ? HttpStatus.CONFLICT : HttpStatus.TOO_MANY_REQUESTS;
+        ProblemDetail detail = ProblemDetail.forStatus(status);
+        detail.setTitle("Agent run rejected");
+        detail.setDetail(exception.getMessage());
+        return detail;
+    }
+
+    /** 异步执行队列已满时返回 429，避免把资源耗尽伪装成服务端故障。 */
+    @ExceptionHandler(java.util.concurrent.RejectedExecutionException.class)
+    ProblemDetail handleExecutionRejected(
+            java.util.concurrent.RejectedExecutionException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.TOO_MANY_REQUESTS);
+        detail.setTitle("Agent run queue is full");
+        detail.setDetail("Too many agent runs are active or queued; retry later");
+        return detail;
+    }
 
     /**
      * 创建 REST 异常转换器。

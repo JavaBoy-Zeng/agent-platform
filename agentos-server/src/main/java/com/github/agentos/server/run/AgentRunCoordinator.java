@@ -2,6 +2,7 @@ package com.github.agentos.server.run;
 
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentInvocation;
+import com.github.agentos.kernel.AgentEventPublisher;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRunner;
@@ -30,31 +31,54 @@ import java.util.concurrent.ExecutorService;
  */
 public final class AgentRunCoordinator {
 
+    private static final int DEFAULT_MAX_RETAINED_RUNS = 1_000;
+    private static final int DEFAULT_MAX_EVENTS_PER_RUN = 2_000;
+
     private final AgentRunner runner;
     private final ExecutorService executor;
     private final AgentRunTaskRegistry taskRegistry;
     private final ConcurrentMap<String, ManagedRun> runs = new ConcurrentHashMap<>();
+    private final int maxRetainedRuns;
+    private final int maxEventsPerRun;
 
     /** 创建后台运行协调器。 */
     public AgentRunCoordinator(
             AgentRunner runner,
             ExecutorService executor,
             AgentRunTaskRegistry taskRegistry) {
+        this(runner, executor, taskRegistry,
+                DEFAULT_MAX_RETAINED_RUNS, DEFAULT_MAX_EVENTS_PER_RUN);
+    }
+
+    /** 创建带运行记录和单次事件保留上限的后台运行协调器。 */
+    public AgentRunCoordinator(
+            AgentRunner runner,
+            ExecutorService executor,
+            AgentRunTaskRegistry taskRegistry,
+            int maxRetainedRuns,
+            int maxEventsPerRun) {
+        if (maxRetainedRuns <= 0 || maxEventsPerRun <= 0) {
+            throw new IllegalArgumentException("run and event retention limits must be positive");
+        }
         this.runner = Objects.requireNonNull(runner, "runner must not be null");
         this.executor = Objects.requireNonNull(executor, "executor must not be null");
         this.taskRegistry = Objects.requireNonNull(
                 taskRegistry, "taskRegistry must not be null");
+        this.maxRetainedRuns = maxRetainedRuns;
+        this.maxEventsPerRun = maxEventsPerRun;
     }
 
     /** 创建后台任务并立即返回可持久化的运行快照。 */
-    public RunSnapshot start(AgentRequest request, InvocationContext context) {
+    public synchronized RunSnapshot start(AgentRequest request, InvocationContext context) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
+        makeRoomForRun();
         String runId = UUID.randomUUID().toString();
         AgentState initialState = runner.state(request.sessionId())
                 .orElseGet(AgentState::ready)
                 .startNextIteration();
-        ManagedRun run = new ManagedRun(runId, request.sessionId(), initialState);
+        ManagedRun run = new ManagedRun(
+                runId, request.sessionId(), initialState, maxEventsPerRun);
         runs.put(runId, run);
 
         boolean started;
@@ -70,6 +94,16 @@ public final class AgentRunCoordinator {
             throw new SessionAlreadyRunningException(request.sessionId());
         }
         return run.snapshot(null);
+    }
+
+    private void makeRoomForRun() {
+        while (runs.size() >= maxRetainedRuns) {
+            ManagedRun oldestTerminal = runs.values().stream()
+                    .filter(ManagedRun::terminal)
+                    .min(java.util.Comparator.comparing(ManagedRun::createdAt))
+                    .orElseThrow(() -> new RunCapacityExceededException(maxRetainedRuns));
+            runs.remove(oldestTerminal.runId(), oldestTerminal);
+        }
     }
 
     /** 查询后台运行快照。 */
@@ -136,8 +170,12 @@ public final class AgentRunCoordinator {
 
     private void execute(ManagedRun run, AgentRequest request, InvocationContext context) {
         try {
-            AgentState state = runner.run(request, context, run::publish);
-            run.finish(state, currentInvocation(run));
+            AgentRunner.AgentRunResult result = runner.runDetailed(
+                    request, context, run::publish,
+                    AgentEventPublisher.NOOP);
+            run.finish(
+                    result.state(),
+                    runner.invocation(result.invocationId()).orElse(null));
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName()
@@ -190,9 +228,17 @@ public final class AgentRunCoordinator {
         }
     }
 
+    /** 保留表已满且没有可淘汰的终态运行。 */
+    public static final class RunCapacityExceededException extends RuntimeException {
+        public RunCapacityExceededException(int capacity) {
+            super("agent run retention capacity exceeded: " + capacity);
+        }
+    }
+
     private static final class ManagedRun {
         private final String runId;
         private final String sessionId;
+        private final int maxEvents;
         private final Instant createdAt = Instant.now();
         private final List<SequencedRunEvent> events = new ArrayList<>();
         private final List<Subscriber> subscribers = new ArrayList<>();
@@ -203,10 +249,11 @@ public final class AgentRunCoordinator {
         private Instant updatedAt;
         private boolean terminal;
 
-        ManagedRun(String runId, String sessionId, AgentState initialState) {
+        ManagedRun(String runId, String sessionId, AgentState initialState, int maxEvents) {
             this.runId = runId;
             this.sessionId = sessionId;
             this.state = initialState;
+            this.maxEvents = maxEvents;
             this.updatedAt = createdAt;
         }
 
@@ -226,7 +273,7 @@ public final class AgentRunCoordinator {
             RunSnapshot snapshot = snapshot(invocation);
             SequencedRunEvent event = new SequencedRunEvent(
                     nextSequence, "state", updatedAt, snapshot);
-            events.add(event);
+            addRetainedEvent(event);
             broadcast(event);
             List.copyOf(subscribers).forEach(Subscriber::complete);
             subscribers.clear();
@@ -272,12 +319,23 @@ public final class AgentRunCoordinator {
             return createdAt;
         }
 
+        String runId() {
+            return runId;
+        }
+
         private void append(String type, Object data) {
             updatedAt = Instant.now();
             SequencedRunEvent event = new SequencedRunEvent(
                     ++sequence, type, updatedAt, data);
-            events.add(event);
+            addRetainedEvent(event);
             broadcast(event);
+        }
+
+        private void addRetainedEvent(SequencedRunEvent event) {
+            events.add(event);
+            if (events.size() > maxEvents) {
+                events.remove(0);
+            }
         }
 
         private void broadcast(SequencedRunEvent event) {

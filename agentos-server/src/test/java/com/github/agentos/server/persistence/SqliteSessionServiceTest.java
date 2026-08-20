@@ -85,6 +85,9 @@ class SqliteSessionServiceTest {
                 .containsExactly("session-2", "session-1");
         assertThat(service.recent(1)).extracting(Session::sessionId)
                 .containsExactly("session-2");
+        assertThat(service.count()).isEqualTo(2);
+        assertThat(service.recent(1, 1)).extracting(Session::sessionId)
+                .containsExactly("session-1");
     }
 
     @Test
@@ -94,5 +97,18 @@ class SqliteSessionServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.recent(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("limit must be positive");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.recent(-1, 10))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("offset must not be negative");
+    }
+
+    @Test
+    void deleteRemovesPersistedSessionSnapshot() {
+        SqliteSessionService service = service(tempDir.resolve("sessions.sqlite"));
+        service.getOrCreate("session-1", "user-1");
+
+        assertThat(service.delete("session-1")).isTrue();
+        assertThat(service.delete("session-1")).isFalse();
+        assertThat(service.find("session-1")).isEmpty();
     }
 }
