@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getPendingAction, resolvePendingAction } from '../services/agentApi.js'
 import { useLocale } from '../composables/useLocale.js'
@@ -16,6 +16,7 @@ const section = computed(() => route.meta.section)
 const sessions = consoleState.sessions
 const selectedSessionId = ref(consoleState.currentSessionId.value || sessions.value[0]?.id || '')
 const sessionMenuOpen = ref(false)
+const sessionPicker = ref(null)
 const catalog = ref(null)
 const data = ref(null)
 const loading = ref(false)
@@ -117,7 +118,7 @@ const planTraces = computed(() => {
 
 const invocationOptions = computed(() => (data.value?.events || []).map(trace => ({
   invocationId: trace.invocationId,
-  label: `${trace.invocationId.slice(0, 8)} · ${trace.eventCount} events`,
+  label: `${trace.invocationId.slice(0, 8)} · ${t('{count} 个事件', { count: String(trace.eventCount) })}`,
   terminalType: trace.terminalType
 })))
 
@@ -162,6 +163,7 @@ const isEmpty = computed(() => ({
   traces: !data.value?.traces?.length,
   artifacts: !data.value?.artifacts?.length,
   approvals: !data.value?.approvals?.length
+  // evals 的空态由 eval-hint 内联说明承担，不再叠加通用空态卡片。
 }[section.value] || false))
 
 function formatDate(value) {
@@ -348,7 +350,19 @@ watch(sessions, items => {
     if (page.value.session) load()
   }
 })
-onMounted(load)</script>
+
+/** 点击选择器之外即收起会话下拉，与 SessionRail 的菜单行为保持一致。 */
+function closeSessionMenu(event) {
+  if (!sessionMenuOpen.value) return
+  if (sessionPicker.value?.contains(event.target)) return
+  sessionMenuOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('click', closeSessionMenu)
+  load()
+})
+onUnmounted(() => document.removeEventListener('click', closeSessionMenu))</script>
 
 <template>
   <section class="management-view" :aria-labelledby="`${section}-title`">
@@ -360,7 +374,7 @@ onMounted(load)</script>
         <p>{{ page.description }}</p>
       </div>
       <div class="page-actions">
-        <div v-if="page.session" class="session-picker" @keydown.esc="sessionMenuOpen = false">
+        <div v-if="page.session" ref="sessionPicker" class="session-picker" @keydown.esc="sessionMenuOpen = false">
           <button type="button" aria-haspopup="listbox" :aria-expanded="sessionMenuOpen" @click="sessionMenuOpen = !sessionMenuOpen">
             <span><small>SESSION SCOPE</small><strong>{{ sessionLabel }}</strong></span>
             <svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg>
@@ -476,16 +490,17 @@ onMounted(load)</script>
 
       <div v-else-if="section === 'evals'" class="eval-layout">
         <form class="eval-form" @submit.prevent="runEvaluation">
-          <label><small>INVOCATION</small>
-            <select v-model="evalTarget">
+          <label><small>{{ t('执行调用') }}</small>
+            <select v-model="evalTarget" :disabled="!invocationOptions.length">
+              <option value="" disabled>{{ t(invocationOptions.length ? '选择一次执行调用' : '当前会话暂无可评估的调用') }}</option>
               <option v-for="option in invocationOptions" :key="option.invocationId" :value="option.invocationId">{{ option.label }}</option>
             </select>
           </label>
-          <label><small>CASE ID</small><input v-model="evalForm.caseId" type="text" /></label>
-          <label><small>EXPECTED TOOL SEQUENCE</small><input v-model="evalForm.expectedToolSequence" type="text" placeholder="web_search, file_write" /></label>
-          <label><small>FORBIDDEN TOOLS</small><input v-model="evalForm.forbiddenTools" type="text" placeholder="run_command" /></label>
-          <label><small>MAX TOOL CALLS</small><input v-model="evalForm.maxToolCalls" type="number" min="1" :placeholder="t('不限制')" /></label>
-          <label><small>RESPONSE KEYWORDS</small><input v-model="evalForm.requiredResponseKeywords" type="text" :placeholder="t('结论, 建议')" /></label>
+          <label><small>{{ t('用例标识') }}</small><input v-model="evalForm.caseId" type="text" /></label>
+          <label><small>{{ t('期望工具序列') }}</small><input v-model="evalForm.expectedToolSequence" type="text" placeholder="web_search, file_write" /></label>
+          <label><small>{{ t('禁用工具') }}</small><input v-model="evalForm.forbiddenTools" type="text" placeholder="run_command" /></label>
+          <label><small>{{ t('最大工具调用数') }}</small><input v-model="evalForm.maxToolCalls" type="number" min="1" :placeholder="t('不限制')" /></label>
+          <label><small>{{ t('回答关键词') }}</small><input v-model="evalForm.requiredResponseKeywords" type="text" :placeholder="t('结论, 建议')" /></label>
           <label class="eval-check"><input v-model="evalForm.requireCompleted" type="checkbox" /><span>{{ t('要求运行成功收口') }}</span></label>
           <button type="submit" :disabled="!evalTarget || evalBusy">{{ t(evalBusy ? '评估中…' : '运行评估') }}</button>
         </form>
@@ -496,8 +511,8 @@ onMounted(load)</script>
             <strong>{{ (evalResult.score * 100).toFixed(0) }}%</strong>
           </header>
           <dl>
-            <div><dt>Tool calls</dt><dd>{{ evalResult.toolCallCount }} ({{ t('失败 {count}', { count: String(evalResult.failedToolCallCount) }) }})</dd></div>
-            <div><dt>Trajectory</dt><dd>{{ evalResult.actualToolSequence.join(' → ') || '—' }}</dd></div>
+            <div><dt>{{ t('工具调用') }}</dt><dd>{{ evalResult.toolCallCount }} ({{ t('失败 {count}', { count: String(evalResult.failedToolCallCount) }) }})</dd></div>
+            <div><dt>{{ t('执行轨迹') }}</dt><dd>{{ evalResult.actualToolSequence.join(' → ') || '—' }}</dd></div>
           </dl>
           <ul>
             <li v-for="finding in evalResult.findings" :key="finding.check" :class="finding.passed ? 'passed' : 'failed'">
