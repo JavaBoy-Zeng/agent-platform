@@ -236,6 +236,30 @@ class HeuristicIntentClassifierTest {
         }
     }
 
+    /**
+     * 把上一轮结论落盘的请求（“写成 md 文档放到桌面”）短且无动词式信号词，
+     * 曾被判为简单问答走无工具直答，模型只能回答“我无法保存文件”。
+     * 产出落盘类信号必须进入复杂任务链路。
+     */
+    @Test
+    void artifactRequestsFallBackInsteadOfSimpleQa() {
+        for (String input : new String[] {
+                "是否可以写成md文档 给我放在桌面",
+                "帮我整理成一份文档",
+                "导出成 markdown",
+                "存到桌面",
+                "把结论放在桌面上",
+                "export it to my desktop"}) {
+            IntentClassification result = classifier.classify(
+                    new AgentRequest("s1", input, Map.of()),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(result.hasAgentTarget())
+                    .as("input '%s' must fall back to the tool-capable path", input)
+                    .isFalse();
+        }
+    }
+
     @Test
     void englishSignalsUseWordBoundaries() {
         IntentClassification result = classifier.classify(

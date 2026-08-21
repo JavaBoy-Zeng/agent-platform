@@ -68,6 +68,9 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             "搜一下", "读取", "读一下", "写入", "写一下", "创建", "新建", "删除", "删掉",
             "移除", "提交", "推送", "列出", "列一下", "执行", "运行", "调用", "保存", "下载",
             "上传", "发送", "复制", "重命名", "安装", "部署", "打开",
+            // 产出落盘：把结果写成文件、放到某个位置，都必须走工具链路
+            "写成", "整理成", "导出", "另存", "存到", "存一下", "存成", "放在", "放到",
+            "文档", "桌面", "markdown",
             // 实时/领域信息
             "天气", "温度", "气温", "多少度", "下雨", "股价", "股票", "上证", "汇率", "湿度",
             "现在", "当前", "实时", "最新", "最近", "新闻", "资讯", "价格", "行情",
@@ -85,7 +88,9 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             // 常见英文动作动词（按单词/短语边界匹配）
             "weather", "search", "commit", "push", "read", "write", "create", "delete",
             "remove", "list", "run", "execute", "save", "open", "send", "copy", "move",
-            "download", "upload", "print", "find");
+            "download", "upload", "print", "find",
+            // 英文产出落盘
+            "export", "desktop");
 
     private final int maxChars;
     private final int simpleQaMaxChars;
