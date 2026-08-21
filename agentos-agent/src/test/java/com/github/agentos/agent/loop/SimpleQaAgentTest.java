@@ -72,6 +72,56 @@ class SimpleQaAgentTest {
         });
     }
 
+    /**
+     * 直答通道没有工具，但它仍是本机 Agent 平台的一部分。指令若只说“你无法获取”，
+     * 模型会自称云端服务并教用户手工操作；必须让它把限制归因于本轮通道并引导重试。
+     */
+    @Test
+    void instructionForbidsClaimingToBeACloudServiceWithoutLocalAccess() {
+        List<LlmRequest> requests = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, request) -> {
+            requests.add(request);
+            return "ok";
+        });
+
+        agent.run(
+                new AgentRequest("s1", "什么是 JVM", Map.of()),
+                InvocationContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                AgentEventSink.NOOP);
+
+        String instruction = requests.getFirst().instruction().orElseThrow();
+        assertThat(instruction)
+                .contains("运行在用户本机")
+                .contains("禁止声称自己是云端服务")
+                .contains("本轮无法调用");
+    }
+
+    /**
+     * 直答通道曾在用户说过“我叫曾智”的下一轮回答“每次对话都是独立的”，
+     * 并把“曾智”截成“智”。指令必须要求它使用历史里的稳定事实。
+     */
+    @Test
+    void instructionRequiresUsingConversationHistoryFacts() {
+        List<LlmRequest> requests = new ArrayList<>();
+        SimpleQaAgent agent = new SimpleQaAgent((s, request) -> {
+            requests.add(request);
+            return "ok";
+        });
+
+        agent.run(
+                new AgentRequest("s1", "我是谁", Map.of()),
+                InvocationContext.of("main-agent"),
+                AgentState.ready().startNextIteration(),
+                AgentEventSink.NOOP);
+
+        assertThat(requests.getFirst().instruction().orElseThrow())
+                .contains("本会话真实")
+                .contains("不要重复询问")
+                .contains("不要截取其中一个字当作称呼")
+                .contains("禁止声称“每次对话都是独立的”");
+    }
+
     @Test
     void failsWithTerminalStateWhenChatClientErrors() {
         List<AgentRunEvent> events = new ArrayList<>();

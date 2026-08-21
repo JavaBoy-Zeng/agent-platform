@@ -205,6 +205,32 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             - 禁止根据未读取的区间推测、补写或声称已经得到完整结果；
             - 只有续读链已经到达 hasMore=false 且不存在未消费的待续读位置，才可以
               基于完整内容返回 COMPLETE。
+
+        22. 上下文中的 runtimeEnvironment 描述工具真实的执行位置与平台惯例，属于已确认的
+            运行时事实：
+            - 工具在用户本机的本地进程中执行，可以操作本机文件、启动本机程序与 GUI 应用；
+              因此禁止以“你是云端服务”“无法访问用户电脑”为理由，把本机操作类目标
+              （打开浏览器、启动本地程序、查看本地文件）判定为无法完成；
+            - 生成命令与代码时必须遵循 shellConventions 列出的平台惯例，
+              禁止跨平台套用（例如在 Windows 上使用 python3 或 /bin/sh）；
+            - 只有当所需工具确实未注册时，才可以判定目标无法完成，并说明缺少哪个能力。
+
+        23. 区分“打开界面”和“获取内容”这两类动作：
+            用 run_command 启动浏览器只产生 GUI 副作用，页面内容不会回到你的上下文。
+            当用户要求基于网上资料回答时，必须用 web_fetch（或已注册的 web_search）
+            真实取回正文，再基于返回内容作答。
+            禁止在没有取回内容的情况下声称已经检索、已参考资料或已核对来源；
+            若只用内部知识作答，必须如实说明这一点。
+            同时，工具清单里存在联网工具时，不得声称“当前环境不支持联网检索”。
+
+        24. 上下文中的 conversationHistory 是本会话已经发生过的真实轮次
+            （“用户：…/助手：…”，从早到晚），属于已确认的运行时事实：
+            - 必须据此解析指代与省略（“那明天呢”“还是刚才那个”）；
+            - 用户在历史中陈述过的稳定事实（姓名、称呼、偏好、目标）必须直接采用，
+              不得再次询问，也不得当作对第三方的查询；
+            - 中文姓名默认“姓+名”整体使用，禁止截取其中一个字当作称呼；
+            - 禁止声称“每次对话都是独立的”“我不会记住任何信息”；
+              会话历史与记忆存在时，如实使用它们。
         """;
 
 
@@ -333,12 +359,64 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         return body;
     }
 
+    /**
+     * 描述工具真实的运行位置与平台惯例。
+     *
+     * <p>规划器只看得到工具名和参数，看不到工具落在哪台机器上，容易按“我是云端服务”
+     * 的先验拒绝本机操作类目标（打开浏览器、启动本地程序），或者生成跨平台不通的
+     * 命令（Windows 上的 {@code python3}、{@code /bin/sh}）。把执行环境作为运行时
+     * 事实注入上下文，让平台差异由事实而非猜测决定。</p>
+     */
+    private static Map<String, Object> runtimeEnvironment() {
+        String osName = System.getProperty("os.name", "unknown");
+        boolean windows = osName.toLowerCase(java.util.Locale.ROOT).contains("win");
+        return Map.of(
+                "osName", osName,
+                "osVersion", System.getProperty("os.version", "unknown"),
+                "workingDirectory", System.getProperty("user.dir", "unknown"),
+                "toolExecutionHost",
+                "工具在这台机器的本地进程中执行，与用户是同一台机器；"
+                        + "因此可以操作本机文件、启动本机程序与 GUI 应用（如浏览器）。"
+                        + "不要以“无法访问用户电脑”为由拒绝本机操作类目标。",
+                "shellConventions", windows
+                        ? List.of(
+                                "run_command 经 cmd /c 执行，需使用 Windows 命令语法",
+                                "Python 解释器为 python，不是 python3（python3 会命中 "
+                                        + "Microsoft Store 别名占位程序，不执行脚本）",
+                                "打开 URL 或本机程序使用 start，例如："
+                                        + "start chrome \"https://www.google.com/search?q=agent\"；"
+                                        + "start 经注册表解析程序名，不要硬编码安装路径",
+                                "路径分隔符为反斜杠，含空格的路径需加引号")
+                        : List.of(
+                                "run_command 经 /bin/sh -c 执行，使用 POSIX 命令语法",
+                                "Python 解释器为 python3",
+                                "打开 URL 使用 xdg-open（Linux）或 open（macOS）"));
+    }
+
+    /**
+     * 读取请求属性中的会话历史。
+     *
+     * <p>历史由服务端在运行入口注入，属于已确认的运行时事实；抬到顶层键是为了
+     * 让规划器把“我叫曾智”这类跨轮事实当成上下文，而不是当成一段无关属性。</p>
+     */
+    private static java.util.Optional<String> conversationHistory(PlanningRequest request) {
+        Object history = request.agentRequest().attributes()
+                .get(com.github.agentos.planner.flow.HistoryProcessor
+                        .CONVERSATION_HISTORY_ATTRIBUTE);
+        return history instanceof String text && !text.isBlank()
+                ? java.util.Optional.of(text)
+                : java.util.Optional.empty();
+    }
+
     private String userPrompt(PlanningRequest request, Map<String, Object> schema) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("request", Map.of(
                 "sessionId", request.agentRequest().sessionId(),
                 "objective", request.agentRequest().objective(),
                 "attributes", request.agentRequest().attributes()));
+        // 会话历史提升为一级键：埋在 attributes 里时模型经常忽略，指代与身份类目标会失忆。
+        conversationHistory(request).ifPresent(
+                history -> context.put("conversationHistory", history));
         if (request.replanning()) {
             context.put("decisionRequired", true);
             context.put("executionSnapshot", snapshotContext(request.executionSnapshot()));
@@ -351,6 +429,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 "taskId", request.agentContext().taskId()));
         context.put("memory", request.memoryContext().formattedContext());
         context.put("memoryDegraded", request.memoryContext().degraded());
+        context.put("runtimeEnvironment", runtimeEnvironment());
         context.put("availableTools", request.availableTools());
         context.put("maxSteps", request.maxSteps());
 
