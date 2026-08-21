@@ -2,7 +2,9 @@ package com.github.agentos.server.history;
 
 import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventType;
+import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.InMemoryAgentEventStore;
+import com.github.agentos.planner.flow.HistoryProcessor;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -90,6 +92,46 @@ class SessionHistoryServiceTest {
         assertThat(history).hasValueSatisfying(text -> assertThat(text)
                 .startsWith("用户：第一个问题")
                 .endsWith("助手：第二个回答"));
+    }
+
+    /**
+     * 每个创建运行的入口都要靠这一个注入点补历史。曾经只有 /api/agents/runs 注入，
+     * 控制台实际走的后台运行入口没有，导致“我叫曾智”下一轮就失忆。
+     */
+    @Test
+    void injectsHistoryIntoRequestAttributes() {
+        append("i1", AgentEventType.AGENT_STARTED, "我叫曾智", 1);
+        append("i1", AgentEventType.AGENT_COMPLETED, "你好，曾智。", 2);
+
+        AgentRequest enriched = service.withHistory(AgentRequest.of("session-1", "我是谁"));
+
+        assertThat(enriched.objective()).isEqualTo("我是谁");
+        assertThat(enriched.attributes())
+                .containsEntry(
+                        HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
+                        "用户：我叫曾智\n助手：你好，曾智。");
+    }
+
+    @Test
+    void keepsRequestUnchangedWhenSessionHasNoHistory() {
+        AgentRequest request = new AgentRequest(
+                "session-1", "你好", Map.of("source", "agentos-console"));
+
+        AgentRequest enriched = service.withHistory(request);
+
+        assertThat(enriched).isSameAs(request);
+    }
+
+    @Test
+    void preservesCallerSuppliedHistory() {
+        append("i1", AgentEventType.AGENT_STARTED, "事件里的问题", 1);
+        append("i1", AgentEventType.AGENT_COMPLETED, "事件里的回答", 2);
+        AgentRequest request = new AgentRequest("session-1", "我是谁", Map.of(
+                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, "用户：外部历史"));
+
+        assertThat(service.withHistory(request).attributes())
+                .containsEntry(
+                        HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, "用户：外部历史");
     }
 
     private void append(String invocationId, AgentEventType type, String message, long epochSecond) {

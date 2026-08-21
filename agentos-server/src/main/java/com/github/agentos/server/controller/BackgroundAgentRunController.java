@@ -2,6 +2,7 @@ package com.github.agentos.server.controller;
 
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.run.AgentRunCoordinator;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -28,10 +29,13 @@ import java.util.UUID;
 public final class BackgroundAgentRunController {
 
     private final AgentRunCoordinator coordinator;
+    private final SessionHistoryService sessionHistoryService;
 
     /** 创建后台运行控制器。 */
-    public BackgroundAgentRunController(AgentRunCoordinator coordinator) {
+    public BackgroundAgentRunController(
+            AgentRunCoordinator coordinator, SessionHistoryService sessionHistoryService) {
         this.coordinator = coordinator;
+        this.sessionHistoryService = sessionHistoryService;
     }
 
     /** 创建与 HTTP 连接生命周期无关的后台运行。 */
@@ -87,14 +91,17 @@ public final class BackgroundAgentRunController {
                 result.interruptRequested() ? HttpStatus.ACCEPTED : HttpStatus.OK).body(result);
     }
 
-    private static RunInvocation normalize(StartRunRequest body) {
+    private RunInvocation normalize(StartRunRequest body) {
         if (body == null || body.input() == null || body.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
         }
         String sessionId = textOr(body.sessionId(), UUID.randomUUID().toString());
+        // 后台运行是控制台唯一的运行入口，必须在这里注入会话历史，否则每轮都是新对话。
+        AgentRequest request = sessionHistoryService.withHistory(new AgentRequest(
+                sessionId, body.input(),
+                body.attributes() == null ? Map.of() : body.attributes()));
         return new RunInvocation(
-                new AgentRequest(sessionId, body.input(),
-                        body.attributes() == null ? Map.of() : body.attributes()),
+                request,
                 new InvocationContext(
                         textOr(body.teamId(), "default-team"),
                         textOr(body.userId(), "default-user"),

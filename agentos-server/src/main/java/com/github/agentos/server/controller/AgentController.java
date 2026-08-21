@@ -12,7 +12,6 @@ import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRunStatus;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
-import com.github.agentos.planner.flow.HistoryProcessor;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.ResponseEntity;
@@ -183,13 +182,12 @@ public class AgentController {
                 ? "default-user"
                 : request.userId();
         String taskId = request.taskId() == null ? "" : request.taskId();
-        Map<String, Object> attributes = new java.util.LinkedHashMap<>(
-                request.attributes() == null ? Map.of() : request.attributes());
-        // 注入会话历史：直答路径据此理解指代，规划路径随 attributes 进入规划上下文。
-        sessionHistoryService.history(sessionId).ifPresent(history -> attributes.put(
-                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, history));
+        // 会话历史由统一注入点补齐：直答路径展开为原生多轮消息，规划路径随 attributes 下传。
+        AgentRequest agentRequest = sessionHistoryService.withHistory(new AgentRequest(
+                sessionId, request.input(),
+                request.attributes() == null ? Map.of() : request.attributes()));
         return new RunInvocation(
-                new AgentRequest(sessionId, request.input(), attributes),
+                agentRequest,
                 new InvocationContext(teamId, userId, agentId, taskId));
     }
 

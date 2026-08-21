@@ -6,6 +6,7 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.server.controller.AgentEventStreamController;
+import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -32,7 +33,10 @@ class AgentEventStreamControllerTest {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
                     new AgentEventStreamController(
-                            new AgentRunner(loop), executor, new AgentRunTaskRegistry())).build();
+                            new AgentRunner(loop), executor, new AgentRunTaskRegistry(),
+                            new SessionHistoryService(
+                                    new com.github.agentos.kernel.InMemoryAgentEventStore(),
+                                    5, 400))).build();
             MvcResult started = mvc.perform(post("/api/agents/runs/event-stream")
                             .contentType(MediaType.APPLICATION_JSON)
                             .accept(MediaType.TEXT_EVENT_STREAM)

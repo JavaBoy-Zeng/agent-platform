@@ -3,6 +3,8 @@ package com.github.agentos.server.history;
 import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentEventType;
+import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.planner.flow.HistoryProcessor;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -20,8 +22,10 @@ import java.util.Optional;
  * 配对成完整轮次，格式化为从早到晚的多行文本。简单问答路径不写 L0 记忆，
  * 事件存储是唯一覆盖全部路由分支（含直答与短路）的会话轨迹来源。</p>
  *
- * <p>输出通过 {@link com.github.agentos.agent.loop.SimpleQaAgent#CONVERSATION_HISTORY_ATTRIBUTE}
- * 注入请求属性：直答路径拼接进 prompt，规划路径随 attributes 进入规划上下文。</p>
+ * <p>输出通过 {@link HistoryProcessor#CONVERSATION_HISTORY_ATTRIBUTE}
+ * 注入请求属性：直答路径展开为原生多轮消息，规划路径随 attributes 进入规划上下文。
+ * 每个创建运行的入口都必须经过 {@link #withHistory(AgentRequest)}，否则该入口的会话
+ * 会退化成“每轮都是新对话”。</p>
  */
 public final class SessionHistoryService {
 
@@ -55,6 +59,31 @@ public final class SessionHistoryService {
             return Optional.empty();
         }
         return Optional.of(String.join("\n", lines));
+    }
+
+    /**
+     * 返回已注入会话历史属性的请求；无历史或调用方已显式提供该属性时原样返回。
+     *
+     * <p>所有创建运行的入口共用这一个注入点：历史是运行时事实，不能依赖各控制器
+     * 各自记得拼装。调用方自带的历史优先，便于测试与外部编排覆盖。</p>
+     *
+     * @param request 原始 Agent 请求
+     * @return 带 {@code conversationHistory} 属性的请求
+     */
+    public AgentRequest withHistory(AgentRequest request) {
+        Objects.requireNonNull(request, "request must not be null");
+        if (request.attributes().get(
+                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE) instanceof String existing
+                && !existing.isBlank()) {
+            return request;
+        }
+        Optional<String> history = history(request.sessionId());
+        if (history.isEmpty()) {
+            return request;
+        }
+        Map<String, Object> attributes = new LinkedHashMap<>(request.attributes());
+        attributes.put(HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, history.get());
+        return new AgentRequest(request.sessionId(), request.objective(), attributes);
     }
 
     private List<String> formatTurns(List<AgentEvent> events) {

@@ -6,6 +6,7 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -31,14 +32,17 @@ public final class AgentEventStreamController {
     private final AgentRunner runner;
     private final ExecutorService executor;
     private final AgentRunTaskRegistry taskRegistry;
+    private final SessionHistoryService sessionHistoryService;
 
     /** 创建领域事件 SSE 控制器。 */
     public AgentEventStreamController(
             AgentRunner runner, ExecutorService executor,
-            AgentRunTaskRegistry taskRegistry) {
+            AgentRunTaskRegistry taskRegistry,
+            SessionHistoryService sessionHistoryService) {
         this.runner = runner;
         this.executor = executor;
         this.taskRegistry = taskRegistry;
+        this.sessionHistoryService = sessionHistoryService;
     }
 
     /**
@@ -111,7 +115,7 @@ public final class AgentEventStreamController {
         }
     }
 
-    private static EventStreamInvocation normalize(EventStreamRequest body) {
+    private EventStreamInvocation normalize(EventStreamRequest body) {
         if (body == null || body.input() == null || body.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
         }
@@ -120,8 +124,8 @@ public final class AgentEventStreamController {
         String teamId = textOr(body.teamId(), "default-team");
         String userId = textOr(body.userId(), "default-user");
         return new EventStreamInvocation(
-                new AgentRequest(sessionId, body.input(),
-                        body.attributes() == null ? Map.of() : body.attributes()),
+                sessionHistoryService.withHistory(new AgentRequest(sessionId, body.input(),
+                        body.attributes() == null ? Map.of() : body.attributes())),
                 new InvocationContext(teamId, userId, agentId,
                         body.taskId() == null ? "" : body.taskId()));
     }

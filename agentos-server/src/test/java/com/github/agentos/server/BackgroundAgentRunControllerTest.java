@@ -7,7 +7,9 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.server.controller.BackgroundAgentRunController;
+import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.AgentRunCoordinator;
 import com.jayway.jsonpath.JsonPath;
@@ -67,7 +69,7 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry(), 1, 2);
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                    new BackgroundAgentRunController(coordinator)).build();
+                    new BackgroundAgentRunController(coordinator, historyService())).build();
 
             AgentRunCoordinator.RunSnapshot first = coordinator.start(
                     AgentRequest.of("retention-1", "first"),
@@ -125,7 +127,7 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry());
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                    new BackgroundAgentRunController(coordinator)).build();
+                    new BackgroundAgentRunController(coordinator, historyService())).build();
 
             String body = mvc.perform(post("/api/agent-runs")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -217,7 +219,7 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry());
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                    new BackgroundAgentRunController(coordinator)).build();
+                    new BackgroundAgentRunController(coordinator, historyService())).build();
 
             AgentRunCoordinator.RunSnapshot first = coordinator.start(
                     new AgentRequest("list-1", "hello", Map.of()),
@@ -237,6 +239,57 @@ class BackgroundAgentRunControllerTest {
                     .andExpect(jsonPath("$[1].sessionId").value("list-1"))
                     .andExpect(jsonPath("$[0].state.status").value("COMPLETED"));
         }
+    }
+
+    /**
+     * 控制台只走后台运行入口。这里曾经不注入会话历史，导致“我叫曾智”下一轮就失忆，
+     * 模型甚至声称“每次对话都是独立的”。运行入口必须携带历史属性。
+     */
+    @Test
+    void injectsConversationHistoryIntoBackgroundRuns() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<AgentRequest> observed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AgentLoop loop = (request, context, runningState) -> {
+            observed.set(request);
+            return runningState.complete("你好，曾智。");
+        };
+        InMemoryAgentEventStore eventStore = new InMemoryAgentEventStore();
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRunner runner = new AgentRunner(
+                    loop, com.github.agentos.kernel.AgentEventPublisher.NOOP, eventStore);
+            AgentRunCoordinator coordinator = new AgentRunCoordinator(
+                    runner, executor, new AgentRunTaskRegistry());
+            MockMvc mvc = MockMvcBuilders.standaloneSetup(new BackgroundAgentRunController(
+                    coordinator, new SessionHistoryService(eventStore, 5, 400))).build();
+
+            String firstRunId = JsonPath.read(mvc.perform(post("/api/agent-runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"sessionId":"identity-1","input":"我叫曾智"}
+                                    """))
+                    .andExpect(status().isAccepted())
+                    .andReturn().getResponse().getContentAsString(), "$.runId");
+            awaitTerminal(coordinator, firstRunId);
+            assertThat(observed.get().attributes()).doesNotContainKey("conversationHistory");
+
+            String secondRunId = JsonPath.read(mvc.perform(post("/api/agent-runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"sessionId":"identity-1","input":"我是谁"}
+                                    """))
+                    .andExpect(status().isAccepted())
+                    .andReturn().getResponse().getContentAsString(), "$.runId");
+            awaitTerminal(coordinator, secondRunId);
+
+            assertThat(observed.get().attributes())
+                    .containsEntry("conversationHistory", "用户：我叫曾智\n助手：你好，曾智。");
+        }
+    }
+
+    private static SessionHistoryService historyService() {
+        return new SessionHistoryService(
+                new com.github.agentos.kernel.InMemoryAgentEventStore(), 5, 400);
     }
 
     private static AgentRunCoordinator.RunSnapshot awaitTerminal(
