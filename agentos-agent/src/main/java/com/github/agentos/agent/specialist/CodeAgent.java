@@ -206,15 +206,24 @@ public final class CodeAgent extends BaseAgent implements Agent {
         return ".py";
     }
 
-    /** 根据扩展名构建执行命令。 */
+    /**
+     * 根据扩展名构建执行命令。
+     *
+     * <p>解释器名称随宿主机平台变化：Windows 官方 Python 安装包只提供
+     * {@code python}，{@code python3} 命中的是 Microsoft Store 别名占位程序，
+     * 不执行脚本；{@code bash} 在 Windows 上同样不保证存在，改由
+     * {@code cmd /c} 执行。</p>
+     */
     private static String buildCommand(String extension, String filePath) {
+        boolean windows = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("win");
         return switch (extension) {
-            case ".py" -> "python3 " + filePath;
+            case ".py" -> (windows ? "python " : "python3 ") + filePath;
             case ".js" -> "node " + filePath;
-            case ".sh" -> "bash " + filePath;
+            case ".sh" -> (windows ? "cmd /c " : "bash ") + filePath;
             case ".java" -> "javac " + filePath + " && java -cp "
                     + Path.of(filePath).getParent() + " " + Path.of(filePath).getFileName();
-            default -> "python3 " + filePath;
+            default -> (windows ? "python " : "python3 ") + filePath;
         };
     }
 

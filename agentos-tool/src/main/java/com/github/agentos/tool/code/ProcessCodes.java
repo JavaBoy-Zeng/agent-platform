@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -20,20 +21,48 @@ final class ProcessCodes {
     private ProcessCodes() {
     }
 
-    /** 返回语言对应的源文件名；Java 遵循单文件源码模式约定入口类为 {@code Main}。 */
+    /** 宿主机是否为 Windows；容器内执行始终按 POSIX 处理，不使用本方法。 */
+    static boolean isWindows() {
+        return System.getProperty("os.name", "")
+                .toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    /** 返回 POSIX 环境下语言对应的源文件名（Docker 沙箱固定走这一分支）。 */
     static String sourceFileName(CodeLanguage language) {
+        return sourceFileName(language, false);
+    }
+
+    /**
+     * 返回语言对应的源文件名；Java 遵循单文件源码模式约定入口类为 {@code Main}。
+     *
+     * <p>Shell 脚本的扩展名必须与解释器匹配：POSIX 下由 {@code /bin/sh} 执行 {@code .sh}，
+     * Windows 下由 {@code cmd} 执行 {@code .cmd}——扩展名错误会让 cmd 拒绝执行。</p>
+     *
+     * @param windows 是否按 Windows 约定命名
+     */
+    static String sourceFileName(CodeLanguage language, boolean windows) {
         return switch (language) {
             case PYTHON -> "main.py";
-            case SHELL -> "script.sh";
+            case SHELL -> windows ? "script.cmd" : "script.sh";
             case JAVA -> "Main.java";
         };
     }
 
-    /** 把源码写入指定目录，返回写好的文件路径。 */
+    /** 把源码按 POSIX 命名约定写入指定目录，返回写好的文件路径。 */
     static Path writeSource(Path directory, CodeLanguage language, String code) {
+        return writeSource(directory, language, code, false);
+    }
+
+    /**
+     * 把源码写入指定目录，返回写好的文件路径。
+     *
+     * @param windows 是否按 Windows 命名约定选择文件名
+     */
+    static Path writeSource(
+            Path directory, CodeLanguage language, String code, boolean windows) {
         try {
             Files.createDirectories(directory);
-            Path file = directory.resolve(sourceFileName(language));
+            Path file = directory.resolve(sourceFileName(language, windows));
             Files.writeString(file, code, StandardCharsets.UTF_8);
             return file;
         } catch (IOException exception) {

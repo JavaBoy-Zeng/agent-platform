@@ -63,12 +63,52 @@ class LocalProcessCodeExecutorTest {
     }
 
     @Test
-    void commandForUsesLanguageRuntimes() {
+    void commandForUsesPosixLanguageRuntimes() {
+        java.nio.file.Path python = java.nio.file.Path.of("/tmp/main.py");
+        java.nio.file.Path shell = java.nio.file.Path.of("/tmp/script.sh");
+        assertThat(LocalProcessCodeExecutor.commandFor(CodeLanguage.PYTHON, python, false))
+                .containsExactly("python3", python.toString());
+        assertThat(LocalProcessCodeExecutor.commandFor(CodeLanguage.SHELL, shell, false))
+                .containsExactly("/bin/sh", shell.toString());
         assertThat(LocalProcessCodeExecutor.commandFor(
-                CodeLanguage.PYTHON, java.nio.file.Path.of("/tmp/main.py")))
-                .containsExactly("python3", "/tmp/main.py");
-        assertThat(LocalProcessCodeExecutor.commandFor(
-                CodeLanguage.JAVA, java.nio.file.Path.of("/tmp/Main.java")))
+                CodeLanguage.JAVA, java.nio.file.Path.of("/tmp/Main.java"), false))
                 .containsExactly("java", "Main.java");
+    }
+
+    /**
+     * Windows 上 {@code python3} 命中 Microsoft Store 别名占位程序（退出码 49，
+     * 不执行脚本），{@code /bin/sh} 不存在，因此必须切换到 {@code python} 与
+     * {@code cmd /c}。
+     */
+    @Test
+    void commandForUsesWindowsLanguageRuntimes() {
+        java.nio.file.Path python = java.nio.file.Path.of("C:/tmp/main.py");
+        java.nio.file.Path shell = java.nio.file.Path.of("C:/tmp/script.cmd");
+        assertThat(LocalProcessCodeExecutor.commandFor(CodeLanguage.PYTHON, python, true))
+                .containsExactly("python", python.toString());
+        assertThat(LocalProcessCodeExecutor.commandFor(CodeLanguage.SHELL, shell, true))
+                .containsExactly("cmd", "/c", shell.toString());
+        assertThat(LocalProcessCodeExecutor.commandFor(
+                CodeLanguage.JAVA, java.nio.file.Path.of("C:/tmp/Main.java"), true))
+                .containsExactly("java", "Main.java");
+    }
+
+    /** Shell 脚本扩展名必须与解释器匹配，否则 cmd 拒绝执行。 */
+    @Test
+    void sourceFileNameFollowsPlatformShellConvention() {
+        assertThat(ProcessCodes.sourceFileName(CodeLanguage.SHELL, false)).isEqualTo("script.sh");
+        assertThat(ProcessCodes.sourceFileName(CodeLanguage.SHELL, true)).isEqualTo("script.cmd");
+        assertThat(ProcessCodes.sourceFileName(CodeLanguage.PYTHON, true)).isEqualTo("main.py");
+        assertThat(ProcessCodes.sourceFileName(CodeLanguage.JAVA, true)).isEqualTo("Main.java");
+    }
+
+    /** 在真实宿主机上跑通一次 shell 执行，覆盖平台分支的实际可用性。 */
+    @Test
+    void executesShellOnCurrentPlatform() {
+        CodeExecutionResult result = executor.execute(CodeExecutionRequest.of(
+                CodeLanguage.SHELL, "echo hello-from-shell"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.stdout()).contains("hello-from-shell");
     }
 }

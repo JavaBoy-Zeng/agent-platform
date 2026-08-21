@@ -55,9 +55,21 @@ public final class RunCommandTool implements AgentTool {
 
     @Override
     public String description() {
-        return "在服务端工作目录执行一条 shell 命令并返回输出。适合运行测试、查看目录、"
-                + "执行构建等任务；命令有超时限制，输出过长会被截断。该操作会改动系统状态，"
-                + "需要人工审批";
+        return "在用户本机的工作目录执行一条 shell 命令并返回输出。服务与用户在同一台机器，"
+                + "因此可用于运行测试、查看目录、执行构建，也可以启动本机程序与 GUI 应用"
+                + "（例如用 start/xdg-open/open 打开浏览器）。命令语法需匹配宿主机平台"
+                + "（当前: " + platformName() + "）；命令有超时限制，输出过长会被截断。"
+                + "该操作会改动系统状态，需要人工审批";
+    }
+
+    /** 返回面向模型的宿主机平台标识，让模型据此选择命令语法。 */
+    private static String platformName() {
+        return isWindows() ? "Windows，经 cmd /c 执行" : "POSIX，经 /bin/sh -c 执行";
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("win");
     }
 
     @Override
@@ -80,7 +92,7 @@ public final class RunCommandTool implements AgentTool {
     public ToolResult execute(ToolContext context, ToolCall call) {
         String command = requiredString(call.arguments().get("command"), "command");
         long timeout = timeoutSeconds(call.arguments().get("timeout_seconds"));
-        boolean windows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        boolean windows = isWindows();
         ProcessBuilder builder = new ProcessBuilder(
                 windows ? List.of("cmd", "/c", command) : List.of("/bin/sh", "-c", command));
         builder.directory(workDir.toFile());

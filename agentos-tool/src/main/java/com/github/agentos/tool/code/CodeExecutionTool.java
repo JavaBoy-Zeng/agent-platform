@@ -41,8 +41,10 @@ public final class CodeExecutionTool implements AgentTool {
         return "执行一段代码并返回标准输出、标准错误与退出码。支持语言: python、shell、java"
                 + "（Java 需定义 public class Main 并提供 main 方法）。当前执行环境: "
                 + (executor.isSandboxed()
-                        ? "Docker 沙箱（网络隔离、内存与 CPU 受限、源码只读挂载）"
-                        : "宿主机本地进程（无沙箱，需要人工审批）");
+                        ? "Docker 沙箱（网络隔离、内存与 CPU 受限、源码只读挂载）；"
+                                + "沙箱内无法访问宿主机文件，也无法启动宿主机程序"
+                        : "用户本机的本地进程（无沙箱，需要人工审批）；"
+                                + "可读写本机文件、启动本机程序与 GUI 应用（如浏览器）");
     }
 
     @Override
@@ -53,10 +55,24 @@ public final class CodeExecutionTool implements AgentTool {
                         "代码语言: python / shell / java", true),
                 new ToolParameter(
                         "code", ToolParameter.ValueType.STRING,
-                        "要执行的完整代码", true),
+                        "要执行的完整代码。shell 代码需匹配执行环境的脚本方言（"
+                                + shellDialect() + "）", true),
                 new ToolParameter(
                         "timeout_seconds", ToolParameter.ValueType.INTEGER,
                         "超时秒数；不填使用默认值", false));
+    }
+
+    /**
+     * 返回 shell 代码应使用的脚本方言。
+     *
+     * <p>沙箱内始终是容器里的 POSIX shell，与宿主机平台无关；本机执行时才跟随宿主机。
+     * 方言写错会让脚本直接语法失败，因此必须让模型在生成代码前就知道。</p>
+     */
+    private String shellDialect() {
+        if (executor.isSandboxed()) {
+            return "POSIX sh";
+        }
+        return ProcessCodes.isWindows() ? "Windows 批处理 cmd" : "POSIX sh";
     }
 
     @Override
