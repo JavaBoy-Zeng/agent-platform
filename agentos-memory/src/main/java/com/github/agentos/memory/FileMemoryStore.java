@@ -23,7 +23,7 @@ import java.util.List;
 public final class FileMemoryStore extends InMemoryMemoryStore {
 
     private static final int MAGIC = 0x41474D31; // AGM1
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
     private final Path stateFile;
     private boolean loading;
 
@@ -56,14 +56,16 @@ public final class FileMemoryStore extends InMemoryMemoryStore {
                 new BufferedInputStream(Files.newInputStream(stateFile)))) {
             if (input.readInt() != MAGIC) throw new IOException("invalid memory state magic");
             int version = input.readInt();
-            if (version != FORMAT_VERSION) throw new IOException("unsupported memory state version: " + version);
+            if (version < 1 || version > FORMAT_VERSION) {
+                throw new IOException("unsupported memory state version: " + version);
+            }
 
             readItems(input, () -> {
-                CompletedTurn turn = readTurn(input);
+                CompletedTurn turn = readTurn(input, version);
                 turns.put(turn.id(), turn);
             });
             readItems(input, () -> {
-                AtomicMemory memory = readAtomic(input);
+                AtomicMemory memory = readAtomic(input, version);
                 atomicMemories.put(memory.id(), memory);
             });
             readItems(input, () -> {
@@ -78,6 +80,12 @@ public final class FileMemoryStore extends InMemoryMemoryStore {
                 PipelineJob job = readJob(input);
                 jobs.put(job.id(), job);
             });
+            if (version >= 2) {
+                readItems(input, () -> {
+                    MemoryVector vector = readVector(input);
+                    vectors.put(vector.memoryId() + '\u0000' + vector.model(), vector);
+                });
+            }
         } catch (EOFException exception) {
             throw new IOException("truncated memory state file", exception);
         }
@@ -102,6 +110,8 @@ public final class FileMemoryStore extends InMemoryMemoryStore {
                 for (ProfileMemory profile : profiles.values()) writeProfile(output, profile);
                 output.writeInt(jobs.size());
                 for (PipelineJob job : jobs.values()) writeJob(output, job);
+                output.writeInt(vectors.size());
+                for (MemoryVector vector : vectors.values()) writeVector(output, vector);
             }
             try {
                 Files.move(temporary, stateFile,
@@ -124,6 +134,7 @@ public final class FileMemoryStore extends InMemoryMemoryStore {
 
     private static void writeTurn(DataOutputStream out, CompletedTurn turn) throws IOException {
         writeString(out, turn.id());
+        writeString(out, turn.businessKey());
         writeScope(out, turn.scope());
         writeString(out, turn.userInput());
         writeString(out, turn.assistantOutput());
@@ -132,15 +143,18 @@ public final class FileMemoryStore extends InMemoryMemoryStore {
         out.writeLong(turn.completedAt().toEpochMilli());
     }
 
-    private static CompletedTurn readTurn(DataInputStream in) throws IOException {
+    private static CompletedTurn readTurn(DataInputStream in, int formatVersion) throws IOException {
         String id = readString(in);
+        String businessKey = formatVersion >= 2 ? readString(in) : id;
         MemoryScope scope = readScope(in);
         String userInput = readString(in);
         String assistantOutput = readString(in);
         int count = checkedCount(in.readInt());
         List<String> toolOutputs = new ArrayList<>(count);
         for (int index = 0; index < count; index++) toolOutputs.add(readString(in));
-        return new CompletedTurn(id, scope, userInput, assistantOutput, toolOutputs, Instant.ofEpochMilli(in.readLong()));
+        return new CompletedTurn(
+                id, businessKey, scope, userInput, assistantOutput, toolOutputs,
+                Instant.ofEpochMilli(in.readLong()));
     }
 
     private static void writeAtomic(DataOutputStream out, AtomicMemory memory) throws IOException {
@@ -152,15 +166,75 @@ public final class FileMemoryStore extends InMemoryMemoryStore {
         out.writeInt(memory.priority());
         out.writeInt(memory.version());
         writeString(out, memory.sourceTurnId());
+        out.writeInt(memory.sourceTurnIds().size());
+        for (String source : memory.sourceTurnIds()) writeString(out, source);
+        writeString(out, memory.status().name());
+        out.writeLong(memory.validFrom().toEpochMilli());
+        writeNullableInstant(out, memory.expiresAt());
+        writeString(out, memory.supersededById());
         out.writeLong(memory.createdAt().toEpochMilli());
         out.writeLong(memory.updatedAt().toEpochMilli());
     }
 
-    private static AtomicMemory readAtomic(DataInputStream in) throws IOException {
+    private static AtomicMemory readAtomic(DataInputStream in, int formatVersion) throws IOException {
+        String id = readString(in);
+        MemoryScope scope = readScope(in);
+        MemoryType type = MemoryType.valueOf(readString(in));
+        String content = readString(in);
+        double confidence = in.readDouble();
+        int priority = in.readInt();
+        int memoryVersion = in.readInt();
+        String latestSource = readString(in);
+        if (formatVersion == 1) {
+            Instant createdAt = Instant.ofEpochMilli(in.readLong());
+            Instant updatedAt = Instant.ofEpochMilli(in.readLong());
+            return new AtomicMemory(
+                    id, scope, type, content, confidence, priority, memoryVersion,
+                    latestSource, createdAt, updatedAt);
+        }
+        int sourceCount = checkedCount(in.readInt());
+        List<String> sources = new ArrayList<>(sourceCount);
+        for (int index = 0; index < sourceCount; index++) sources.add(readString(in));
+        MemoryStatus status = MemoryStatus.valueOf(readString(in));
+        Instant validFrom = Instant.ofEpochMilli(in.readLong());
+        Instant expiresAt = readNullableInstant(in);
+        String supersededById = readString(in);
+        Instant createdAt = Instant.ofEpochMilli(in.readLong());
+        Instant updatedAt = Instant.ofEpochMilli(in.readLong());
         return new AtomicMemory(
-                readString(in), readScope(in), MemoryType.valueOf(readString(in)), readString(in),
-                in.readDouble(), in.readInt(), in.readInt(), readString(in),
-                Instant.ofEpochMilli(in.readLong()), Instant.ofEpochMilli(in.readLong()));
+                id, scope, type, content, confidence, priority, memoryVersion, latestSource,
+                sources, status, validFrom, expiresAt, supersededById, createdAt, updatedAt);
+    }
+
+    private static void writeVector(DataOutputStream out, MemoryVector vector) throws IOException {
+        writeString(out, vector.memoryId());
+        writeString(out, vector.model());
+        out.writeInt(vector.contentVersion());
+        double[] values = vector.values();
+        out.writeInt(values.length);
+        for (double value : values) out.writeDouble(value);
+        out.writeLong(vector.updatedAt().toEpochMilli());
+    }
+
+    private static MemoryVector readVector(DataInputStream in) throws IOException {
+        String memoryId = readString(in);
+        String model = readString(in);
+        int contentVersion = in.readInt();
+        int dimension = checkedCount(in.readInt());
+        if (dimension == 0) throw new IOException("vector dimension must be positive");
+        double[] values = new double[dimension];
+        for (int index = 0; index < dimension; index++) values[index] = in.readDouble();
+        return new MemoryVector(
+                memoryId, model, contentVersion, values, Instant.ofEpochMilli(in.readLong()));
+    }
+
+    private static void writeNullableInstant(DataOutputStream out, Instant value) throws IOException {
+        out.writeBoolean(value != null);
+        if (value != null) out.writeLong(value.toEpochMilli());
+    }
+
+    private static Instant readNullableInstant(DataInputStream in) throws IOException {
+        return in.readBoolean() ? Instant.ofEpochMilli(in.readLong()) : null;
     }
 
     private static void writeScenario(DataOutputStream out, ScenarioMemory scenario) throws IOException {

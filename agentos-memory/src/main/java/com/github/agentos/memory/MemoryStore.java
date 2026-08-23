@@ -2,6 +2,7 @@ package com.github.agentos.memory;
 
 import java.util.List;
 import java.util.Optional;
+import java.time.Instant;
 
 /**
  * L0-L3 记忆数据与后台加工任务状态的统一持久化端口。
@@ -21,6 +22,21 @@ import java.util.Optional;
  * 不破坏单条记录的幂等或版本约束，但是否跨进程持久化由具体实现决定。</p>
  */
 public interface MemoryStore {
+
+    /**
+     * 原子提交 L0 与对应待处理 Job。持久化实现必须覆盖此方法并保证二者同事务提交。
+     */
+    default PipelineJob captureTurn(CompletedTurn turn) {
+        saveTurn(turn);
+        String jobId = "pipeline:" + turn.id();
+        PipelineJob existing = findJob(jobId).orElse(null);
+        if (existing != null && existing.status() == PipelineJob.Status.COMPLETED) return existing;
+        PipelineJob job = existing == null
+                ? PipelineJob.pending(turn.id(), turn.scope())
+                : existing.retry();
+        saveJob(job);
+        return job;
+    }
 
     /**
      * 保存一个已完成的 L0 对话轮次。
@@ -62,6 +78,21 @@ public interface MemoryStore {
      */
     void upsertAtomic(AtomicMemory memory);
 
+    /** 按标识查询原子记忆，包括失效和已替代记录。 */
+    Optional<AtomicMemory> findAtomic(String memoryId);
+
+    /** 永久删除原子记忆及其来源、向量和相关索引。 */
+    boolean deleteAtomic(String memoryId);
+
+    /** 删除在指定时刻已经过期的原子记忆，返回删除数量。 */
+    int purgeExpired(Instant now);
+
+    /** 原子地保存 replacement 并把 previous 标记为已替代。 */
+    default void supersedeAtomic(AtomicMemory previous, AtomicMemory replacement) {
+        upsertAtomic(replacement);
+        upsertAtomic(previous.supersedeBy(replacement.id(), replacement.sourceTurnId()));
+    }
+
     /**
      * 查询同一团队、用户和 Agent 下可被当前任务召回的 L1 原子记忆。
      *
@@ -72,6 +103,17 @@ public interface MemoryStore {
      * @return 可见的原子记忆快照
      */
     List<AtomicMemory> listAtomic(MemoryScope scope);
+
+    /** 管理用途查询；includeInactive=true 时包含失效、已替代和已过期记录。 */
+    default List<AtomicMemory> listAtomic(MemoryScope scope, boolean includeInactive) {
+        return listAtomic(scope);
+    }
+
+    /** 保存与原子记忆内容版本绑定的向量。 */
+    void saveVector(MemoryVector vector);
+
+    /** 查询指定模型生成的持久化向量。 */
+    Optional<MemoryVector> findVector(String memoryId, String model);
 
     /**
      * 新增或更新一条 L2 场景记忆。

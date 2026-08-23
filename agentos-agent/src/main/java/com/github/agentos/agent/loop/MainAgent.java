@@ -625,9 +625,12 @@ public final class MainAgent implements AgentLoop, Agent {
                 .filter(observation -> !observation.summary().isBlank())
                 .map(observation -> observation.toolName() + ": " + observation.summary())
                 .toList();
+        String memoryBusinessKey = context.invocationId().isBlank()
+                ? request.sessionId() + ":" + planId
+                : context.invocationId();
         try {
             memoryService.capture(CompletedTurn.success(
-                    scope, request.objective(), finalAnswer, observations));
+                    scope, memoryBusinessKey, request.objective(), finalAnswer, observations));
         } catch (RuntimeException exception) {
             LOGGER.warn(
                     "[agent-memory] capture failed sessionId={} planId={} error={}",

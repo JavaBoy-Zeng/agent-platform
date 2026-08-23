@@ -1,6 +1,7 @@
 package com.github.agentos.server.config;
 
 import com.github.agentos.server.security.ApiKeyAuthFilter;
+import com.github.agentos.server.security.RequestIdentityFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -35,6 +36,21 @@ public class SecurityConfiguration {
         } else {
             LOGGER.warn("[auth] API key authentication DISABLED (agentos.security.api-key is empty)");
         }
+        return registration;
+    }
+
+    /** 在 API Key 校验之后绑定 team/user/role 身份，供 Memory ACL 等业务授权使用。 */
+    @Bean
+    FilterRegistrationBean<RequestIdentityFilter> requestIdentityFilter(
+            @Value("${agentos.security.identity.team-id:default-team}") String teamId,
+            @Value("${agentos.security.identity.user-id:default-user}") String userId,
+            @Value("${agentos.security.identity.roles:}") String roles,
+            @Value("${agentos.security.identity.trust-headers:false}") boolean trustHeaders) {
+        FilterRegistrationBean<RequestIdentityFilter> registration =
+                new FilterRegistrationBean<>(new RequestIdentityFilter(
+                        teamId, userId, roles, trustHeaders));
+        registration.addUrlPatterns("/api/*");
+        registration.setOrder(2);
         return registration;
     }
 }

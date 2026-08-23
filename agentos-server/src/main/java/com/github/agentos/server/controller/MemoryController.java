@@ -6,15 +6,28 @@ import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.memory.ProfileMemory;
 import com.github.agentos.memory.ScenarioMemory;
+import com.github.agentos.server.security.RequestIdentity;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 /**
- * 对外提供分层记忆快照查询能力的只读 REST 控制器。
+ * 对外提供分层记忆快照查询和生命周期管理能力的 REST 控制器。
  */
 @RestController
 @RequestMapping("/api/memories")
@@ -25,7 +38,7 @@ public class MemoryController {
     private final MemoryService memoryService;
 
     /**
-     * 创建只读记忆管理控制器。
+     * 创建记忆管理控制器。
      *
      * @param memoryService 统一记忆服务
      */
@@ -50,19 +63,22 @@ public class MemoryController {
      */
     @GetMapping
     public MemorySnapshotResponse snapshot(
-            @RequestParam(defaultValue = MemoryScope.DEFAULT_TEAM_ID) String teamId,
-            @RequestParam(defaultValue = MemoryScope.DEFAULT_USER_ID) String userId,
+            HttpServletRequest request,
+            @RequestParam(required = false) String teamId,
+            @RequestParam(required = false) String userId,
             @RequestParam(defaultValue = "main-agent") String agentId,
             @RequestParam String sessionId,
             @RequestParam(defaultValue = "") String taskId,
-            @RequestParam(defaultValue = "20") int recentLimit) {
+            @RequestParam(defaultValue = "20") int recentLimit,
+            @RequestParam(defaultValue = "false") boolean includeInactive) {
         if (recentLimit < 1 || recentLimit > MAX_RECENT_LIMIT) {
             throw new IllegalArgumentException("recentLimit must be between 1 and " + MAX_RECENT_LIMIT);
         }
 
-        MemoryScope scope = new MemoryScope(teamId, userId, agentId, sessionId, taskId);
+        MemoryScope scope = boundScope(
+                RequestIdentity.from(request), teamId, userId, agentId, sessionId, taskId);
         List<CompletedTurn> recentTurns = memoryService.recentTurns(scope, recentLimit);
-        List<AtomicMemory> atomicMemories = memoryService.atomicMemories(scope);
+        List<AtomicMemory> atomicMemories = memoryService.atomicMemories(scope, includeInactive);
         List<ScenarioMemory> scenarios = memoryService.scenarios(scope);
         ProfileMemory profile = memoryService.profile(scope);
         MemoryCounts counts = new MemoryCounts(
@@ -72,6 +88,136 @@ public class MemoryController {
                 profile == null ? 0 : 1);
         return new MemorySnapshotResponse(
                 scope, counts, recentTurns, atomicMemories, scenarios, profile);
+    }
+
+    /** 人工创建带可选 TTL 的事实记忆。 */
+    @PostMapping("/facts")
+    public ResponseEntity<AtomicMemory> createFact(
+            HttpServletRequest request, @RequestBody CreateFactRequest body) {
+        RequestIdentity identity = RequestIdentity.from(request);
+        MemoryScope scope = boundScope(identity, null, null,
+                body.agentId(), body.sessionId(), body.taskId());
+        Duration ttl = body.ttlSeconds() == null ? null : Duration.ofSeconds(body.ttlSeconds());
+        AtomicMemory created = memoryService.rememberFact(
+                scope, requiredText(body.content(), "content"), ttl);
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    /** 人工纠正记忆正文及失效时间。 */
+    @PatchMapping("/atomic/{memoryId}")
+    public AtomicMemory correct(
+            HttpServletRequest request,
+            @PathVariable String memoryId,
+            @RequestBody CorrectMemoryRequest body) {
+        AtomicMemory current = ownedMemory(request, memoryId);
+        return memoryService.correctAtomic(
+                current.scope(), memoryId, requiredText(body.content(), "content"),
+                parseInstant(body.expiresAt()));
+    }
+
+    /** 软失效记忆，保留来源和审计记录。 */
+    @PostMapping("/atomic/{memoryId}/invalidate")
+    public AtomicMemory invalidate(HttpServletRequest request, @PathVariable String memoryId) {
+        AtomicMemory current = ownedMemory(request, memoryId);
+        return memoryService.invalidateAtomic(current.scope(), memoryId);
+    }
+
+    /** 设置 TTL；ttlSeconds 为空时清除到期时间，恢复为永久有效。 */
+    @PutMapping("/atomic/{memoryId}/ttl")
+    public AtomicMemory setTtl(
+            HttpServletRequest request,
+            @PathVariable String memoryId,
+            @RequestBody TtlRequest body) {
+        AtomicMemory current = ownedMemory(request, memoryId);
+        Duration ttl = body.ttlSeconds() == null
+                ? null : Duration.ofSeconds(body.ttlSeconds());
+        return memoryService.setAtomicTtl(current.scope(), memoryId, ttl);
+    }
+
+    /** 以新内容替代旧记忆并建立 supersede 关系。 */
+    @PostMapping("/atomic/{memoryId}/supersede")
+    public AtomicMemory supersede(
+            HttpServletRequest request,
+            @PathVariable String memoryId,
+            @RequestBody SupersedeMemoryRequest body) {
+        AtomicMemory current = ownedMemory(request, memoryId);
+        return memoryService.supersedeAtomic(
+                current.scope(), memoryId, requiredText(body.content(), "content"),
+                parseInstant(body.expiresAt()));
+    }
+
+    /** 永久删除记忆及其持久向量。 */
+    @DeleteMapping("/atomic/{memoryId}")
+    public ResponseEntity<Void> delete(HttpServletRequest request, @PathVariable String memoryId) {
+        AtomicMemory current = ownedMemory(request, memoryId);
+        memoryService.deleteAtomic(current.scope(), memoryId);
+        return ResponseEntity.noContent().build();
+    }
+
+    private AtomicMemory ownedMemory(HttpServletRequest request, String memoryId) {
+        AtomicMemory memory = memoryService.findAtomic(memoryId);
+        if (memory == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "memory not found");
+        RequestIdentity identity = RequestIdentity.from(request);
+        if (!identity.memoryAdmin()
+                && (!identity.teamId().equals(memory.scope().teamId())
+                || !identity.userId().equals(memory.scope().userId()))) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "memory access denied");
+        }
+        return memory;
+    }
+
+    private static MemoryScope boundScope(
+            RequestIdentity identity,
+            String requestedTeamId,
+            String requestedUserId,
+            String agentId,
+            String sessionId,
+            String taskId) {
+        String teamId = textOr(requestedTeamId, identity.teamId());
+        String userId = textOr(requestedUserId, identity.userId());
+        if (!identity.memoryAdmin()
+                && (!identity.teamId().equals(teamId) || !identity.userId().equals(userId))) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "memory scope access denied");
+        }
+        return new MemoryScope(teamId, userId, agentId, sessionId, taskId);
+    }
+
+    private static String textOr(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
+    private static String requiredText(String value, String name) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value.trim();
+    }
+
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Instant.parse(value.trim());
+        } catch (RuntimeException exception) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "expiresAt must be an ISO-8601 instant", exception);
+        }
+    }
+
+    public record CreateFactRequest(
+            String agentId,
+            String sessionId,
+            String taskId,
+            String content,
+            Long ttlSeconds) {
+    }
+
+    public record CorrectMemoryRequest(String content, String expiresAt) {
+    }
+
+    public record SupersedeMemoryRequest(String content, String expiresAt) {
+    }
+
+    public record TtlRequest(Long ttlSeconds) {
     }
 
     /**

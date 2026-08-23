@@ -19,11 +19,12 @@ public final class HybridMemoryRetriever {
     private static final double BM25_B = 0.75;
     private static final int RRF_K = 60;
     private final MemoryStore store;
-    private final MemoryEmbedding embedding;
+    private final MemoryVectorIndex vectorIndex;
 
     public HybridMemoryRetriever(MemoryStore store, MemoryEmbedding embedding) {
         this.store = Objects.requireNonNull(store, "store must not be null");
-        this.embedding = Objects.requireNonNull(embedding, "embedding must not be null");
+        this.vectorIndex = new PersistentMemoryVectorIndex(
+                store, Objects.requireNonNull(embedding, "embedding must not be null"));
     }
 
     public List<MemorySearchHit> search(MemoryQuery query) {
@@ -87,14 +88,9 @@ public final class HybridMemoryRetriever {
     }
 
     private List<Scored> rankVector(String queryText, List<AtomicMemory> documents) {
-        double[] queryVector = embedding.embed(queryText);
-        List<Scored> result = new ArrayList<>();
-        for (AtomicMemory memory : documents) {
-            double score = cosine(queryVector, embedding.embed(memory.content()));
-            if (score > 0) result.add(new Scored(memory, score));
-        }
-        result.sort(Comparator.comparingDouble(Scored::score).reversed());
-        return result;
+        return vectorIndex.search(queryText, documents, documents.size()).stream()
+                .map(match -> new Scored(match.memory(), match.score()))
+                .toList();
     }
 
     private static void addRanks(Map<String, Fused> fused, List<Scored> ranked, String source) {
@@ -105,19 +101,6 @@ public final class HybridMemoryRetriever {
             Fused current = fused.computeIfAbsent(item.memory().id(), ignored -> new Fused(item.memory()));
             current.add(source, rrf * qualityBoost);
         }
-    }
-
-    private static double cosine(double[] left, double[] right) {
-        if (left.length != right.length) throw new IllegalArgumentException("embedding dimensions do not match");
-        double dot = 0;
-        double a = 0;
-        double b = 0;
-        for (int index = 0; index < left.length; index++) {
-            dot += left[index] * right[index];
-            a += left[index] * left[index];
-            b += right[index] * right[index];
-        }
-        return a == 0 || b == 0 ? 0 : dot / Math.sqrt(a * b);
     }
 
     private record Scored(AtomicMemory memory, double score) {

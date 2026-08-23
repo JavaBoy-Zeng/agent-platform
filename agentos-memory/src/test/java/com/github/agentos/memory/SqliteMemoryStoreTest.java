@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class SqliteMemoryStoreTest {
@@ -23,7 +24,7 @@ class SqliteMemoryStoreTest {
         MemoryScope scope = new MemoryScope("team", "user", "agent", "session", "task");
 
         SqliteMemoryStore first = new SqliteMemoryStore(database);
-        assertThat(first.schemaVersion()).isEqualTo(2);
+        assertThat(first.schemaVersion()).isEqualTo(3);
         try (MemoryService service = new MemoryService(
                 first, new RuleBasedMemoryModel(), new HashingMemoryEmbedding(),
                 MemoryRecallPolicy.defaults())) {
@@ -33,7 +34,7 @@ class SqliteMemoryStoreTest {
         }
 
         SqliteMemoryStore reopened = new SqliteMemoryStore(database);
-        assertThat(reopened.schemaVersion()).isEqualTo(2);
+        assertThat(reopened.schemaVersion()).isEqualTo(3);
         assertThat(reopened.listRecentTurns(scope, 10)).singleElement()
                 .satisfies(turn -> assertThat(turn.toolOutputs()).containsExactly("build passed"));
         assertThat(reopened.listAtomic(scope)).isNotEmpty();
@@ -50,9 +51,13 @@ class SqliteMemoryStoreTest {
             List<String> indexes = new ArrayList<>();
             while (result.next()) indexes.add(result.getString(1));
             assertThat(indexes).containsExactly(
+                    "idx_memory_atomic_active_scope",
                     "idx_memory_atomic_scope_updated",
+                    "idx_memory_atomic_sources_source",
+                    "idx_memory_embeddings_model_version",
                     "idx_memory_pipeline_recovery",
                     "idx_memory_scenarios_scope_updated",
+                    "idx_memory_turns_actor_business_key",
                     "idx_memory_turns_scope_completed");
         }
     }
@@ -78,5 +83,30 @@ class SqliteMemoryStoreTest {
                 assertThat(store.listAtomic(scope)).hasSize(300);
             }
         });
+    }
+
+    @Test
+    void rollsBackL0WhenOutboxJobCannotBeInserted() throws Exception {
+        Path database = directory.resolve("outbox-rollback.sqlite");
+        SqliteMemoryStore store = new SqliteMemoryStore(database);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+                var statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TRIGGER reject_pipeline_job
+                    BEFORE INSERT ON memory_pipeline_jobs
+                    BEGIN
+                        SELECT RAISE(ABORT, 'simulated outbox failure');
+                    END
+                    """);
+        }
+        MemoryScope scope = new MemoryScope("team", "user", "agent", "session", "task");
+        CompletedTurn turn = CompletedTurn.success(
+                scope, "business-run", "input", "output", List.of());
+
+        assertThatThrownBy(() -> store.captureTurn(turn))
+                .isInstanceOf(MemoryAdapterException.class)
+                .hasMessageContaining("simulated outbox failure");
+        assertThat(store.findTurn(turn.id())).isEmpty();
+        assertThat(store.findJob("pipeline:" + turn.id())).isEmpty();
     }
 }

@@ -40,4 +40,9 @@ public final class HashingMemoryEmbedding implements MemoryEmbedding {
         double norm = Math.sqrt(sum);
         for (int index = 0; index < vector.length; index++) vector[index] /= norm;
     }
+
+    @Override
+    public String modelId() {
+        return "agentos-hashing-v1";
+    }
 }

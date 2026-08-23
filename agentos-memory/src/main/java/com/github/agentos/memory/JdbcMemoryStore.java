@@ -11,6 +11,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,7 +30,8 @@ public class JdbcMemoryStore implements MemoryStore {
 
     private static final List<Migration> MIGRATIONS = List.of(
             new Migration(1, "/com/github/agentos/memory/migration/V1__memory_core.sql"),
-            new Migration(2, "/com/github/agentos/memory/migration/V2__memory_indexes.sql"));
+            new Migration(2, "/com/github/agentos/memory/migration/V2__memory_indexes.sql"),
+            new Migration(3, "/com/github/agentos/memory/migration/V3__memory_lifecycle_vectors.sql"));
 
     private final DataSource dataSource;
 
@@ -61,35 +64,25 @@ public class JdbcMemoryStore implements MemoryStore {
     public void saveTurn(CompletedTurn turn) {
         Objects.requireNonNull(turn, "turn must not be null");
         transaction(connection -> {
-            int inserted;
-            try (PreparedStatement statement = connection.prepareStatement("""
-                    INSERT INTO memory_turns (
-                        id, team_id, user_id, agent_id, session_id, task_id,
-                        user_input, assistant_output, completed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO NOTHING
-                    """)) {
-                statement.setString(1, turn.id());
-                setScope(statement, 2, turn.scope());
-                statement.setString(7, turn.userInput());
-                statement.setString(8, turn.assistantOutput());
-                statement.setLong(9, epochMillis(turn.completedAt()));
-                inserted = statement.executeUpdate();
-            }
-            if (inserted == 0) return null;
-            try (PreparedStatement statement = connection.prepareStatement("""
-                    INSERT INTO memory_turn_tool_outputs (turn_id, output_index, content)
-                    VALUES (?, ?, ?)
-                    """)) {
-                for (int index = 0; index < turn.toolOutputs().size(); index++) {
-                    statement.setString(1, turn.id());
-                    statement.setInt(2, index);
-                    statement.setString(3, turn.toolOutputs().get(index));
-                    statement.addBatch();
-                }
-                statement.executeBatch();
-            }
+            insertTurn(connection, turn);
             return null;
+        });
+    }
+
+    @Override
+    public PipelineJob captureTurn(CompletedTurn turn) {
+        Objects.requireNonNull(turn, "turn must not be null");
+        return transaction(connection -> {
+            insertTurn(connection, turn);
+            CompletedTurn stored = findTurnByBusinessKey(connection, turn).orElseThrow();
+            String jobId = "pipeline:" + stored.id();
+            PipelineJob existing = findJob(connection, jobId).orElse(null);
+            if (existing != null && existing.status() == PipelineJob.Status.COMPLETED) return existing;
+            PipelineJob job = existing == null
+                    ? PipelineJob.pending(stored.id(), stored.scope())
+                    : existing.retry();
+            upsertJob(connection, job);
+            return job;
         });
     }
 
@@ -144,60 +137,153 @@ public class JdbcMemoryStore implements MemoryStore {
     @Override
     public void upsertAtomic(AtomicMemory memory) {
         Objects.requireNonNull(memory, "memory must not be null");
-        String sql = """
-                INSERT INTO memory_atomic (
-                    id, team_id, user_id, agent_id, session_id, task_id, memory_type,
-                    content, confidence, priority, version, source_turn_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    team_id = excluded.team_id,
-                    user_id = excluded.user_id,
-                    agent_id = excluded.agent_id,
-                    session_id = excluded.session_id,
-                    task_id = excluded.task_id,
-                    memory_type = excluded.memory_type,
-                    content = excluded.content,
-                    confidence = excluded.confidence,
-                    priority = excluded.priority,
-                    version = excluded.version,
-                    source_turn_id = excluded.source_turn_id,
-                    created_at = excluded.created_at,
-                    updated_at = excluded.updated_at
-                WHERE excluded.version >= memory_atomic.version
-                """;
-        update(sql, statement -> {
-            statement.setString(1, memory.id());
-            setScope(statement, 2, memory.scope());
-            statement.setString(7, memory.type().name());
-            statement.setString(8, memory.content());
-            statement.setDouble(9, memory.confidence());
-            statement.setInt(10, memory.priority());
-            statement.setInt(11, memory.version());
-            statement.setString(12, memory.sourceTurnId());
-            statement.setLong(13, epochMillis(memory.createdAt()));
-            statement.setLong(14, epochMillis(memory.updatedAt()));
-        }, "upsert atomic memory");
+        transaction(connection -> {
+            upsertAtomic(connection, memory);
+            return null;
+        });
+    }
+
+    @Override
+    public Optional<AtomicMemory> findAtomic(String memoryId) {
+        if (memoryId == null || memoryId.isBlank()) return Optional.empty();
+        try (Connection connection = connection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT * FROM memory_atomic WHERE id = ?")) {
+            statement.setString(1, memoryId);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(readAtomic(connection, result)) : Optional.empty();
+            }
+        } catch (SQLException exception) {
+            throw failure("find atomic memory", exception);
+        }
+    }
+
+    @Override
+    public boolean deleteAtomic(String memoryId) {
+        if (memoryId == null || memoryId.isBlank()) return false;
+        try (Connection connection = connection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "DELETE FROM memory_atomic WHERE id = ?")) {
+            statement.setString(1, memoryId);
+            return statement.executeUpdate() > 0;
+        } catch (SQLException exception) {
+            throw failure("delete atomic memory", exception);
+        }
+    }
+
+    @Override
+    public int purgeExpired(Instant now) {
+        Objects.requireNonNull(now, "now must not be null");
+        try (Connection connection = connection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "DELETE FROM memory_atomic WHERE expires_at IS NOT NULL AND expires_at <= ?")) {
+            statement.setLong(1, epochMillis(now));
+            return statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("purge expired atomic memories", exception);
+        }
+    }
+
+    @Override
+    public void supersedeAtomic(AtomicMemory previous, AtomicMemory replacement) {
+        transaction(connection -> {
+            AtomicMemory current = findAtomic(connection, previous.id())
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "previous memory does not exist"));
+            if (current.id().equals(replacement.id())) {
+                throw new IllegalArgumentException("replacement must have a different id");
+            }
+            if (!current.scope().sameActor(replacement.scope())) {
+                throw new IllegalArgumentException("replacement must belong to the same actor");
+            }
+            upsertAtomic(connection, replacement);
+            upsertAtomic(connection, current.supersedeBy(
+                    replacement.id(), replacement.sourceTurnId()));
+            return null;
+        });
     }
 
     @Override
     public List<AtomicMemory> listAtomic(MemoryScope scope) {
+        return listAtomic(scope, false);
+    }
+
+    @Override
+    public List<AtomicMemory> listAtomic(MemoryScope scope, boolean includeInactive) {
         Objects.requireNonNull(scope, "scope must not be null");
+        String lifecycle = includeInactive ? "" : " AND status = 'ACTIVE' AND valid_from <= ?"
+                + " AND (expires_at IS NULL OR expires_at > ?)";
         String sql = """
                 SELECT * FROM memory_atomic
                 WHERE team_id = ? AND user_id = ? AND agent_id = ?
                   AND (? = '' OR task_id = '' OR task_id = ?)
+                """ + lifecycle + """
                 ORDER BY updated_at DESC, id ASC
                 """;
         try (Connection connection = connection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             setActorAndTask(statement, scope);
+            if (!includeInactive) {
+                long now = Instant.now().toEpochMilli();
+                statement.setLong(6, now);
+                statement.setLong(7, now);
+            }
             try (ResultSet result = statement.executeQuery()) {
                 List<AtomicMemory> memories = new ArrayList<>();
-                while (result.next()) memories.add(readAtomic(result));
+                while (result.next()) memories.add(readAtomic(connection, result));
                 return List.copyOf(memories);
             }
         } catch (SQLException exception) {
             throw failure("list atomic memories", exception);
+        }
+    }
+
+    @Override
+    public void saveVector(MemoryVector vector) {
+        Objects.requireNonNull(vector, "vector must not be null");
+        String sql = """
+                INSERT INTO memory_embeddings (
+                    memory_id, model, content_version, dimension, vector, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id, model) DO UPDATE SET
+                    content_version = excluded.content_version,
+                    dimension = excluded.dimension,
+                    vector = excluded.vector,
+                    updated_at = excluded.updated_at
+                WHERE excluded.content_version >= memory_embeddings.content_version
+                """;
+        update(sql, statement -> {
+            double[] values = vector.values();
+            statement.setString(1, vector.memoryId());
+            statement.setString(2, vector.model());
+            statement.setInt(3, vector.contentVersion());
+            statement.setInt(4, values.length);
+            statement.setBytes(5, encodeVector(values));
+            statement.setLong(6, epochMillis(vector.updatedAt()));
+        }, "save memory vector");
+    }
+
+    @Override
+    public Optional<MemoryVector> findVector(String memoryId, String model) {
+        if (memoryId == null || memoryId.isBlank() || model == null || model.isBlank()) {
+            return Optional.empty();
+        }
+        try (Connection connection = connection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        SELECT * FROM memory_embeddings WHERE memory_id = ? AND model = ?
+                        """)) {
+            statement.setString(1, memoryId);
+            statement.setString(2, model);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) return Optional.empty();
+                int dimension = result.getInt("dimension");
+                return Optional.of(new MemoryVector(
+                        memoryId, model, result.getInt("content_version"),
+                        decodeVector(result.getBytes("vector"), dimension),
+                        instant(result, "updated_at")));
+            }
+        } catch (SQLException exception) {
+            throw failure("find memory vector", exception);
         }
     }
 
@@ -438,6 +524,172 @@ public class JdbcMemoryStore implements MemoryStore {
         }
     }
 
+    private static void insertTurn(Connection connection, CompletedTurn turn) throws SQLException {
+        int inserted;
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO memory_turns (
+                    id, team_id, user_id, agent_id, session_id, task_id,
+                    user_input, assistant_output, completed_at, business_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """)) {
+            statement.setString(1, turn.id());
+            setScope(statement, 2, turn.scope());
+            statement.setString(7, turn.userInput());
+            statement.setString(8, turn.assistantOutput());
+            statement.setLong(9, epochMillis(turn.completedAt()));
+            statement.setString(10, turn.businessKey());
+            inserted = statement.executeUpdate();
+        }
+        if (inserted == 0) return;
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO memory_turn_tool_outputs (turn_id, output_index, content)
+                VALUES (?, ?, ?)
+                """)) {
+            for (int index = 0; index < turn.toolOutputs().size(); index++) {
+                statement.setString(1, turn.id());
+                statement.setInt(2, index);
+                statement.setString(3, turn.toolOutputs().get(index));
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private static void upsertAtomic(Connection connection, AtomicMemory memory) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO memory_atomic (
+                    id, team_id, user_id, agent_id, session_id, task_id, memory_type,
+                    content, confidence, priority, version, source_turn_id, created_at, updated_at,
+                    status, valid_from, expires_at, superseded_by_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    team_id = excluded.team_id,
+                    user_id = excluded.user_id,
+                    agent_id = excluded.agent_id,
+                    session_id = excluded.session_id,
+                    task_id = excluded.task_id,
+                    memory_type = excluded.memory_type,
+                    content = excluded.content,
+                    confidence = excluded.confidence,
+                    priority = excluded.priority,
+                    version = excluded.version,
+                    source_turn_id = excluded.source_turn_id,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    status = excluded.status,
+                    valid_from = excluded.valid_from,
+                    expires_at = excluded.expires_at,
+                    superseded_by_id = excluded.superseded_by_id
+                WHERE excluded.version >= memory_atomic.version
+                """)) {
+            statement.setString(1, memory.id());
+            setScope(statement, 2, memory.scope());
+            statement.setString(7, memory.type().name());
+            statement.setString(8, memory.content());
+            statement.setDouble(9, memory.confidence());
+            statement.setInt(10, memory.priority());
+            statement.setInt(11, memory.version());
+            statement.setString(12, memory.sourceTurnId());
+            statement.setLong(13, epochMillis(memory.createdAt()));
+            statement.setLong(14, epochMillis(memory.updatedAt()));
+            statement.setString(15, memory.status().name());
+            statement.setLong(16, epochMillis(memory.validFrom()));
+            if (memory.expiresAt() == null) statement.setNull(17, Types.BIGINT);
+            else statement.setLong(17, epochMillis(memory.expiresAt()));
+            statement.setString(18, memory.supersededById());
+            statement.executeUpdate();
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO memory_atomic_sources (memory_id, source_id, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(memory_id, source_id) DO NOTHING
+                """)) {
+            for (String source : memory.sourceTurnIds()) {
+                statement.setString(1, memory.id());
+                statement.setString(2, source);
+                statement.setLong(3, epochMillis(memory.updatedAt()));
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private static Optional<PipelineJob> findJob(Connection connection, String jobId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT * FROM memory_pipeline_jobs WHERE id = ?")) {
+            statement.setString(1, jobId);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(readJob(result)) : Optional.empty();
+            }
+        }
+    }
+
+    private static Optional<AtomicMemory> findAtomic(
+            Connection connection, String memoryId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT * FROM memory_atomic WHERE id = ?")) {
+            statement.setString(1, memoryId);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(readAtomic(connection, result)) : Optional.empty();
+            }
+        }
+    }
+
+    private static Optional<CompletedTurn> findTurnByBusinessKey(
+            Connection connection, CompletedTurn candidate) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT * FROM memory_turns
+                WHERE team_id = ? AND user_id = ? AND agent_id = ? AND business_key = ?
+                """)) {
+            statement.setString(1, candidate.scope().teamId());
+            statement.setString(2, candidate.scope().userId());
+            statement.setString(3, candidate.scope().agentId());
+            statement.setString(4, candidate.businessKey());
+            try (ResultSet result = statement.executeQuery()) {
+                if (result.next()) return Optional.of(readTurn(connection, result));
+            }
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT * FROM memory_turns WHERE id = ?")) {
+            statement.setString(1, candidate.id());
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(readTurn(connection, result)) : Optional.empty();
+            }
+        }
+    }
+
+    private static void upsertJob(Connection connection, PipelineJob job) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO memory_pipeline_jobs (
+                    id, turn_id, team_id, user_id, agent_id, session_id, task_id,
+                    stage, status, attempts, error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    turn_id = excluded.turn_id,
+                    team_id = excluded.team_id,
+                    user_id = excluded.user_id,
+                    agent_id = excluded.agent_id,
+                    session_id = excluded.session_id,
+                    task_id = excluded.task_id,
+                    stage = excluded.stage,
+                    status = excluded.status,
+                    attempts = excluded.attempts,
+                    error = excluded.error,
+                    updated_at = excluded.updated_at
+                """)) {
+            statement.setString(1, job.id());
+            statement.setString(2, job.turnId());
+            setScope(statement, 3, job.scope());
+            statement.setString(8, job.stage().name());
+            statement.setString(9, job.status().name());
+            statement.setInt(10, job.attempts());
+            statement.setString(11, job.error());
+            statement.setLong(12, epochMillis(job.updatedAt()));
+            statement.executeUpdate();
+        }
+    }
+
     private static CompletedTurn readTurn(Connection connection, ResultSet result) throws SQLException {
         String id = result.getString("id");
         List<String> outputs = new ArrayList<>();
@@ -450,16 +702,34 @@ public class JdbcMemoryStore implements MemoryStore {
                 while (outputRows.next()) outputs.add(outputRows.getString(1));
             }
         }
+        String businessKey = result.getString("business_key");
+        if (businessKey == null || businessKey.isBlank()) businessKey = id;
         return new CompletedTurn(
-                id, readScope(result), result.getString("user_input"), result.getString("assistant_output"),
+                id, businessKey, readScope(result),
+                result.getString("user_input"), result.getString("assistant_output"),
                 outputs, instant(result, "completed_at"));
     }
 
-    private static AtomicMemory readAtomic(ResultSet result) throws SQLException {
+    private static AtomicMemory readAtomic(Connection connection, ResultSet result) throws SQLException {
+        String memoryId = result.getString("id");
+        List<String> sources = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT source_id FROM memory_atomic_sources
+                WHERE memory_id = ? ORDER BY created_at ASC, source_id ASC
+                """)) {
+            statement.setString(1, memoryId);
+            try (ResultSet sourceRows = statement.executeQuery()) {
+                while (sourceRows.next()) sources.add(sourceRows.getString(1));
+            }
+        }
+        long expiresMillis = result.getLong("expires_at");
+        Instant expiresAt = result.wasNull() ? null : Instant.ofEpochMilli(expiresMillis);
         return new AtomicMemory(
-                result.getString("id"), readScope(result), MemoryType.valueOf(result.getString("memory_type")),
+                memoryId, readScope(result), MemoryType.valueOf(result.getString("memory_type")),
                 result.getString("content"), result.getDouble("confidence"), result.getInt("priority"),
                 result.getInt("version"), result.getString("source_turn_id"),
+                sources, MemoryStatus.valueOf(result.getString("status")),
+                instant(result, "valid_from"), expiresAt, result.getString("superseded_by_id"),
                 instant(result, "created_at"), instant(result, "updated_at"));
     }
 
@@ -512,6 +782,22 @@ public class JdbcMemoryStore implements MemoryStore {
 
     private static long epochMillis(Instant instant) {
         return Objects.requireNonNull(instant, "instant must not be null").toEpochMilli();
+    }
+
+    private static byte[] encodeVector(double[] values) {
+        ByteBuffer buffer = ByteBuffer.allocate(values.length * Double.BYTES);
+        for (double value : values) buffer.putDouble(value);
+        return buffer.array();
+    }
+
+    private static double[] decodeVector(byte[] bytes, int dimension) throws SQLException {
+        if (dimension <= 0 || bytes == null || bytes.length != dimension * Double.BYTES) {
+            throw new SQLException("invalid persisted vector dimension or byte length");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        double[] values = new double[dimension];
+        for (int index = 0; index < dimension; index++) values[index] = buffer.getDouble();
+        return values;
     }
 
     private static boolean isApplied(Connection connection, int version) throws SQLException {

@@ -92,4 +92,9 @@ public final class OpenAiCompatibleMemoryEmbedding implements MemoryEmbedding {
         OpenAiCompatibleSupport.requirePositive(timeout, "timeout");
         return HttpClient.newBuilder().connectTimeout(timeout).build();
     }
+
+    @Override
+    public String modelId() {
+        return model;
+    }
 }

@@ -19,6 +19,8 @@ public final class MemoryPipeline implements AutoCloseable {
     private static final long DEFAULT_MAX_RETRY_DELAY_MILLIS = 5_000;
     private final MemoryStore store;
     private final MemoryModel model;
+    private final MemoryVectorIndex vectorIndex;
+    private final MemoryConflictResolver conflictResolver;
     private final int maxAttempts;
     private final long baseRetryDelayMillis;
     private final long maxRetryDelayMillis;
@@ -32,7 +34,13 @@ public final class MemoryPipeline implements AutoCloseable {
      * @param model L1-L3 记忆加工模型
      */
     public MemoryPipeline(MemoryStore store, MemoryModel model) {
-        this(store, model, DEFAULT_MAX_ATTEMPTS,
+        this(store, model, new HashingMemoryEmbedding(), DEFAULT_MAX_ATTEMPTS,
+                DEFAULT_BASE_RETRY_DELAY_MILLIS, DEFAULT_MAX_RETRY_DELAY_MILLIS);
+    }
+
+    /** 使用与召回链路相同的 Embedding 建立持久向量索引。 */
+    public MemoryPipeline(MemoryStore store, MemoryModel model, MemoryEmbedding embedding) {
+        this(store, model, embedding, DEFAULT_MAX_ATTEMPTS,
                 DEFAULT_BASE_RETRY_DELAY_MILLIS, DEFAULT_MAX_RETRY_DELAY_MILLIS);
     }
 
@@ -42,8 +50,22 @@ public final class MemoryPipeline implements AutoCloseable {
             int maxAttempts,
             long baseRetryDelayMillis,
             long maxRetryDelayMillis) {
+        this(store, model, new HashingMemoryEmbedding(), maxAttempts,
+                baseRetryDelayMillis, maxRetryDelayMillis);
+    }
+
+    MemoryPipeline(
+            MemoryStore store,
+            MemoryModel model,
+            MemoryEmbedding embedding,
+            int maxAttempts,
+            long baseRetryDelayMillis,
+            long maxRetryDelayMillis) {
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.model = Objects.requireNonNull(model, "model must not be null");
+        this.vectorIndex = new PersistentMemoryVectorIndex(
+                store, Objects.requireNonNull(embedding, "embedding must not be null"));
+        this.conflictResolver = MemoryConflictResolver.conservative();
         if (maxAttempts <= 0) throw new IllegalArgumentException("maxAttempts must be positive");
         if (baseRetryDelayMillis < 0) {
             throw new IllegalArgumentException("baseRetryDelayMillis must not be negative");
@@ -70,12 +92,8 @@ public final class MemoryPipeline implements AutoCloseable {
      * @param turn 已成功完成的对话轮次
      */
     public void capture(CompletedTurn turn) {
-        store.saveTurn(turn);
-        String jobId = "pipeline:" + turn.id();
-        PipelineJob existing = store.findJob(jobId).orElse(null);
-        if (existing != null && existing.status() == PipelineJob.Status.COMPLETED) return;
-        PipelineJob job = existing == null ? PipelineJob.pending(turn.id(), turn.scope()) : existing.retry();
-        store.saveJob(job);
+        PipelineJob job = store.captureTurn(turn);
+        if (job.status() == PipelineJob.Status.COMPLETED) return;
         schedule(job.id(), 0);
     }
 
@@ -157,7 +175,29 @@ public final class MemoryPipeline implements AutoCloseable {
                             .equals(TextAnalyzer.normalize(candidate.content())))
                     .findFirst()
                     .orElse(null);
-            if (exact != null) continue;
+            if (exact != null) {
+                AtomicMemory sourced = exact.revise(
+                        exact.content(), Math.max(exact.confidence(), candidate.confidence()),
+                        Math.max(exact.priority(), candidate.priority()), job.turnId());
+                store.upsertAtomic(sourced);
+                vectorIndex.index(sourced);
+                existing = store.listAtomic(job.scope());
+                continue;
+            }
+
+            AtomicMemory conflicting = existing.stream()
+                    .filter(memory -> conflictResolver.supersedes(memory, candidate))
+                    .max(Comparator.comparing(AtomicMemory::updatedAt))
+                    .orElse(null);
+            if (conflicting != null) {
+                AtomicMemory replacement = AtomicMemory.create(
+                        job.scope(), candidate.type(), candidate.content(), candidate.confidence(),
+                        candidate.priority(), job.turnId());
+                store.supersedeAtomic(conflicting, replacement);
+                vectorIndex.index(replacement);
+                existing = store.listAtomic(job.scope());
+                continue;
+            }
 
             AtomicMemory similar = existing.stream()
                     .filter(memory -> memory.type() == candidate.type())
@@ -180,6 +220,7 @@ public final class MemoryPipeline implements AutoCloseable {
                         job.turnId());
             }
             store.upsertAtomic(saved);
+            vectorIndex.index(saved);
             existing = store.listAtomic(job.scope());
         }
     }

@@ -64,6 +64,31 @@ agentos:
     data-dir: ".agentos/memory"
     # sqlite 模式使用的数据库文件，首次启动自动执行内置迁移。
     database-file: ".agentos/memory/memory.sqlite"
+    processor:
+      # rule 为零配置规则抽取；生产环境使用 openai 并配置独立记忆加工模型。
+      mode: "rule"
+      endpoint: "${AGENTOS_MEMORY_CHAT_ENDPOINT:}"
+      api-key: "${AGENTOS_MEMORY_CHAT_API_KEY:}"
+      model: "${AGENTOS_MEMORY_CHAT_MODEL:}"
+      timeout: "60s"
+    embedding:
+      # hashing 仅适合本地开发；生产环境使用 openai，向量会按内容版本持久化。
+      mode: "hashing"
+      endpoint: "${AGENTOS_MEMORY_EMBEDDING_ENDPOINT:}"
+      api-key: "${AGENTOS_MEMORY_EMBEDDING_API_KEY:}"
+      model: "${AGENTOS_MEMORY_EMBEDDING_MODEL:}"
+      timeout: "30s"
+
+  security:
+    # 生产环境必须设置；为空时仅适合本机开发。
+    api-key: "${AGENTOS_API_KEY:}"
+    identity:
+      # 默认使用服务端固定身份，不信任调用方伪造的 team/user/role Header。
+      team-id: "default-team"
+      user-id: "default-user"
+      roles: ""
+      # 仅在可信 API Gateway 已完成身份认证和 Header 清洗时开启。
+      trust-headers: false
 
 logging:
   level:

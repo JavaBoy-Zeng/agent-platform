@@ -20,10 +20,11 @@ MemoryKnowledge 能力说明。由于本次没有记录上游提交号，本文�
 
 1. 已实现基础能力：L0-L3 数据模型、异步加工流水线、基础持久化、混合检索、
    召回上下文组装以及与 Agent 执行链路的集成。
-2. 可替换能力：默认仍使用零配置规则抽取和 Hashing 向量，同时已经提供真实
-   OpenAI-compatible LLM/Embedding 适配器及 JDBC/SQLite 持久化。
-3. 尚未实现能力：Skill、Wiki、CodeGraph、Memory Asset、团队权限治理、Memory
-   HTTP Gateway、SDK、适配器、管理面板以及完整部署体系。
+2. 已完成的 Chat Memory 加固：生命周期/TTL、来源与替代关系、稳定业务幂等键、
+   L0+Job 事务 outbox、持久化 Embedding 精确向量索引、真实模型配置以及 Memory API
+   身份绑定与最小 ACL。
+3. 尚未实现能力：Skill、Wiki、CodeGraph、统一 Memory Asset、完整团队 RBAC、SDK、
+   适配器、管理面板以及完整部署体系。
 
 因此：
 
@@ -61,7 +62,7 @@ Agent 执行计划
 MainAgent
     │
     └── 成功后调用 MemoryService.capture()
-            ├── 按 CompletedTurn.id 幂等保存 L0
+            ├── 按稳定 businessKey 幂等、同事务保存 L0 + Pipeline Job
             └── MemoryPipeline 异步处理
                     ├── L1 原子记忆抽取、去重和修订
                     ├── L2 场景记忆聚合
@@ -74,28 +75,31 @@ MainAgent
 | --- | --- | --- | --- |
 | 统一记忆服务入口 | 已实现 | [`MemoryService`](src/main/java/com/github/agentos/memory/MemoryService.java) | 提供召回、捕获、手工事实写入和分层数据查询入口。 |
 | L0 成功轮次快照 | 已实现 | [`CompletedTurn`](src/main/java/com/github/agentos/memory/CompletedTurn.java) | 保存请求目标、Agent 最终输出、成功工具结果的有界摘要、作用域及完成时间，不等同于完整原始日志。 |
-| L0 轮次捕获 | 已实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | `capture()` 先保存成功轮次快照，再创建异步处理任务；两次写入当前不属于同一事务。 |
+| L0 轮次捕获 | 已实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java)、[`MemoryStore`](src/main/java/com/github/agentos/memory/MemoryStore.java) | `captureTurn()` 将成功轮次和待处理 Job 作为一个 outbox 提交边界；SQLite 同 JDBC 事务提交。 |
 | L0 最近对话查询 | 已实现 | [`InMemoryMemoryStore`](src/main/java/com/github/agentos/memory/InMemoryMemoryStore.java) | 按同一会话作用域查询最近完成轮次。 |
-| L1 原子记忆模型 | 已实现 | [`AtomicMemory`](src/main/java/com/github/agentos/memory/AtomicMemory.java) | 支持类型、置信度、优先级、版本和来源轮次。 |
+| L1 原子记忆模型 | 已实现 | [`AtomicMemory`](src/main/java/com/github/agentos/memory/AtomicMemory.java) | 支持类型、置信度、优先级、版本、来源历史、状态、有效期、TTL 和 supersede 关系。 |
 | L1 记忆语义类型 | 已实现 | [`MemoryType`](src/main/java/com/github/agentos/memory/MemoryType.java) | 包含事实、偏好、约束、决策、事件、经验和画像。 |
 | L1 抽取扩展接口 | 已实现 | [`MemoryModel`](src/main/java/com/github/agentos/memory/MemoryModel.java) | 抽象原子记忆抽取、场景生成和画像生成能力。 |
 | L1 规则式抽取 | 部分实现 | [`RuleBasedMemoryModel`](src/main/java/com/github/agentos/memory/RuleBasedMemoryModel.java) | 使用关键词和正则分类，不是真正的 LLM 抽取实现。 |
 | 真实 LLM 记忆加工适配器 | 已实现 | [`OpenAiCompatibleMemoryModel`](src/main/java/com/github/agentos/memory/OpenAiCompatibleMemoryModel.java) | 通过 OpenAI-compatible Chat Completions 完成 L1 抽取、L2 场景和 L3 画像生成，并校验结构化 JSON。 |
 | L1 去重与修订 | 已实现基础版 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | 支持规范化精确去重、Jaccard 相似合并和版本递增。 |
 | L1 手工事实写入 | 已实现 | [`MemoryService`](src/main/java/com/github/agentos/memory/MemoryService.java) | `rememberFact()` 可用于管理或迁移场景。 |
+| L1 生命周期管理 | 已实现 | [`MemoryService`](src/main/java/com/github/agentos/memory/MemoryService.java)、[`MemoryStatus`](src/main/java/com/github/agentos/memory/MemoryStatus.java) | 支持纠错、TTL 设置/清除、软失效、替代、永久删除和到期清理；普通召回排除非有效记录。 |
+| 冲突与来源演进 | 已实现基础版 | [`MemoryConflictResolver`](src/main/java/com/github/agentos/memory/MemoryConflictResolver.java)、[`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java) | 保守识别显式更新或关键数字变化，旧记忆标记为 SUPERSEDED，并保留多来源历史。 |
 | L2 场景记忆模型 | 已实现 | [`ScenarioMemory`](src/main/java/com/github/agentos/memory/ScenarioMemory.java) | 按任务或 Agent 聚合场景摘要，并支持版本递增。 |
 | L2 场景聚合 | 部分实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java)、[`RuleBasedMemoryModel`](src/main/java/com/github/agentos/memory/RuleBasedMemoryModel.java) | 当前为规则格式化，不具备真实 LLM 总结质量。 |
 | L3 核心画像模型 | 已实现 | [`ProfileMemory`](src/main/java/com/github/agentos/memory/ProfileMemory.java) | 保存用户和 Agent 的稳定长期画像。 |
 | L3 画像归纳 | 部分实现 | [`MemoryPipeline`](src/main/java/com/github/agentos/memory/MemoryPipeline.java)、[`RuleBasedMemoryModel`](src/main/java/com/github/agentos/memory/RuleBasedMemoryModel.java) | 当前从高优先级原子记忆和场景中规则化生成。 |
 | BM25 关键词检索 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java) | 对 L1 原子记忆进行即时 BM25 排序。 |
-| 向量检索 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java)、[`MemoryEmbedding`](src/main/java/com/github/agentos/memory/MemoryEmbedding.java) | 支持本地 Hashing 或真实 HTTP Embedding，并与 BM25 进行 RRF 融合。 |
+| 向量检索 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java)、[`PersistentMemoryVectorIndex`](src/main/java/com/github/agentos/memory/PersistentMemoryVectorIndex.java) | 文档向量按模型和内容版本持久化并跨重启复用；当前为精确余弦线性索引，与 BM25 进行 RRF 融合。 |
 | 默认 Hashing 向量 | 已实现基础版 | [`HashingMemoryEmbedding`](src/main/java/com/github/agentos/memory/HashingMemoryEmbedding.java) | 用于零配置和测试，不能视为真正语义 Embedding。 |
 | 真实 Embedding 适配器 | 已实现 | [`OpenAiCompatibleMemoryEmbedding`](src/main/java/com/github/agentos/memory/OpenAiCompatibleMemoryEmbedding.java) | 调用 OpenAI-compatible Embeddings 端点并校验数值向量。 |
 | RRF 混合排序 | 已实现 | [`HybridMemoryRetriever`](src/main/java/com/github/agentos/memory/HybridMemoryRetriever.java) | 融合 BM25 和向量召回排名。 |
 | 中英文基础分词 | 已实现基础版 | [`TextAnalyzer`](src/main/java/com/github/agentos/memory/TextAnalyzer.java) | 英文按词、中文按单字和二元组进行无依赖分词。 |
 | 检索请求和结果模型 | 已实现 | [`MemoryQuery`](src/main/java/com/github/agentos/memory/MemoryQuery.java)、[`MemorySearchHit`](src/main/java/com/github/agentos/memory/MemorySearchHit.java) | 支持作用域、记忆类型、数量限制、评分和来源。 |
 | 记忆作用域隔离 | 已实现基础版 | [`MemoryScope`](src/main/java/com/github/agentos/memory/MemoryScope.java) | 使用 team、user、agent、session、task 标识控制查询范围，但不等于 ACL。 |
-| Memory HTTP 只读查询 | 已实现基础版 | [`MemoryController`](../agentos-server/src/main/java/com/github/agentos/server/MemoryController.java) | 提供按作用域查看 L0-L3 数量及实际数据的 GET 接口，尚未接入鉴权和写操作。 |
+| Memory HTTP 生命周期 API | 已实现 | [`MemoryController`](../agentos-server/src/main/java/com/github/agentos/server/controller/MemoryController.java) | 提供 L0-L3 查询，以及事实创建、纠错、TTL、失效、替代和删除接口。 |
+| Memory API 身份与 ACL | 已实现基础版 | [`RequestIdentityFilter`](../agentos-server/src/main/java/com/github/agentos/server/security/RequestIdentityFilter.java)、[`MemoryController`](../agentos-server/src/main/java/com/github/agentos/server/controller/MemoryController.java) | 请求绑定服务端固定身份或可信网关 Header；默认按 team/user 所有权隔离，MEMORY_ADMIN 可跨身份管理。尚非完整成员/RBAC 模型。 |
 | 召回预算与超时 | 已实现 | [`MemoryRecallPolicy`](src/main/java/com/github/agentos/memory/MemoryRecallPolicy.java) | 限制最近对话数、原子记忆数、场景数、字符数和超时时间。 |
 | 记忆上下文模型 | 已实现 | [`MemoryContext`](src/main/java/com/github/agentos/memory/MemoryContext.java) | 统一封装 L0-L3 召回结果、格式化文本及降级状态。 |
 | 上下文边界及截断 | 已实现 | [`MemoryContextFormatter`](src/main/java/com/github/agentos/memory/MemoryContextFormatter.java) | 添加不可信历史数据边界，并根据字符预算截断。 |
@@ -109,7 +113,7 @@ MainAgent
 | 数据库迁移与索引 | 已实现 | [`migration`](src/main/resources/com/github/agentos/memory/migration) | 内置 schema 历史、L0-L3/Job 建表和作用域/恢复队列索引，初始化时事务化执行。 |
 | 规划前记忆召回 | 已接入 | [`LlmAgentPlanner`](../agentos-planner/src/main/java/com/github/agentos/planner/LlmAgentPlanner.java) | 初始规划和重规划前调用 `MemoryService.recall()`。 |
 | 成功后记忆捕获 | 已接入 | [`MainAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/MainAgent.java) | Agent 执行成功后保存本轮输入、输出和工具结果。 |
-| Spring 运行配置 | 已接入 | [`AgentOsConfiguration`](../agentos-server/src/main/java/com/github/agentos/server/config/AgentOsConfiguration.java) | 支持 `memory`、`file` 和 `sqlite` 三种运行模式。 |
+| Spring 运行配置 | 已接入 | [`AgentOsConfiguration`](../agentos-server/src/main/java/com/github/agentos/server/config/AgentOsConfiguration.java) | 支持三种存储模式，并可通过 `processor.mode`、`embedding.mode` 正式切换规则/Hashing 与 OpenAI-compatible 模型。 |
 
 ## 5. 已实现能力的类级入口
 
@@ -119,9 +123,9 @@ MainAgent
 MemoryService.capture(CompletedTurn turn)
 ```
 
-这里的幂等边界是 `CompletedTurn.id`：`MemoryStore.saveTurn()` 对相同 ID 使用
-`putIfAbsent()`。`CompletedTurn.success()` 每次会生成随机 UUID，因此只有调用方重用
-同一个轮次 ID 时才能避免重复写入；当前实现不保证业务语义上的 exactly-once。
+这里的幂等边界是 actor 维度的 `CompletedTurn.businessKey`。主 Agent 使用稳定
+`invocationId` 创建轮次，并派生稳定 ID；存储同时约束 team/user/agent/businessKey，
+传输重试不会覆盖第一次成功快照。`captureTurn()` 原子提交 L0 与 Pipeline Job。
 
 调用链：
 
@@ -129,8 +133,7 @@ MemoryService.capture(CompletedTurn turn)
 MainAgent.run()
   -> MemoryService.capture()
   -> MemoryPipeline.capture()
-  -> MemoryStore.saveTurn()
-  -> PipelineJob.pending()
+  -> MemoryStore.captureTurn() // L0 + Pipeline Job 同事务/outbox
   -> MemoryPipeline.processL1()
   -> MemoryPipeline.processL2()
   -> MemoryPipeline.processL3()
@@ -166,7 +169,7 @@ MemoryService.persistent(Path directory)
 MemoryService.sqlite(Path databaseFile)
 ```
 
-两个工厂方法当前默认组装：
+三个工厂方法当前默认组装：
 
 ```text
 RuleBasedMemoryModel
@@ -195,9 +198,9 @@ RuleBasedMemoryModel
 | Memory Asset 统一模型 | 未实现 | `MemoryAsset`、`AssetType`、`AssetStatus` |
 | Asset 版本、状态、所有权和使用统计 | 未实现 | `AssetVersion`、`AssetOwnershipService`、`AssetUsageService` |
 | Agent 与资产装配关系 | 未实现 | `AgentAssetBinding`、`AgentLoadoutService` |
-| Team、User、Role 和 Membership | 未实现 | `Team`、`User`、`Role`、`TeamMembership` |
+| 完整 Team、User、Role 和 Membership 数据模型 | 未实现 | `Team`、`User`、`Role`、`TeamMembership` |
 | private/team/restricted/agent 可见性 | 未实现 | `AssetVisibility`、`AccessPolicy` |
-| User/Role/Agent ACL | 未实现 | `AssetAcl`、`AuthorizationService` |
+| 统一 Asset 级 User/Role/Agent ACL | 未实现 | `AssetAcl`、`AuthorizationService`；当前仅 Chat Memory API 有 team/user 最小 ACL |
 | `/v3/tools/list`、`/v3/tools/call` | 未实现 | `MemoryToolController`、`MemoryToolRegistry` |
 | Knowledge HTTP API 和状态回调 | 未实现 | `KnowledgeController`、`KnowledgeCallbackClient` |
 | OpenAPI 文档 | 未实现 | SpringDoc/OpenAPI 配置与接口注解 |
@@ -228,12 +231,13 @@ mvn -pl agentos-memory test
 结果：
 
 ```text
-Tests run: 19, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 24, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
-测试覆盖服务主链路、混合召回、存储契约、作用域边界、失败恢复、并发幂等、
-OpenAI-compatible 模型契约、SQLite 迁移/索引/重载、异常降级和性能回归预算。
+测试覆盖服务主链路、混合召回、生命周期/TTL/来源/supersede、事务 outbox、稳定业务幂等、
+向量跨重启复用、存储契约、作用域边界、失败恢复、并发幂等、OpenAI-compatible 模型契约、
+SQLite 迁移/索引/重载、Memory API ACL、异常降级和性能回归预算。
 
 ### 8.2 全项目测试
 
@@ -261,6 +265,19 @@ mvn test
 4. [x] 增加真实 LLM `MemoryModel` 实现和真实 Embedding 适配器。
 5. [x] 增加 JDBC/SQLite 存储、索引和数据库迁移。
 6. [x] 补齐异常恢复、并发、幂等和性能回归测试。
+
+### Chat Memory 生产加固（已完成基础版）
+
+1. [x] 记忆修改、纠错、删除、失效和 TTL API。
+2. [x] L0 与 Pipeline Job 的事务 outbox。
+3. [x] 稳定业务幂等键。
+4. [x] 真实 LLM/Embedding 的 Spring 配置化启用。
+5. [x] Embedding 持久化与可替换向量索引端口。
+6. [x] 冲突、时效、来源历史和 supersede 模型。
+7. [x] Memory API 请求身份绑定与 team/user 最小 ACL。
+
+这里的“基础版”意味着单机 SQLite/File 场景已经闭环；大规模 ANN、分布式 outbox 消费、完整
+团队成员/RBAC、审计事件与生产模型质量评测仍属于后续生产验收范围。
 
 ### 阶段二：实现 Memory Asset 与治理
 

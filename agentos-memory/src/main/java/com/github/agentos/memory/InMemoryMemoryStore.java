@@ -1,5 +1,6 @@
 package com.github.agentos.memory;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -15,10 +16,28 @@ public class InMemoryMemoryStore implements MemoryStore {
     protected final Map<String, ScenarioMemory> scenarios = new LinkedHashMap<>();
     protected final Map<String, ProfileMemory> profiles = new LinkedHashMap<>();
     protected final Map<String, PipelineJob> jobs = new LinkedHashMap<>();
+    protected final Map<String, MemoryVector> vectors = new LinkedHashMap<>();
+
+    @Override
+    public synchronized PipelineJob captureTurn(CompletedTurn turn) {
+        CompletedTurn stored = findByBusinessKey(turn).orElseGet(() -> {
+            turns.putIfAbsent(turn.id(), turn);
+            return turns.get(turn.id());
+        });
+        String jobId = "pipeline:" + stored.id();
+        PipelineJob existing = jobs.get(jobId);
+        if (existing != null && existing.status() == PipelineJob.Status.COMPLETED) return existing;
+        PipelineJob job = existing == null
+                ? PipelineJob.pending(stored.id(), stored.scope())
+                : existing.retry();
+        jobs.put(job.id(), job);
+        onMutation();
+        return job;
+    }
 
     @Override
     public synchronized void saveTurn(CompletedTurn turn) {
-        turns.putIfAbsent(turn.id(), turn);
+        if (findByBusinessKey(turn).isEmpty()) turns.putIfAbsent(turn.id(), turn);
         onMutation();
     }
 
@@ -49,14 +68,78 @@ public class InMemoryMemoryStore implements MemoryStore {
     }
 
     @Override
+    public synchronized Optional<AtomicMemory> findAtomic(String memoryId) {
+        return Optional.ofNullable(atomicMemories.get(memoryId));
+    }
+
+    @Override
+    public synchronized boolean deleteAtomic(String memoryId) {
+        AtomicMemory removed = atomicMemories.remove(memoryId);
+        vectors.entrySet().removeIf(entry -> entry.getValue().memoryId().equals(memoryId));
+        if (removed != null) onMutation();
+        return removed != null;
+    }
+
+    @Override
+    public synchronized int purgeExpired(Instant now) {
+        List<String> expired = atomicMemories.values().stream()
+                .filter(memory -> memory.expiresAt() != null && !memory.expiresAt().isAfter(now))
+                .map(AtomicMemory::id)
+                .toList();
+        expired.forEach(atomicMemories::remove);
+        vectors.entrySet().removeIf(entry -> expired.contains(entry.getValue().memoryId()));
+        if (!expired.isEmpty()) onMutation();
+        return expired.size();
+    }
+
+    @Override
+    public synchronized void supersedeAtomic(AtomicMemory previous, AtomicMemory replacement) {
+        AtomicMemory current = atomicMemories.get(previous.id());
+        if (current == null) throw new IllegalArgumentException("previous memory does not exist");
+        if (current.id().equals(replacement.id())) {
+            throw new IllegalArgumentException("replacement must have a different id");
+        }
+        if (!current.scope().sameActor(replacement.scope())) {
+            throw new IllegalArgumentException("replacement must belong to the same actor");
+        }
+        AtomicMemory marked = current.supersedeBy(
+                replacement.id(), replacement.sourceTurnId());
+        atomicMemories.put(replacement.id(), replacement);
+        atomicMemories.put(marked.id(), marked);
+        onMutation();
+    }
+
+    @Override
     public synchronized List<AtomicMemory> listAtomic(MemoryScope scope) {
+        return listAtomic(scope, false);
+    }
+
+    @Override
+    public synchronized List<AtomicMemory> listAtomic(MemoryScope scope, boolean includeInactive) {
+        Instant now = Instant.now();
         return atomicMemories.values().stream()
                 .filter(memory -> memory.scope().sameActor(scope))
                 .filter(memory -> scope.taskId().isEmpty()
                         || memory.scope().taskId().isEmpty()
                         || scope.taskId().equals(memory.scope().taskId()))
+                .filter(memory -> includeInactive || memory.activeAt(now))
                 .sorted(Comparator.comparing(AtomicMemory::updatedAt).reversed())
                 .toList();
+    }
+
+    @Override
+    public synchronized void saveVector(MemoryVector vector) {
+        String key = vector.memoryId() + '\u0000' + vector.model();
+        MemoryVector current = vectors.get(key);
+        if (current == null || vector.contentVersion() >= current.contentVersion()) {
+            vectors.put(key, vector);
+            onMutation();
+        }
+    }
+
+    @Override
+    public synchronized Optional<MemoryVector> findVector(String memoryId, String model) {
+        return Optional.ofNullable(vectors.get(memoryId + '\u0000' + model));
     }
 
     @Override
@@ -123,5 +206,12 @@ public class InMemoryMemoryStore implements MemoryStore {
 
     private static String actorKey(MemoryScope scope) {
         return scope.teamId() + '\u0000' + scope.userId() + '\u0000' + scope.agentId();
+    }
+
+    private Optional<CompletedTurn> findByBusinessKey(CompletedTurn candidate) {
+        return turns.values().stream()
+                .filter(turn -> turn.scope().sameActor(candidate.scope()))
+                .filter(turn -> turn.businessKey().equals(candidate.businessKey()))
+                .findFirst();
     }
 }

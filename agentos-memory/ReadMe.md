@@ -13,14 +13,15 @@
 | L3 | `ProfileMemory` | team + user + agent | 保存跨会话的稳定长期画像 |
 
 空 `taskId` 表示通用记忆：指定任务可以召回同任务及通用记忆；使用空任务查询时可以查看
-同一参与者下的全部任务记忆。这是数据查询隔离，不等同于用户权限或 ACL。
+同一参与者下的全部任务记忆。Server API 还会把请求绑定到可信的 team/user 身份，并在读写时
+执行所有权检查；这是一套 Memory API 最小 ACL，不等同于完整的团队成员与资源级 RBAC。
 
 ## 主链路
 
 ```text
 成功的 Agent 轮次
   -> MemoryService.capture()
-  -> 幂等保存 L0
+  -> 同事务保存 L0 + Pipeline Job（transactional outbox）
   -> MemoryPipeline: L1 -> L2 -> L3
   -> 持久化 PipelineJob 阶段和失败状态
 
@@ -37,8 +38,13 @@
 中的 `PENDING`、`RUNNING` 和可重试 `FAILED` 任务会恢复。召回超时或失败时返回
 `degraded=true` 的空上下文，不阻断 Agent 主任务。
 
-`saveTurn` 与 `saveJob` 当前是两次独立提交：如果进程在 L0 写入成功、Job 写入前退出，会留下
-无法被启动扫描自动恢复的 orphan L0。生产化应使用同事务 outbox，或扫描并补偿缺少 Job 的 L0。
+`MemoryStore.captureTurn()` 是 L0 与 Pipeline Job 的原子提交边界。SQLite 使用同一个 JDBC
+事务，文件存储使用单次原子文件替换；进程重启后可从持久化 Job 恢复。调用方应使用稳定业务键
+创建 `CompletedTurn`，避免网络重试产生重复 L0：
+
+```java
+CompletedTurn.success(scope, invocationId, input, output, toolOutputs);
+```
 
 ## 快速使用
 
@@ -112,9 +118,10 @@ try (MemoryService memory = new MemoryService(
 不要把 API Key 写入仓库；应通过环境变量或外部密钥系统注入。不同兼容服务对
 `response_format` 的支持可能不同，上线前应运行对应服务的契约测试。
 
-当前没有持久化文档向量。真实 Embedding 模式下一次 L1 召回会调用一次 Query Embedding，并对
-候选 Atom 逐条计算 Embedding，近似产生 `N+1` 次 HTTP 请求，只适合小规模验证。生产环境应增加
-向量预计算、批处理、缓存和向量索引。
+原子记忆写入或正文修订时会生成文档向量，并按 `memoryId + model + contentVersion` 持久化；
+召回只计算一次 Query Embedding，已有文档向量可跨重启复用。当前 `PersistentMemoryVectorIndex`
+使用精确余弦搜索，消除了逐候选远程 Embedding 请求，但仍是单机线性扫描；大规模部署可实现同一
+`MemoryVectorIndex` 端口，替换为 pgvector、Milvus 或 sqlite-vec 等 ANN 后端。
 
 ## JDBC / SQLite
 
@@ -124,6 +131,7 @@ try (MemoryService memory = new MemoryService(
 V0__migration_history.sql  迁移历史表
 V1__memory_core.sql        L0-L3 与 Pipeline Job 表
 V2__memory_indexes.sql     作用域、时间和恢复队列索引
+V3__memory_lifecycle_vectors.sql  生命周期、来源历史、业务幂等键和持久向量
 ```
 
 当前 schema 版本可通过 `JdbcMemoryStore.schemaVersion()` 查询。迁移与版本记录在同一事务
@@ -136,8 +144,12 @@ V2__memory_indexes.sql     作用域、时间和恢复队列索引
 
 写入契约：
 
-- `CompletedTurn.id` 是 L0 幂等键，相同 ID 不覆盖第一次提交的成功轮次快照。
+- `CompletedTurn.businessKey` 是 actor 维度的业务幂等键；稳定键会派生稳定 `id`，首次提交的
+  成功轮次快照不会被重试覆盖。
+- `captureTurn()` 同事务写入 L0 和待处理 Job，避免 orphan L0。
 - L1/L2/L3 只有传入版本不低于当前版本时才更新；低版本不会回写，但同版本仍是 last-write-wins。
+- L1 保存状态、有效期、到期时间、来源历史和 `supersededById`；普通召回只返回当前有效记录。
+- 文档 Embedding 按模型和内容版本持久化，删除或清理原子记忆时由外键级联删除。
 - L3 以 team/user/agent 唯一定位，不按 session 或 task 拆分。
 - 单个存储方法中的复合写入使用 JDBC 事务；SQLite 启用外键和 busy timeout。
 
@@ -158,10 +170,43 @@ agentos:
     mode: sqlite # sqlite | file | memory
     data-dir: .agentos/memory
     database-file: .agentos/memory/memory.sqlite
+    processor:
+      mode: openai # openai | rule
+      endpoint: ${AGENTOS_MEMORY_CHAT_ENDPOINT}
+      api-key: ${AGENTOS_MEMORY_CHAT_API_KEY}
+      model: ${AGENTOS_MEMORY_CHAT_MODEL}
+      timeout: 60s
+    embedding:
+      mode: openai # openai | hashing
+      endpoint: ${AGENTOS_MEMORY_EMBEDDING_ENDPOINT}
+      api-key: ${AGENTOS_MEMORY_EMBEDDING_API_KEY}
+      model: ${AGENTOS_MEMORY_EMBEDDING_MODEL}
+      timeout: 30s
+  security:
+    api-key: ${AGENTOS_API_KEY}
+    identity:
+      team-id: default-team
+      user-id: default-user
+      roles: ""
+      trust-headers: false
 ```
 
 `data-dir` 只用于 `file`，`database-file` 只用于 `sqlite`。未知模式会在启动时直接报错，
 避免配置拼写错误后静默切换存储。
+
+`trust-headers=false` 时服务忽略调用方身份 Header，使用服务端固定身份。只有可信 API Gateway
+已经完成认证并清洗 `X-AgentOS-Team-Id`、`X-AgentOS-User-Id`、`X-AgentOS-Roles` 时才可开启；
+`MEMORY_ADMIN` 角色可跨 team/user 管理记忆。
+
+## 生命周期 REST API
+
+- `POST /api/memories/facts`：创建事实，可通过 `ttlSeconds` 设置 TTL；
+- `PATCH /api/memories/atomic/{id}`：纠正正文与绝对到期时间；
+- `PUT /api/memories/atomic/{id}/ttl`：设置 TTL，`ttlSeconds=null` 清除 TTL；
+- `POST /api/memories/atomic/{id}/invalidate`：软失效并保留审计历史；
+- `POST /api/memories/atomic/{id}/supersede`：创建替代记忆并关联旧记录；
+- `DELETE /api/memories/atomic/{id}`：永久删除记忆、来源关系和向量；
+- `GET /api/memories?...&includeInactive=true`：管理员视图可包含失效、替代和过期记录。
 
 ## 测试
 
@@ -179,6 +224,8 @@ mvn -pl agentos-memory test
 - 召回超时降级、字符预算和损坏文件；
 - OpenAI-compatible Chat/Embedding 请求响应契约及 HTTP 错误；
 - SQLite 迁移幂等、索引、重载和代表性性能回归预算。
+- 生命周期、TTL、来源历史、supersede、事务 outbox、稳定业务幂等键和跨重启向量复用；
+- Memory REST 写 API、请求身份绑定和跨身份 ACL 拒绝。
 
 性能测试是防止明显退化的宽松回归门槛，不替代针对目标硬件、数据规模和并发模型的 JMH
 或压测验收。

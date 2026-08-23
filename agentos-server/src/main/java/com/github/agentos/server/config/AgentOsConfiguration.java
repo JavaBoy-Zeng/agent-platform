@@ -14,6 +14,17 @@ import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.CheckpointStore;
 import com.github.agentos.kernel.InMemoryAgentEventPublisher;
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.memory.MemoryStore;
+import com.github.agentos.memory.MemoryModel;
+import com.github.agentos.memory.MemoryEmbedding;
+import com.github.agentos.memory.MemoryRecallPolicy;
+import com.github.agentos.memory.InMemoryMemoryStore;
+import com.github.agentos.memory.FileMemoryStore;
+import com.github.agentos.memory.SqliteMemoryStore;
+import com.github.agentos.memory.RuleBasedMemoryModel;
+import com.github.agentos.memory.HashingMemoryEmbedding;
+import com.github.agentos.memory.OpenAiCompatibleMemoryModel;
+import com.github.agentos.memory.OpenAiCompatibleMemoryEmbedding;
 import com.github.agentos.planner.*;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.AgentRunCoordinator;
@@ -43,6 +54,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.nio.file.Path;
+import java.net.URI;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -206,14 +219,54 @@ public class AgentOsConfiguration {
     MemoryService memoryService(
             @Value("${agentos.memory.mode:file}") String mode,
             @Value("${agentos.memory.data-dir:.agentos/memory}") String dataDirectory,
-            @Value("${agentos.memory.database-file:.agentos/memory/memory.sqlite}") String databaseFile) {
-        return switch (mode.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "memory" -> MemoryService.inMemory();
-            case "file" -> MemoryService.persistent(Path.of(dataDirectory));
-            case "sqlite" -> MemoryService.sqlite(Path.of(databaseFile));
+            @Value("${agentos.memory.database-file:.agentos/memory/memory.sqlite}") String databaseFile,
+            @Value("${agentos.memory.processor.mode:rule}") String processorMode,
+            @Value("${agentos.memory.processor.endpoint:}") String processorEndpoint,
+            @Value("${agentos.memory.processor.api-key:}") String processorApiKey,
+            @Value("${agentos.memory.processor.model:}") String processorModel,
+            @Value("${agentos.memory.processor.timeout:60s}") Duration processorTimeout,
+            @Value("${agentos.memory.embedding.mode:hashing}") String embeddingMode,
+            @Value("${agentos.memory.embedding.endpoint:}") String embeddingEndpoint,
+            @Value("${agentos.memory.embedding.api-key:}") String embeddingApiKey,
+            @Value("${agentos.memory.embedding.model:}") String embeddingModel,
+            @Value("${agentos.memory.embedding.timeout:30s}") Duration embeddingTimeout) {
+        MemoryStore store = switch (mode.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "memory" -> new InMemoryMemoryStore();
+            case "file" -> new FileMemoryStore(Path.of(dataDirectory));
+            case "sqlite" -> new SqliteMemoryStore(Path.of(databaseFile));
             default -> throw new IllegalArgumentException(
                     "agentos.memory.mode must be one of: memory, file, sqlite");
         };
+        MemoryModel model = switch (processorMode.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "rule" -> new RuleBasedMemoryModel();
+            case "openai" -> new OpenAiCompatibleMemoryModel(
+                    requiredUri(processorEndpoint, "agentos.memory.processor.endpoint"),
+                    processorApiKey, requiredText(processorModel, "agentos.memory.processor.model"),
+                    processorTimeout);
+            default -> throw new IllegalArgumentException(
+                    "agentos.memory.processor.mode must be one of: rule, openai");
+        };
+        MemoryEmbedding embedding = switch (embeddingMode.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "hashing" -> new HashingMemoryEmbedding();
+            case "openai" -> new OpenAiCompatibleMemoryEmbedding(
+                    requiredUri(embeddingEndpoint, "agentos.memory.embedding.endpoint"),
+                    embeddingApiKey, requiredText(embeddingModel, "agentos.memory.embedding.model"),
+                    embeddingTimeout);
+            default -> throw new IllegalArgumentException(
+                    "agentos.memory.embedding.mode must be one of: hashing, openai");
+        };
+        return new MemoryService(store, model, embedding, MemoryRecallPolicy.defaults());
+    }
+
+    private static URI requiredUri(String value, String property) {
+        return URI.create(requiredText(value, property));
+    }
+
+    private static String requiredText(String value, String property) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(property + " must not be blank");
+        }
+        return value.trim();
     }
 
     /**

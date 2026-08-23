@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -21,6 +22,7 @@ public final class MemoryService implements AutoCloseable {
     private final MemoryStore store;
     private final MemoryPipeline pipeline;
     private final HybridMemoryRetriever retriever;
+    private final MemoryVectorIndex vectorIndex;
     private final MemoryRecallPolicy recallPolicy;
     private final MemoryContextFormatter formatter = new MemoryContextFormatter();
     private final ExecutorService recallExecutor;
@@ -41,8 +43,10 @@ public final class MemoryService implements AutoCloseable {
             MemoryRecallPolicy recallPolicy) {
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.recallPolicy = Objects.requireNonNull(recallPolicy, "recallPolicy must not be null");
-        this.retriever = new HybridMemoryRetriever(store, embedding);
-        this.pipeline = new MemoryPipeline(store, model);
+        MemoryEmbedding checkedEmbedding = Objects.requireNonNull(embedding, "embedding must not be null");
+        this.retriever = new HybridMemoryRetriever(store, checkedEmbedding);
+        this.vectorIndex = new PersistentMemoryVectorIndex(store, checkedEmbedding);
+        this.pipeline = new MemoryPipeline(store, model, checkedEmbedding);
         this.recallExecutor = Executors.newVirtualThreadPerTaskExecutor();
     }
 
@@ -144,9 +148,90 @@ public final class MemoryService implements AutoCloseable {
      * @throws NullPointerException 当 {@code scope} 或 {@code content} 为 {@code null} 时抛出
      * @throws IllegalArgumentException 当 {@code content} 不符合原子记忆约束时抛出
      */
-    public void rememberFact(MemoryScope scope, String content) {
-        store.upsertAtomic(AtomicMemory.create(
-                scope, MemoryType.FACT, content, 1.0, 8, "manual:" + Instant.now().toEpochMilli()));
+    public AtomicMemory rememberFact(MemoryScope scope, String content) {
+        return rememberFact(scope, content, null);
+    }
+
+    /** 手工写入带可选 TTL 的事实。 */
+    public AtomicMemory rememberFact(MemoryScope scope, String content, Duration ttl) {
+        String source = operationSource("manual");
+        Instant expiresAt = null;
+        if (ttl != null) {
+            if (ttl.isZero() || ttl.isNegative()) throw new IllegalArgumentException("ttl must be positive");
+            expiresAt = Instant.now().plus(ttl);
+        }
+        AtomicMemory memory = AtomicMemory.create(
+                scope, MemoryType.FACT, content, 1.0, 8, source, expiresAt);
+        store.upsertAtomic(memory);
+        vectorIndex.index(memory);
+        return memory;
+    }
+
+    /** 查询单条原子记忆，包括失效、已替代和已过期记录。 */
+    public AtomicMemory findAtomic(String memoryId) {
+        return store.findAtomic(memoryId).orElse(null);
+    }
+
+    /** 人工纠正记忆正文和失效时间。 */
+    public AtomicMemory correctAtomic(
+            MemoryScope actor,
+            String memoryId,
+            String content,
+            Instant expiresAt) {
+        AtomicMemory current = requireOwned(actor, memoryId);
+        AtomicMemory corrected = current.correct(
+                content, expiresAt, operationSource("correction"));
+        store.upsertAtomic(corrected);
+        vectorIndex.index(corrected);
+        return corrected;
+    }
+
+    /** 将记忆软失效并保留审计信息。 */
+    public AtomicMemory invalidateAtomic(MemoryScope actor, String memoryId) {
+        AtomicMemory current = requireOwned(actor, memoryId);
+        AtomicMemory invalidated = current.invalidate(operationSource("invalidate"));
+        store.upsertAtomic(invalidated);
+        return invalidated;
+    }
+
+    /** 设置或清除原子记忆 TTL；传入 {@code null} 表示永不过期。 */
+    public AtomicMemory setAtomicTtl(MemoryScope actor, String memoryId, Duration ttl) {
+        AtomicMemory current = requireOwned(actor, memoryId);
+        if (ttl != null && (ttl.isZero() || ttl.isNegative())) {
+            throw new IllegalArgumentException("ttl must be positive");
+        }
+        AtomicMemory revised = current.withExpiration(
+                ttl == null ? null : Instant.now().plus(ttl));
+        store.upsertAtomic(revised);
+        vectorIndex.index(revised);
+        return revised;
+    }
+
+    /** 永久删除记忆及其来源和向量。 */
+    public boolean deleteAtomic(MemoryScope actor, String memoryId) {
+        requireOwned(actor, memoryId);
+        return store.deleteAtomic(memoryId);
+    }
+
+    /** 用新记忆替代旧记忆，并建立 supersede 关系。 */
+    public AtomicMemory supersedeAtomic(
+            MemoryScope actor,
+            String memoryId,
+            String replacementContent,
+            Instant expiresAt) {
+        AtomicMemory current = requireOwned(actor, memoryId);
+        String source = operationSource("supersede");
+        AtomicMemory replacement = AtomicMemory.create(
+                current.scope(), current.type(), replacementContent, 1.0,
+                Math.max(current.priority(), 9), source, expiresAt);
+        store.supersedeAtomic(current, replacement);
+        vectorIndex.index(replacement);
+        return replacement;
+    }
+
+    /** 清理所有已经到期的原子记忆。 */
+    public int purgeExpired(Instant now) {
+        return store.purgeExpired(Objects.requireNonNull(now, "now must not be null"));
     }
 
     /**
@@ -170,6 +255,11 @@ public final class MemoryService implements AutoCloseable {
      */
     public List<AtomicMemory> atomicMemories(MemoryScope scope) {
         return store.listAtomic(scope);
+    }
+
+    /** 管理用途查询，可选择包含失效和过期数据。 */
+    public List<AtomicMemory> atomicMemories(MemoryScope scope, boolean includeInactive) {
+        return store.listAtomic(scope, includeInactive);
     }
 
     /**
@@ -223,6 +313,20 @@ public final class MemoryService implements AutoCloseable {
         ProfileMemory profile = store.findProfile(scope).orElse(null);
         String formatted = formatter.format(recentTurns, atomic, scenarios, profile, recallPolicy);
         return new MemoryContext(recentTurns, atomic, scenarios, profile, formatted, false);
+    }
+
+    private AtomicMemory requireOwned(MemoryScope actor, String memoryId) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        AtomicMemory memory = store.findAtomic(memoryId)
+                .orElseThrow(() -> new IllegalArgumentException("memory not found: " + memoryId));
+        if (!memory.scope().sameActor(actor)) {
+            throw new SecurityException("memory does not belong to the requested actor");
+        }
+        return memory;
+    }
+
+    private static String operationSource(String operation) {
+        return operation + ":" + UUID.randomUUID();
     }
 
     /**
