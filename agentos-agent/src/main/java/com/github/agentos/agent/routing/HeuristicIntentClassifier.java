@@ -2,6 +2,7 @@ package com.github.agentos.agent.routing;
 
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.planner.flow.HistoryProcessor;
 
 import java.util.Locale;
 import java.util.Map;
@@ -30,6 +31,26 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     private static final Pattern EDGE_PUNCTUATION = Pattern.compile(
             "^[\\s\\p{P}]+|[\\s\\p{P}]+$");
 
+    /** macOS/Linux 绝对路径，例如 {@code /Users/me/resume.md}。 */
+    private static final Pattern POSIX_ABSOLUTE_PATH = Pattern.compile(
+            "(?<![\\p{L}\\p{N}_])/(?!/)[^\\s/]+(?:/[^\\s/]+)*");
+
+    /** Windows 绝对路径，例如 {@code C:\\Users\\me\\resume.docx}。 */
+    private static final Pattern WINDOWS_ABSOLUTE_PATH = Pattern.compile(
+            "(?i)(?<![\\p{L}\\p{N}_])[a-z]:[\\\\/][^\\s]+");
+
+    /** 用户主目录相对路径，例如 {@code ~/notes/report.md}。 */
+    private static final Pattern HOME_RELATIVE_PATH = Pattern.compile(
+            "(?<![\\p{L}\\p{N}_])~[\\\\/][^\\s]+");
+
+    /**
+     * 常见可读文件扩展名；用于识别未带目录的文件引用，例如 {@code 简历.md}。
+     * 列表保持显式，避免把普通句号或版本号误判为文件任务。
+     */
+    private static final Pattern FILE_EXTENSION = Pattern.compile(
+            "(?i)[^\\s/\\\\]+\\.(?:md|txt|pdf|docx?|xlsx?|pptx?|csv|tsv|json|ya?ml|xml|"
+                    + "properties|java|kt|kts|groovy|js|jsx|ts|tsx|vue|py|go|rs|sql|sh|zsh|html?|css)");
+
     /** 明确属于问候的归一化字符串集合。 */
     public static final Set<String> trivialGreetings = Set.of(
             "你好", "您好", "嗨", "hi", "hello", "hey", "yo", "哈喽", "哈啰",
@@ -55,6 +76,13 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
 
     private static final String CONVERSATION_HISTORY_ATTRIBUTE = "conversationHistory";
 
+    /** 需要继承文件事实的常见追问信号。 */
+    private static final Set<String> FILE_CONTEXT_FOLLOW_UP_SIGNALS = Set.of(
+            "文件", "简历", "文档", "内容", "里面", "其中", "上面", "前面", "刚才",
+            "这个", "这些", "这两", "那个", "那些", "它", "哪些", "哪几", "哪家",
+            "多少", "多久", "分别", "一共", "是否", "有没有", "有吗", "待过", "经历",
+            "公司", "工作", "file", "document", "resume", "above", "those", "these");
+
     /**
      * 指示请求可能需要工具或实时信息的信号词；命中任意一个即回退到 MainAgent。
      *
@@ -65,7 +93,7 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     public static final Set<String> taskSignals = Set.of(
             // 中文动作动词
             "帮忙", "麻烦", "查询", "查一下", "查查", "搜索", "检索", "查找", "找一下", "找找",
-            "搜一下", "读取", "读一下", "写入", "写一下", "创建", "新建", "删除", "删掉",
+            "搜一下", "读取", "读一下", "阅读", "查看", "预览", "解析", "写入", "写一下", "创建", "新建", "删除", "删掉",
             "移除", "提交", "推送", "列出", "列一下", "执行", "运行", "调用", "保存", "下载",
             "上传", "发送", "复制", "重命名", "安装", "部署", "打开",
             // 产出落盘：把结果写成文件、放到某个位置，都必须走工具链路
@@ -154,6 +182,11 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             return IntentClassification.shortCircuit(
                     responseKind.intent, responses.get(responseKind));
         }
+        if (requiresFileContext(normalized, request)) {
+            return new IntentClassification(
+                    "file-context-follow-up", null, null, 1.0, null,
+                    Map.of(HistoryProcessor.REQUIRES_FILE_EVIDENCE_ATTRIBUTE, true));
+        }
         if (isSimpleQa(normalized)) {
             return IntentClassification.routeTo(simpleQaAgentId, "simple-qa");
         }
@@ -187,7 +220,19 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
         if (normalized.isEmpty() || normalized.length() > simpleQaMaxChars) {
             return false;
         }
-        return taskSignals.stream().noneMatch(signal -> containsSignal(normalized, signal));
+        return taskSignals.stream().noneMatch(signal -> containsSignal(normalized, signal))
+                && !containsFileReference(normalized);
+    }
+
+    /**
+     * 文件路径本身就是工具需求的强信号，不能依赖用户恰好使用“读取”这一固定动词。
+     * 这也覆盖“看看 /Users/me/a.md”或只粘贴文件名后询问的自然表达。
+     */
+    private static boolean containsFileReference(String text) {
+        return POSIX_ABSOLUTE_PATH.matcher(text).find()
+                || WINDOWS_ABSOLUTE_PATH.matcher(text).find()
+                || HOME_RELATIVE_PATH.matcher(text).find()
+                || FILE_EXTENSION.matcher(text).find();
     }
 
     private static String normalize(String objective) {
@@ -201,6 +246,15 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     private static boolean hasConversationHistory(AgentRequest request) {
         Object history = request.attributes().get(CONVERSATION_HISTORY_ATTRIBUTE);
         return history instanceof String text && !text.isBlank();
+    }
+
+    private static boolean requiresFileContext(String normalized, AgentRequest request) {
+        if (!Boolean.TRUE.equals(request.attributes().get(
+                HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE))) {
+            return false;
+        }
+        return FILE_CONTEXT_FOLLOW_UP_SIGNALS.stream()
+                .anyMatch(signal -> containsSignal(normalized, signal));
     }
 
     /**

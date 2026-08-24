@@ -1,6 +1,8 @@
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AppMultiSelect from '../components/AppMultiSelect.vue'
+import AppSelect from '../components/AppSelect.vue'
 import { getPendingAction, resolvePendingAction } from '../services/agentApi.js'
 import { useLocale } from '../composables/useLocale.js'
 import {
@@ -15,8 +17,6 @@ const consoleState = inject('agentConsole')
 const section = computed(() => route.meta.section)
 const sessions = consoleState.sessions
 const selectedSessionId = ref(consoleState.currentSessionId.value || sessions.value[0]?.id || '')
-const sessionMenuOpen = ref(false)
-const sessionPicker = ref(null)
 const catalog = ref(null)
 const data = ref(null)
 const loading = ref(false)
@@ -30,8 +30,8 @@ const evalBusy = ref(false)
 const evalResult = ref(null)
 const evalForm = ref({
   caseId: 'console-case',
-  expectedToolSequence: '',
-  forbiddenTools: '',
+  expectedToolSequence: [],
+  forbiddenTools: [],
   maxToolCalls: '',
   requiredResponseKeywords: '',
   requireCompleted: true
@@ -73,10 +73,11 @@ const sessionOptions = computed(() => {
     options.push({
       id: remote.sessionId,
       title: remote.state?.lastObjective || remote.sessionId,
-      local: false
+      local: false,
+      description: `${remote.sessionId} · server`
     })
   }
-  return options
+  return options.map(item => ({ ...item, description: item.description || item.id }))
 })
 
 const catalogItems = computed(() => {
@@ -118,8 +119,15 @@ const planTraces = computed(() => {
 
 const invocationOptions = computed(() => (data.value?.events || []).map(trace => ({
   invocationId: trace.invocationId,
-  label: `${trace.invocationId.slice(0, 8)} · ${t('{count} 个事件', { count: String(trace.eventCount) })}`,
+  label: trace.events?.find(event => event.type === 'AGENT_STARTED')?.message || trace.invocationId,
+  description: `${formatDate(trace.startedAt)} · ${t(trace.terminalType === 'AGENT_COMPLETED' ? '已完成' : trace.terminalType === 'AGENT_FAILED' ? '已失败' : '进行中')} · ${t('{count} 个事件', { count: String(trace.eventCount) })} · ID ${trace.invocationId.slice(0, 8)}`,
   terminalType: trace.terminalType
+})))
+
+const toolOptions = computed(() => (catalog.value?.tools || []).map(tool => ({
+  value: tool.name,
+  label: tool.name,
+  description: `${tool.riskLevel} · ${tool.description}`
 })))
 
 const summary = computed(() => {
@@ -238,7 +246,7 @@ async function load() {
   error.value = ''
   detail.value = null
   try {
-    if (['agents', 'tools', 'mcp', 'skills', 'models'].includes(section.value)) await ensureCatalog()
+    if (['agents', 'tools', 'mcp', 'skills', 'models', 'evals'].includes(section.value)) await ensureCatalog()
     if (page.value.session) await ensureKnownSessions()
     if (section.value === 'runs') {
       const runs = await getAgentRuns()
@@ -295,8 +303,8 @@ async function runEvaluation() {
     const form = evalForm.value
     evalResult.value = await evaluateInvocation(evalTarget.value, {
       caseId: form.caseId || 'console-case',
-      expectedToolSequence: splitList(form.expectedToolSequence),
-      forbiddenTools: splitList(form.forbiddenTools),
+      expectedToolSequence: form.expectedToolSequence,
+      forbiddenTools: form.forbiddenTools,
       maxToolCalls: form.maxToolCalls === '' ? null : Number(form.maxToolCalls),
       requiredResponseKeywords: splitList(form.requiredResponseKeywords),
       requireCompleted: form.requireCompleted
@@ -310,7 +318,6 @@ async function runEvaluation() {
 
 function chooseSession(id) {
   selectedSessionId.value = id
-  sessionMenuOpen.value = false
   if (page.value.session) load()
 }
 function openSession(id) {
@@ -351,18 +358,7 @@ watch(sessions, items => {
   }
 })
 
-/** 点击选择器之外即收起会话下拉，与 SessionRail 的菜单行为保持一致。 */
-function closeSessionMenu(event) {
-  if (!sessionMenuOpen.value) return
-  if (sessionPicker.value?.contains(event.target)) return
-  sessionMenuOpen.value = false
-}
-
-onMounted(() => {
-  document.addEventListener('click', closeSessionMenu)
-  load()
-})
-onUnmounted(() => document.removeEventListener('click', closeSessionMenu))</script>
+onMounted(load)</script>
 
 <template>
   <section class="management-view" :aria-labelledby="`${section}-title`">
@@ -374,18 +370,21 @@ onUnmounted(() => document.removeEventListener('click', closeSessionMenu))</scri
         <p>{{ page.description }}</p>
       </div>
       <div class="page-actions">
-        <div v-if="page.session" ref="sessionPicker" class="session-picker" @keydown.esc="sessionMenuOpen = false">
-          <button type="button" aria-haspopup="listbox" :aria-expanded="sessionMenuOpen" @click="sessionMenuOpen = !sessionMenuOpen">
-            <span><small>SESSION SCOPE</small><strong>{{ sessionLabel }}</strong></span>
-            <svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg>
-          </button>
-          <div v-if="sessionMenuOpen" class="session-options" role="listbox">
-            <button v-for="item in sessionOptions" :key="item.id" type="button" role="option" :aria-selected="item.id === selectedSessionId" @click="chooseSession(item.id)">
-              <span>{{ item.title }}</span><small>{{ item.local ? item.id : `${item.id} · server` }}</small>
-            </button>
-            <p v-if="!sessionOptions.length">{{ t('先在 Chat 中创建一个会话') }}</p>
-          </div>
-        </div>
+        <AppSelect
+          v-if="page.session"
+          class="session-picker"
+          :model-value="selectedSessionId"
+          :options="sessionOptions"
+          value-key="id"
+          label-key="title"
+          description-key="description"
+          caption="SESSION SCOPE"
+          :placeholder="sessionLabel"
+          :empty-text="t('先在 Chat 中创建一个会话')"
+          :aria-label="t('选择会话范围')"
+          align="right"
+          @update:model-value="chooseSession"
+        />
         <button class="refresh-button" type="button" :disabled="loading" :aria-label="t('刷新数据')" @click="load">
           <svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18 9a7 7 0 0 0-12-2l-2 5m2 3a7 7 0 0 0 12 2l2-5" /></svg>
         </button>
@@ -490,15 +489,55 @@ onUnmounted(() => document.removeEventListener('click', closeSessionMenu))</scri
 
       <div v-else-if="section === 'evals'" class="eval-layout">
         <form class="eval-form" @submit.prevent="runEvaluation">
-          <label><small>{{ t('执行调用') }}</small>
-            <select v-model="evalTarget" :disabled="!invocationOptions.length">
-              <option value="" disabled>{{ t(invocationOptions.length ? '选择一次执行调用' : '当前会话暂无可评估的调用') }}</option>
-              <option v-for="option in invocationOptions" :key="option.invocationId" :value="option.invocationId">{{ option.label }}</option>
-            </select>
-          </label>
+          <div class="eval-field">
+            <small id="eval-invocation-label">{{ t('待评估运行') }}</small>
+            <AppSelect
+              v-model="evalTarget"
+              :options="invocationOptions"
+              value-key="invocationId"
+              label-key="label"
+              description-key="description"
+              :placeholder="t(invocationOptions.length ? '选择一条运行记录' : '当前会话暂无可评估的运行')"
+              :disabled="!invocationOptions.length"
+              aria-labelledby="eval-invocation-label"
+            />
+            <span class="field-help">{{ t('选择本次要回放校验的 Agent 运行记录。每条记录对应用户发起的一次任务及其完整事件轨迹。') }}</span>
+          </div>
           <label><small>{{ t('用例标识') }}</small><input v-model="evalForm.caseId" type="text" /></label>
-          <label><small>{{ t('期望工具序列') }}</small><input v-model="evalForm.expectedToolSequence" type="text" placeholder="web_search, file_write" /></label>
-          <label><small>{{ t('禁用工具') }}</small><input v-model="evalForm.forbiddenTools" type="text" placeholder="run_command" /></label>
+          <div class="eval-field">
+            <small>{{ t('期望工具序列') }}</small>
+            <AppMultiSelect
+              v-model="evalForm.expectedToolSequence"
+              :options="toolOptions"
+              value-key="value"
+              label-key="label"
+              description-key="description"
+              :placeholder="t('选择期望出现的工具')"
+              :search-placeholder="t('搜索工具名称或说明…')"
+              :empty-text="t('没有匹配的工具')"
+              :remove-label="t('移除')"
+              :aria-label="t('选择期望工具序列')"
+              allow-duplicates
+              show-order
+            />
+            <span class="field-help">{{ t('按选择先后校验调用顺序；同一工具可重复添加。') }}</span>
+          </div>
+          <div class="eval-field">
+            <small>{{ t('禁用工具') }}</small>
+            <AppMultiSelect
+              v-model="evalForm.forbiddenTools"
+              :options="toolOptions"
+              value-key="value"
+              label-key="label"
+              description-key="description"
+              :placeholder="t('选择不允许调用的工具')"
+              :search-placeholder="t('搜索工具名称或说明…')"
+              :empty-text="t('没有匹配的工具')"
+              :remove-label="t('移除')"
+              :aria-label="t('选择禁用工具')"
+            />
+            <span class="field-help">{{ t('这些工具一旦出现在运行轨迹中，本次评估就会失败。') }}</span>
+          </div>
           <label><small>{{ t('最大工具调用数') }}</small><input v-model="evalForm.maxToolCalls" type="number" min="1" :placeholder="t('不限制')" /></label>
           <label><small>{{ t('回答关键词') }}</small><input v-model="evalForm.requiredResponseKeywords" type="text" :placeholder="t('结论, 建议')" /></label>
           <label class="eval-check"><input v-model="evalForm.requireCompleted" type="checkbox" /><span>{{ t('要求运行成功收口') }}</span></label>

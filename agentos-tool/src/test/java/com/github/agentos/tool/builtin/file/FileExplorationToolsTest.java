@@ -125,7 +125,50 @@ class FileExplorationToolsTest {
                 "file_read", Map.of("path", file.toString())));
 
         assertThat(result.success()).isTrue();
-        assertThat(result.output()).isEqualTo("report body");
+        assertThat(result.output())
+                .contains("format=linear", "path=" + file.toAbsolutePath().normalize())
+                .contains("offset=0", "returnedChars=11", "totalChars=11")
+                .contains("hasMore=false", "nextOffset=0", "report body");
+    }
+
+    @Test
+    void readsLongTextWithExplicitContinuationMetadata() throws Exception {
+        Path file = directory.resolve("resume.md");
+        Files.writeString(file, "A".repeat(3_000) + "B".repeat(200), StandardCharsets.UTF_8);
+        FileReadTool tool = new FileReadTool(
+                new AllowAllReadableFileAccessPolicy(),
+                new FileReaderFactory(List.of(new TextFileReader())));
+
+        ToolResult first = tool.execute(ToolContexts.testContext(tool), new ToolCall(
+                "file_read", Map.of("path", file.toString())));
+        ToolResult remainder = tool.execute(ToolContexts.testContext(tool), new ToolCall(
+                "file_read", Map.of("path", file.toString(), "offset", 3_000)));
+
+        assertThat(first.success()).isTrue();
+        assertThat(first.output())
+                .contains("format=linear", "returnedChars=3000", "totalChars=3200")
+                .contains("hasMore=true", "nextOffset=3000", "truncated=true")
+                .doesNotContain("B");
+        assertThat(remainder.success()).isTrue();
+        assertThat(remainder.output())
+                .contains("offset=3000", "returnedChars=200", "hasMore=false")
+                .contains("nextOffset=0", "truncated=false", "B".repeat(200));
+    }
+
+    @Test
+    void rejectsLinearOffsetOutsideContentBounds() throws Exception {
+        Path file = directory.resolve("short.txt");
+        Files.writeString(file, "short", StandardCharsets.UTF_8);
+        FileReadTool tool = new FileReadTool(
+                new AllowAllReadableFileAccessPolicy(),
+                new FileReaderFactory(List.of(new TextFileReader())));
+
+        ToolResult result = tool.execute(ToolContexts.testContext(tool), new ToolCall(
+                "file_read", Map.of("path", file.toString(), "offset", 6)));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.failureType()).isEqualTo(ToolFailureType.INVALID_ARGUMENT);
+        assertThat(result.error()).contains("exceeds totalChars 5");
     }
 
     @Test
@@ -148,6 +191,7 @@ class FileExplorationToolsTest {
         assertThat(first.success()).isTrue();
         assertThat(first.output()).hasSizeLessThan(4_000);
         assertThat(first.output())
+                .contains("path=" + file.toAbsolutePath().normalize())
                 .contains("page=1", "totalPages=2", "hasMore=true", "nextPage=2")
                 .contains("truncated=false", "first company")
                 .doesNotContain("second company");

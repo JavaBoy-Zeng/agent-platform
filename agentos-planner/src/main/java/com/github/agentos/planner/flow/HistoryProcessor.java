@@ -22,6 +22,17 @@ public final class HistoryProcessor implements LlmRequestProcessor {
      */
     public static final String CONVERSATION_HISTORY_ATTRIBUTE = "conversationHistory";
 
+    /**
+     * 标记最近会话历史包含文件工具事实的请求属性键。
+     *
+     * <p>路由器使用该结构化标记识别“那文件里呢”一类省略了路径的
+     * 追问，避免它们进入无工具的直答通道。</p>
+     */
+    public static final String CONVERSATION_FILE_CONTEXT_ATTRIBUTE = "conversationFileContext";
+
+    /** 路由器确认当前轮必须获取新文件证据时使用的请求属性键。 */
+    public static final String REQUIRES_FILE_EVIDENCE_ATTRIBUTE = "requiresCurrentFileEvidence";
+
     private static final String USER_PREFIX = "用户：";
     private static final String ASSISTANT_PREFIX = "助手：";
 

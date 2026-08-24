@@ -128,7 +128,15 @@ public final class LlmAgentPlanner implements AgentPlanner {
         ModelPlan modelPlan = Objects.requireNonNull(
                 modelClient.generatePlan(planningRequest),
                 "modelClient response must not be null");
-        AgentPlan plan = toAgentPlan(modelPlan, origin);
+        ModelPlan groundedPlan = FileGroundingPolicy.enforce(
+                modelPlan, planningRequest, toolRegistry);
+        if (groundedPlan != modelPlan) {
+            LOGGER.info(
+                    "[agent-grounding] replaced model plan sessionId={} originalOutcome={} enforcedOutcome={} enforcedSteps={}",
+                    request.sessionId(), modelPlan.outcome(), groundedPlan.outcome(),
+                    groundedPlan.steps() == null ? 0 : groundedPlan.steps().size());
+        }
+        AgentPlan plan = toAgentPlan(groundedPlan, origin);
         if (plan.steps().size() > planningRequest.maxSteps()) {
             throw new PlanValidationException(List.of(
                     "step count " + plan.steps().size()
@@ -150,6 +158,8 @@ public final class LlmAgentPlanner implements AgentPlanner {
                         .map(step -> new PlanStep(
                                 step.id(),
                                 step.description(),
+                                // Some compatible providers omit this field even when the
+                                // response schema requires it. Missing must remain required.
                                 Boolean.TRUE.equals(step.optional()),
                                 new ToolCall(step.toolName(), step.arguments())))
                         .toList();
@@ -228,7 +238,6 @@ public final class LlmAgentPlanner implements AgentPlanner {
             if (step.description() == null || step.description().isBlank()) {
                 violations.add(path + ".description must not be blank");
             }
-            if (step.optional() == null) violations.add(path + ".optional must not be null");
             if (step.toolName() == null || step.toolName().isBlank()) {
                 violations.add(path + ".toolName must not be blank");
             }

@@ -72,18 +72,60 @@ public final class SessionHistoryService {
      */
     public AgentRequest withHistory(AgentRequest request) {
         Objects.requireNonNull(request, "request must not be null");
-        if (request.attributes().get(
-                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE) instanceof String existing
-                && !existing.isBlank()) {
-            return request;
-        }
-        Optional<String> history = history(request.sessionId());
-        if (history.isEmpty()) {
+        List<AgentEvent> events = eventStore.findBySessionId(request.sessionId());
+        Optional<String> history = hasSuppliedHistory(request)
+                ? Optional.empty()
+                : formattedHistory(events);
+        boolean fileContext = hasRecentFileContext(events);
+        if (history.isEmpty() && (!fileContext || hasSuppliedFileContext(request))) {
             return request;
         }
         Map<String, Object> attributes = new LinkedHashMap<>(request.attributes());
-        attributes.put(HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, history.get());
+        history.ifPresent(value -> attributes.put(
+                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, value));
+        if (fileContext) {
+            attributes.putIfAbsent(
+                    HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true);
+        }
         return new AgentRequest(request.sessionId(), request.objective(), attributes);
+    }
+
+    private Optional<String> formattedHistory(List<AgentEvent> events) {
+        List<String> lines = formatTurns(events);
+        return lines.isEmpty() ? Optional.empty() : Optional.of(String.join("\n", lines));
+    }
+
+    private static boolean hasSuppliedHistory(AgentRequest request) {
+        return request.attributes().get(
+                HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE) instanceof String existing
+                && !existing.isBlank();
+    }
+
+    private static boolean hasSuppliedFileContext(AgentRequest request) {
+        return Boolean.TRUE.equals(request.attributes().get(
+                HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE));
+    }
+
+    /** 只使用最近可回放的完整轮次，避免无限期携带早已无关的文件上下文。 */
+    private boolean hasRecentFileContext(List<AgentEvent> events) {
+        List<AgentEvent> ordered = events.stream()
+                .sorted(Comparator.comparing(AgentEvent::timestamp))
+                .toList();
+        List<String> completedInvocations = ordered.stream()
+                .filter(event -> event.type() == AgentEventType.AGENT_COMPLETED)
+                .map(AgentEvent::invocationId)
+                .distinct()
+                .toList();
+        int fromIndex = Math.max(0, completedInvocations.size() - maxTurns);
+        java.util.Set<String> recent = new java.util.HashSet<>(
+                completedInvocations.subList(fromIndex, completedInvocations.size()));
+        return ordered.stream()
+                .filter(event -> recent.contains(event.invocationId()))
+                .filter(event -> event.type() == AgentEventType.TOOL_CALL_COMPLETED)
+                .map(event -> event.data().get("toolName"))
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .anyMatch(tool -> tool.equals("file_read") || tool.equals("file_search"));
     }
 
     private List<String> formatTurns(List<AgentEvent> events) {

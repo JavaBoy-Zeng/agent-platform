@@ -2,6 +2,7 @@ package com.github.agentos.agent.routing;
 
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.planner.flow.HistoryProcessor;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -234,6 +235,73 @@ class HeuristicIntentClassifierTest {
                     .as("input '%s' must fall back to MainAgent", input)
                     .isFalse();
         }
+    }
+
+    /**
+     * “阅读”曾不在任务信号词中，且绝对路径没有独立识别，导致本机文件请求误入
+     * 无工具的 simple-qa-agent。文件动作和路径引用都必须进入 MainAgent 工具链路。
+     */
+    @Test
+    void localFileReadingRequestsFallBackToToolCapableAgent() {
+        for (String input : new String[] {
+                "阅读 /Users/whale_fall/developer/java/bot/曾智Java十年开发经验求职简历.md",
+                "查看 /tmp/report.pdf",
+                "预览 ~/notes/resume.docx",
+                "解析 C:\\Users\\demo\\resume.docx",
+                "看看 /Users/demo/notes.txt",
+                "帮我看看 曾智Java简历.md"}) {
+            IntentClassification result = classifier.classify(
+                    new AgentRequest("s1", input, Map.of()),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(result.hasAgentTarget())
+                    .as("input '%s' must fall back to the file-capable MainAgent", input)
+                    .isFalse();
+            assertThat(result.intent()).isEqualTo("heuristic-fallback");
+        }
+    }
+
+    @Test
+    void ordinaryVersionNumbersDoNotLookLikeFileReferences() {
+        IntentClassification result = classifier.classify(
+                new AgentRequest("s1", "java 8 和 17 有什么区别", Map.of()),
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.agentId()).isEqualTo("simple-qa-agent");
+    }
+
+    @Test
+    void fileDependentFollowUpsNeverUseToollessSimpleQa() {
+        for (String input : new String[] {
+                "曾智一共待过哪几家公司？ 分别待了多久",
+                "多久",
+                "这两家公司我简历里面有吗？"}) {
+            IntentClassification result = classifier.classify(
+                    new AgentRequest("s1", input, Map.of(
+                            HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
+                            "用户：读取 /tmp/resume.md\n助手：已读取",
+                            HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true)),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(result.hasAgentTarget()).as(input).isFalse();
+            assertThat(result.intent()).as(input).isEqualTo("file-context-follow-up");
+            assertThat(result.attributes()).containsEntry(
+                    HistoryProcessor.REQUIRES_FILE_EVIDENCE_ATTRIBUTE, true);
+        }
+    }
+
+    @Test
+    void unrelatedQuestionDoesNotInheritFileGroundingRequirement() {
+        IntentClassification result = classifier.classify(
+                new AgentRequest("s1", "什么是 JVM？", Map.of(
+                        HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
+                        "用户：读取 /tmp/resume.md\n助手：已读取",
+                        HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true)),
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.agentId()).isEqualTo("simple-qa-agent");
+        assertThat(result.attributes()).doesNotContainKey(
+                HistoryProcessor.REQUIRES_FILE_EVIDENCE_ATTRIBUTE);
     }
 
     /**

@@ -196,12 +196,12 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         20. 如果上一份 EXECUTION 计划已经成功完成，默认优先返回 COMPLETE；只有能够明确
             指出仍缺少什么信息，以及哪个工具步骤可以补齐它时，才生成后续计划。
 
-        21. file_read 的分页结果包含 hasMore、nextPage、nextOffset 和 truncated 元数据。
+        21. file_read 的有界结果包含 path、hasMore、nextPage、nextOffset 和 truncated 元数据。
             当用户要求完整读取、提取全部信息或生成完整名单时：
             - hasMore=true 会产生一个待续读位置；必须使用该结果的 nextPage 和 nextOffset
               成功续读后，才算消费了这个待续读位置；
-            - truncated=true 表示当前物理页仍有未返回正文，下一次必须从同一页的
-              nextOffset 继续读取；
+            - truncated=true 表示当前物理页或线性文档仍有未返回正文。
+              PDF 使用 nextPage + nextOffset，其他文档使用 nextOffset 继续读取；
             - 禁止根据未读取的区间推测、补写或声称已经得到完整结果；
             - 只有续读链已经到达 hasMore=false 且不存在未消费的待续读位置，才可以
               基于完整内容返回 COMPLETE。
@@ -224,10 +224,15 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             同时，工具清单里存在联网工具时，不得声称“当前环境不支持联网检索”。
 
         24. 上下文中的 conversationHistory 是本会话已经发生过的真实轮次
-            （“用户：…/助手：…”，从早到晚），属于已确认的运行时事实：
+            （“用户：…/助手：…”，从早到晚）。只有“这些消息曾发生”是已确认事实：
             - 必须据此解析指代与省略（“那明天呢”“还是刚才那个”）；
             - 用户在历史中陈述过的稳定事实（姓名、称呼、偏好、目标）必须直接采用，
               不得再次询问，也不得当作对第三方的查询；
+            - 历史 Assistant 输出可能有误，不是文件、网络或工具事实的证据。
+              验证文件内容时必须使用当前 Invocation 的 file_read/file_search 证据；
+              仅凭历史 Assistant 结论不得 COMPLETE；
+            - 最终回答中声称来自文件的公司、机构等实体，必须能在当前文件工具
+              Observation 中找到原文。搜索结果只覆盖搜索词时，不得附加未验证的“实际名单”；
             - 中文姓名默认“姓+名”整体使用，禁止截取其中一个字当作称呼；
             - 禁止声称“每次对话都是独立的”“我不会记住任何信息”；
               会话历史与记忆存在时，如实使用它们。
@@ -528,7 +533,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 "type", "string", "description", "The completed user objective"));
         completeProperties.put("finalAnswer", Map.of(
                 "type", "string", "minLength", 1,
-                "description", "Final answer returned directly to the user"));
+                "description", "Final answer returned directly to the user; file-derived claims must be grounded in current file tool observations"));
         planVariants.add(Map.of(
                 "type", "object",
                 "properties", completeProperties,

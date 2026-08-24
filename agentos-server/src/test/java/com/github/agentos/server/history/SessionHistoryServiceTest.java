@@ -134,12 +134,52 @@ class SessionHistoryServiceTest {
                         HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE, "用户：外部历史");
     }
 
+    @Test
+    void marksRecentCompletedFileToolContextForFollowUpRouting() {
+        append("i1", AgentEventType.AGENT_STARTED, "读取简历", 1);
+        append("i1", AgentEventType.TOOL_CALL_COMPLETED, "工具调用完成", 2,
+                Map.of("toolName", "file_read"));
+        append("i1", AgentEventType.AGENT_COMPLETED, "已读取", 3);
+
+        AgentRequest enriched = service.withHistory(
+                AgentRequest.of("session-1", "一共待过哪几家公司？"));
+
+        assertThat(enriched.attributes()).containsEntry(
+                HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true);
+    }
+
+    @Test
+    void ignoresFileToolContextFromIncompleteInvocation() {
+        append("i1", AgentEventType.AGENT_STARTED, "读取简历", 1);
+        append("i1", AgentEventType.TOOL_CALL_COMPLETED, "工具调用完成", 2,
+                Map.of("toolName", "file_read"));
+
+        AgentRequest enriched = service.withHistory(
+                AgentRequest.of("session-1", "一共待过哪几家公司？"));
+
+        assertThat(enriched.attributes()).doesNotContainKey(
+                HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE);
+    }
+
     private void append(String invocationId, AgentEventType type, String message, long epochSecond) {
-        store.append(new AgentEventRecord(invocationId, type, message, epochSecond));
+        append(invocationId, type, message, epochSecond, Map.of());
+    }
+
+    private void append(
+            String invocationId,
+            AgentEventType type,
+            String message,
+            long epochSecond,
+            Map<String, Object> data) {
+        store.append(new AgentEventRecord(invocationId, type, message, epochSecond, data));
     }
 
     private record AgentEventRecord(
-            String invocationId, AgentEventType type, String message, long epochSecond)
+            String invocationId,
+            AgentEventType type,
+            String message,
+            long epochSecond,
+            Map<String, Object> data)
             implements AgentEvent {
 
         @Override
@@ -162,9 +202,5 @@ class SessionHistoryServiceTest {
             return Instant.ofEpochSecond(epochSecond);
         }
 
-        @Override
-        public Map<String, Object> data() {
-            return Map.of();
-        }
     }
 }
