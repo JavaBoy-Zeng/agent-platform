@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /** 有界列出目录结构，帮助规划器先侦察未知工作区。 */
 public final class DirectoryListTool implements AgentTool {
@@ -37,7 +38,7 @@ public final class DirectoryListTool implements AgentTool {
 
     @Override
     public String description() {
-        return "递归列出本地目录结构，不跟随符号链接，并跳过隐藏文件及隐藏目录；用于在读取文件前确认真实项目结构";
+        return "递归列出本地目录结构，不跟随符号链接，并跳过隐藏路径及受保护的部署配置文件；用于在读取文件前确认真实项目结构";
     }
 
     @Override
@@ -65,14 +66,16 @@ public final class DirectoryListTool implements AgentTool {
             }
 
             List<String> entries = new ArrayList<>();
-            List<Path> visiblePaths = visiblePaths(root, maxDepth);
+            List<Path> visiblePaths = visiblePaths(root, maxDepth).stream()
+                    .map(accessPolicy::authorizeDiscovery)
+                    .flatMap(Optional::stream)
+                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
             visiblePaths.sort(Comparator.comparing(path -> root.relativize(path).toString()));
             boolean truncated = visiblePaths.size() > maxEntries;
             visiblePaths.stream().limit(maxEntries).forEach(path -> {
-                Path authorized = accessPolicy.authorizeRead(path);
-                String suffix = Files.isSymbolicLink(authorized) ? " [symlink]"
-                        : Files.isDirectory(authorized) ? "/" : "";
-                entries.add(root.relativize(authorized).toString() + suffix);
+                String suffix = Files.isSymbolicLink(path) ? " [symlink]"
+                        : Files.isDirectory(path) ? "/" : "";
+                entries.add(root.relativize(path).toString() + suffix);
             });
             if (entries.isEmpty()) {
                 entries.add("[empty directory]");

@@ -77,7 +77,7 @@ class SimpleQaAgentTest {
      * 模型会自称云端服务并教用户手工操作；必须让它把限制归因于本轮通道并引导重试。
      */
     @Test
-    void instructionForbidsClaimingToBeACloudServiceWithoutLocalAccess() {
+    void instructionDescribesServiceHostWithoutAssumingDeploymentTopology() {
         List<LlmRequest> requests = new ArrayList<>();
         SimpleQaAgent agent = new SimpleQaAgent((s, request) -> {
             requests.add(request);
@@ -92,8 +92,8 @@ class SimpleQaAgentTest {
 
         String instruction = requests.getFirst().instruction().orElseThrow();
         assertThat(instruction)
-                .contains("运行在用户本机")
-                .contains("禁止声称自己是云端服务")
+                .contains("运行 AgentOS")
+                .contains("可能是用户本机，也可能是远程服务器")
                 .contains("本轮无法调用");
     }
 

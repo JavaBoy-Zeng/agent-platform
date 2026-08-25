@@ -21,6 +21,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -208,9 +209,9 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
 
         22. 上下文中的 runtimeEnvironment 描述工具真实的执行位置与平台惯例，属于已确认的
             运行时事实：
-            - 工具在用户本机的本地进程中执行，可以操作本机文件、启动本机程序与 GUI 应用；
-              因此禁止以“你是云端服务”“无法访问用户电脑”为理由，把本机操作类目标
-              （打开浏览器、启动本地程序、查看本地文件）判定为无法完成；
+            - 工具在运行 AgentOS 服务进程的宿主机上执行。该宿主机可能是用户本机，
+              也可能是部署 AgentOS 的远程服务器；不得擅自假设部署形态；
+            - 工具可操作的是服务进程权限范围内的宿主机资源，不得把它们等同于用户个人电脑资源；
             - 生成命令与代码时必须遵循 shellConventions 列出的平台惯例，
               禁止跨平台套用（例如在 Windows 上使用 python3 或 /bin/sh）；
             - 只有当所需工具确实未注册时，才可以判定目标无法完成，并说明缺少哪个能力。
@@ -236,6 +237,23 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             - 中文姓名默认“姓+名”整体使用，禁止截取其中一个字当作称呼；
             - 禁止声称“每次对话都是独立的”“我不会记住任何信息”；
               会话历史与记忆存在时，如实使用它们。
+
+        25. 严格区分 run_command 与 execute_code：
+            - 用户要求执行命令、查看宿主机目录/网络状态、运行 curl、构建或测试时，
+              必须使用 run_command；
+            - execute_code 仅用于执行独立、自包含的 Python/Shell/Java 代码片段；
+            - execute_code 是 Docker 沙箱时没有网络且无法访问宿主机文件，禁止用它执行
+              curl、获取服务器 IP 或其他依赖宿主机/网络状态的命令。
+
+        26. 调用 file_read、file_write、directory_list、file_search 或 git_commit 之前，
+            必须先读取 runtimeEnvironment.fileAccess：
+            - mode=ROOTED 时，allowedRoot 是唯一允许访问的目录；允许访问它本身及其后代；
+            - 相对路径以 allowedRoot 为基准；allowedRoot 的父目录、兄弟目录以及其他系统目录
+              都属于明确越界；
+            - 当目标路径根据上述事实已经明确越界时，不得生成文件工具步骤，也不得通过
+              调用工具来“试一下权限”；应直接返回 COMPLETE，说明允许根目录和拒绝原因；
+            - 只有路径位于 allowedRoot 内但是否受符号链接、文件权限等影响仍不确定时，
+              才交给文件工具执行最终授权检查。
         """;
 
 
@@ -243,6 +261,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
     private final ObjectMapper objectMapper;
     private final ModelClientProperties properties;
     private final com.github.agentos.planner.ModelUsageListener usageListener;
+    private final Path fileAccessRoot;
 
     /**
      * Creates an OpenAI-compatible model client without usage listener.
@@ -252,7 +271,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
      * @param properties   endpoint, model and timeout settings
      */
     public OpenAiCompatibleModelClient(HttpClient httpClient, ObjectMapper objectMapper, ModelClientProperties properties) {
-        this(httpClient, objectMapper, properties, null);
+        this(httpClient, objectMapper, properties, null, null);
     }
 
     /**
@@ -265,10 +284,27 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             ObjectMapper objectMapper,
             ModelClientProperties properties,
             com.github.agentos.planner.ModelUsageListener usageListener) {
+        this(httpClient, objectMapper, properties, usageListener, null);
+    }
+
+    /**
+     * 创建带模型用量监听器和文件访问根目录事实的模型客户端。
+     *
+     * @param fileAccessRoot 固定文件访问根目录；没有单一根目录时为 {@code null}
+     */
+    public OpenAiCompatibleModelClient(
+            HttpClient httpClient,
+            ObjectMapper objectMapper,
+            ModelClientProperties properties,
+            com.github.agentos.planner.ModelUsageListener usageListener,
+            Path fileAccessRoot) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.usageListener = usageListener;
+        this.fileAccessRoot = fileAccessRoot == null
+                ? null
+                : fileAccessRoot.toAbsolutePath().normalize();
         properties.validate();
     }
 
@@ -367,35 +403,42 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
     /**
      * 描述工具真实的运行位置与平台惯例。
      *
-     * <p>规划器只看得到工具名和参数，看不到工具落在哪台机器上，容易按“我是云端服务”
-     * 的先验拒绝本机操作类目标（打开浏览器、启动本地程序），或者生成跨平台不通的
-     * 命令（Windows 上的 {@code python3}、{@code /bin/sh}）。把执行环境作为运行时
-     * 事实注入上下文，让平台差异由事实而非猜测决定。</p>
+     * <p>工具只能操作 AgentOS 服务宿主机，不一定是用户个人电脑。把平台与执行位置
+     * 作为运行时事实注入上下文，避免模型猜测部署形态或生成跨平台命令。</p>
      */
-    private static Map<String, Object> runtimeEnvironment() {
+    private Map<String, Object> runtimeEnvironment() {
         String osName = System.getProperty("os.name", "unknown");
         boolean windows = osName.toLowerCase(java.util.Locale.ROOT).contains("win");
-        return Map.of(
-                "osName", osName,
-                "osVersion", System.getProperty("os.version", "unknown"),
-                "workingDirectory", System.getProperty("user.dir", "unknown"),
-                "toolExecutionHost",
-                "工具在这台机器的本地进程中执行，与用户是同一台机器；"
-                        + "因此可以操作本机文件、启动本机程序与 GUI 应用（如浏览器）。"
-                        + "不要以“无法访问用户电脑”为由拒绝本机操作类目标。",
-                "shellConventions", windows
-                        ? List.of(
-                                "run_command 经 cmd /c 执行，需使用 Windows 命令语法",
-                                "Python 解释器为 python，不是 python3（python3 会命中 "
-                                        + "Microsoft Store 别名占位程序，不执行脚本）",
-                                "打开 URL 或本机程序使用 start，例如："
-                                        + "start chrome \"https://www.google.com/search?q=agent\"；"
-                                        + "start 经注册表解析程序名，不要硬编码安装路径",
-                                "路径分隔符为反斜杠，含空格的路径需加引号")
-                        : List.of(
-                                "run_command 经 /bin/sh -c 执行，使用 POSIX 命令语法",
-                                "Python 解释器为 python3",
-                                "打开 URL 使用 xdg-open（Linux）或 open（macOS）"));
+        Map<String, Object> environment = new LinkedHashMap<>();
+        environment.put("osName", osName);
+        environment.put("osVersion", System.getProperty("os.version", "unknown"));
+        environment.put("workingDirectory", System.getProperty("user.dir", "unknown"));
+        environment.put("toolExecutionHost",
+                "工具在运行 AgentOS 服务进程的宿主机上执行；这可能是用户本机，"
+                        + "也可能是远程服务器。工具只能访问服务进程权限范围内的宿主机资源，"
+                        + "不得把这些资源默认视为用户个人电脑的资源。");
+        environment.put("fileAccess", fileAccessRoot == null
+                ? Map.of(
+                        "mode", "POLICY_DEFINED",
+                        "instruction", "没有可供规划器静态判断的单一根目录；文件工具仍会执行最终授权检查")
+                : Map.of(
+                        "mode", "ROOTED",
+                        "allowedRoot", fileAccessRoot.toString(),
+                        "instruction", "只能访问 allowedRoot 本身及其后代；父目录、兄弟目录和其他目录禁止访问"));
+        environment.put("shellConventions", windows
+                ? List.of(
+                        "run_command 经 cmd /c 执行，需使用 Windows 命令语法",
+                        "Python 解释器为 python，不是 python3（python3 会命中 "
+                                + "Microsoft Store 别名占位程序，不执行脚本）",
+                        "打开 URL 或本机程序使用 start，例如："
+                                + "start chrome \"https://www.google.com/search?q=agent\"；"
+                                + "start 经注册表解析程序名，不要硬编码安装路径",
+                        "路径分隔符为反斜杠，含空格的路径需加引号")
+                : List.of(
+                        "run_command 经 /bin/sh -c 执行，使用 POSIX 命令语法",
+                        "Python 解释器为 python3",
+                        "打开 URL 使用 xdg-open（Linux）或 open（macOS）"));
+        return Map.copyOf(environment);
     }
 
     /**

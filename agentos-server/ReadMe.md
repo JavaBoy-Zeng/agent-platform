@@ -261,9 +261,10 @@ agentos:
 `execute_code` 工具执行 Python/Shell/Java 代码片段，执行环境由
 `agentos.tools.code-executor.mode` 决定：
 
-- `auto`（默认）：Docker 可用时走沙箱，否则回退本地进程。
+- `local`（默认）：宿主机直跑，HIGH 风险需 HITL 审批。
+- `auto`：Docker 守护进程可达且所需镜像均已在本地时走沙箱，否则回退本地进程；
+  不会因为只检测到 Docker 守护进程就在首次任务中隐式拉取镜像。
 - `docker`：强制一次性容器（`--network none`、内存/CPU 限额、源码只读挂载），LOW 风险免审批。
-- `local`：宿主机直跑，HIGH 风险需 HITL 审批。
 
 ## 持久化
 
@@ -361,15 +362,17 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.persistence.mode` | `AGENTOS_PERSISTENCE_MODE` | `memory` |
 | `agentos.persistence.sqlite-file` | `AGENTOS_PERSISTENCE_SQLITE_FILE` | `.agentos/runtime/runtime.sqlite` |
 | `agentos.security.api-key` | `AGENTOS_API_KEY` | 空，关闭鉴权 |
+| `agentos.security.allow-host-processes` | `AGENTOS_ALLOW_HOST_PROCESSES` | `false` |
 | `agentos.artifacts.root` | `AGENTOS_ARTIFACTS_ROOT` | `.agentos/artifacts` |
-| `agentos.tools.run-command.enabled` | `AGENTOS_RUN_COMMAND_ENABLED` | `true` |
+| `agentos.tools.file-access.root` | `AGENTOS_FILE_ACCESS_ROOT` | 服务进程当前目录 |
+| `agentos.tools.run-command.enabled` | `AGENTOS_RUN_COMMAND_ENABLED` | `false` |
 | `agentos.tools.run-command.work-dir` | `AGENTOS_RUN_COMMAND_WORK_DIR` | 服务进程当前目录 |
 | `agentos.tools.run-command.timeout-seconds` | `AGENTOS_RUN_COMMAND_TIMEOUT_SECONDS` | `60` |
 | `agentos.tools.run-command.max-output-chars` | `AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS` | `20000` |
 | `agentos.tools.web-fetch.timeout-seconds` | `AGENTOS_WEB_FETCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.web-search.api-key` | `AGENTOS_WEB_SEARCH_API_KEY` | 空，不注册 `web_search` |
-| `agentos.tools.code-executor.enabled` | `AGENTOS_CODE_EXECUTOR_ENABLED` | `true` |
-| `agentos.tools.code-executor.mode` | `AGENTOS_CODE_EXECUTOR_MODE` | `auto` |
+| `agentos.tools.code-executor.enabled` | `AGENTOS_CODE_EXECUTOR_ENABLED` | `false` |
+| `agentos.tools.code-executor.mode` | `AGENTOS_CODE_EXECUTOR_MODE` | `local` |
 | `agentos.tools.code-executor.timeout-seconds` | `AGENTOS_CODE_EXECUTOR_TIMEOUT_SECONDS` | `60` |
 | `agentos.tools.code-executor.max-output-chars` | `AGENTOS_CODE_EXECUTOR_MAX_OUTPUT_CHARS` | `20000` |
 | `agentos.skills.enabled` | `AGENTOS_SKILLS_ENABLED` | `true` |

@@ -1,6 +1,8 @@
 package com.github.agentos.server.config;
 
 import com.github.agentos.tool.skill.AgentSkill;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.RootedFileAccessPolicy;
 import com.github.agentos.tool.skill.LoadSkillTool;
 import com.github.agentos.tool.skill.SkillRegistry;
 import org.junit.jupiter.api.Test;
@@ -25,7 +27,9 @@ class SkillConfigurationTest {
 
     @Test
     void loadsBuiltinClasspathSkillsAndExposesTool() {
-        runner.run(context -> {
+        restrictedRunner().withPropertyValues(
+                        "agentos.skills.root=" + tempDir.resolve("no-local-skills"))
+                .run(context -> {
             assertThat(context).hasSingleBean(SkillRegistry.class);
             assertThat(context).hasSingleBean(LoadSkillTool.class);
 
@@ -51,7 +55,7 @@ class SkillConfigurationTest {
                 本地目录优先于 classpath，同 ID 技能以本地版本为准。
                 """);
 
-        runner.withPropertyValues("agentos.skills.root=" + tempDir)
+        restrictedRunner().withPropertyValues("agentos.skills.root=" + tempDir)
                 .run(context -> {
                     SkillRegistry registry = context.getBean(SkillRegistry.class);
                     assertThat(registry.find("report-writing"))
@@ -62,7 +66,8 @@ class SkillConfigurationTest {
 
     @Test
     void missingLocalRoot_stillLoadsClasspathSkills() {
-        runner.withPropertyValues("agentos.skills.root=" + tempDir.resolve("no-such-dir"))
+        restrictedRunner().withPropertyValues(
+                        "agentos.skills.root=" + tempDir.resolve("no-such-dir"))
                 .run(context -> {
                     SkillRegistry registry = context.getBean(SkillRegistry.class);
                     assertThat(registry.all()).hasSize(2);
@@ -76,5 +81,10 @@ class SkillConfigurationTest {
                     assertThat(context).doesNotHaveBean(SkillRegistry.class);
                     assertThat(context).doesNotHaveBean(LoadSkillTool.class);
                 });
+    }
+
+    private ApplicationContextRunner restrictedRunner() {
+        return runner.withBean(FileAccessPolicy.class,
+                () -> new RootedFileAccessPolicy(tempDir));
     }
 }

@@ -33,8 +33,9 @@ import com.github.agentos.tool.builtin.file.reader.FileReaderFactory;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolInterceptor;
 import com.github.agentos.tool.runtime.ToolRegistry;
-import com.github.agentos.tool.builtin.file.access.AllowAllFileAccessPolicy;
 import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.ProtectedConfigurationFileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.RootedFileAccessPolicy;
 import com.github.agentos.tool.builtin.file.reader.DocxFileReader;
 import com.github.agentos.tool.builtin.file.reader.PdfFileReader;
 import com.github.agentos.tool.builtin.file.reader.TextFileReader;
@@ -52,6 +53,7 @@ import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import java.nio.file.Path;
 import java.net.URI;
@@ -99,8 +101,16 @@ public class AgentOsConfiguration {
     }
 
     @Bean
-    FileAccessPolicy fileAccessPolicy() {
-        return new AllowAllFileAccessPolicy();
+    RootedFileAccessPolicy rootedFileAccessPolicy(
+            @Value("${agentos.tools.file-access.root:${user.dir}}") String root) {
+        return new RootedFileAccessPolicy(Path.of(root));
+    }
+
+    @Bean
+    @Primary
+    FileAccessPolicy fileAccessPolicy(RootedFileAccessPolicy rootedFileAccessPolicy) {
+        return new ProtectedConfigurationFileAccessPolicy(
+                rootedFileAccessPolicy);
     }
 
     @Bean
@@ -135,25 +145,30 @@ public class AgentOsConfiguration {
 
     /** 创建只提交明确路径且需要 HITL 审批的本地 Git 提交工具。 */
     @Bean
-    GitCommitTool gitCommitTool() {
-        return new GitCommitTool();
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+            name = "agentos.security.allow-host-processes", havingValue = "true")
+    GitCommitTool gitCommitTool(FileAccessPolicy fileAccessPolicy) {
+        return new GitCommitTool(fileAccessPolicy);
     }
 
     /**
      * 创建受限工作目录内的 shell 执行工具。
      *
-     * <p>整体 HIGH 风险；只读命令（ls/grep/mvn test 等）由
+     * <p>整体 HIGH 风险；经严格白名单确认的只读命令（ls/grep/git status 等）由
      * {@link com.github.agentos.hitl.CommandRiskPolicy} 免审批放行，
      * 其余命令仍需人工审批。可用 {@code agentos.tools.run-command.enabled=false} 关闭。</p>
      */
     @Bean
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
-            name = "agentos.tools.run-command.enabled", havingValue = "true", matchIfMissing = true)
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "'${agentos.security.allow-host-processes:false}' == 'true' && "
+                    + "'${agentos.tools.run-command.enabled:false}' == 'true'")
     RunCommandTool runCommandTool(
+            FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.tools.run-command.work-dir:${user.dir}}") String workDir,
             @Value("${agentos.tools.run-command.timeout-seconds:60}") long timeoutSeconds,
             @Value("${agentos.tools.run-command.max-output-chars:20000}") int maxOutputChars) {
-        return new RunCommandTool(Path.of(workDir), timeoutSeconds, maxOutputChars);
+        return new RunCommandTool(
+                fileAccessPolicy.authorizeRead(Path.of(workDir)), timeoutSeconds, maxOutputChars);
     }
 
 
@@ -217,6 +232,7 @@ public class AgentOsConfiguration {
      */
     @Bean(destroyMethod = "close")
     MemoryService memoryService(
+            FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.memory.mode:file}") String mode,
             @Value("${agentos.memory.data-dir:.agentos/memory}") String dataDirectory,
             @Value("${agentos.memory.database-file:.agentos/memory/memory.sqlite}") String databaseFile,
@@ -232,8 +248,10 @@ public class AgentOsConfiguration {
             @Value("${agentos.memory.embedding.timeout:30s}") Duration embeddingTimeout) {
         MemoryStore store = switch (mode.trim().toLowerCase(java.util.Locale.ROOT)) {
             case "memory" -> new InMemoryMemoryStore();
-            case "file" -> new FileMemoryStore(Path.of(dataDirectory));
-            case "sqlite" -> new SqliteMemoryStore(Path.of(databaseFile));
+            case "file" -> new FileMemoryStore(
+                    fileAccessPolicy.authorizeRead(Path.of(dataDirectory)));
+            case "sqlite" -> new SqliteMemoryStore(
+                    fileAccessPolicy.authorizeWrite(Path.of(databaseFile)));
             default -> throw new IllegalArgumentException(
                     "agentos.memory.mode must be one of: memory, file, sqlite");
         };
@@ -385,8 +403,10 @@ public class AgentOsConfiguration {
      */
     @Bean
     com.github.agentos.kernel.LocalArtifactService localArtifactService(
+            FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.artifacts.root:.agentos/artifacts}") String root) {
-        return new com.github.agentos.kernel.LocalArtifactService(Path.of(root));
+        return new com.github.agentos.kernel.LocalArtifactService(
+                fileAccessPolicy.authorizeRead(Path.of(root)));
     }
 
     /**

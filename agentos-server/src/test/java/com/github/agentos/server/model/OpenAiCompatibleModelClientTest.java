@@ -208,8 +208,11 @@ class OpenAiCompatibleModelClientTest {
         });
         server.start();
 
+        java.nio.file.Path allowedRoot = java.nio.file.Path.of("configured-agentos-root")
+                .toAbsolutePath().normalize();
         OpenAiCompatibleModelClient client = new OpenAiCompatibleModelClient(
-                HttpClient.newHttpClient(), objectMapper, properties("test-model"));
+                HttpClient.newHttpClient(), objectMapper, properties("test-model"), null,
+                allowedRoot);
         client.generatePlan(planningRequest(3));
 
         JsonNode sent = objectMapper.readTree(requestBody.get());
@@ -218,12 +221,17 @@ class OpenAiCompatibleModelClientTest {
                 .contains("runtimeEnvironment")
                 .contains("osName")
                 .contains("shellConventions")
-                .contains("与用户是同一台机器");
+                .contains("fileAccess")
+                .contains("ROOTED")
+                .contains(allowedRoot.toString())
+                .contains("远程服务器");
         boolean windows = System.getProperty("os.name", "")
                 .toLowerCase(java.util.Locale.ROOT).contains("win");
         assertThat(prompt).contains(windows ? "cmd /c" : "/bin/sh -c");
         assertThat(sent.path("messages").path(0).path("content").stringValue())
-                .contains("runtimeEnvironment", "无法访问用户电脑");
+                .contains("runtimeEnvironment", "不得擅自假设部署形态")
+                .contains("allowedRoot", "不得生成文件工具步骤", "试一下权限")
+                .contains("run_command", "execute_code", "curl");
     }
 
     /**

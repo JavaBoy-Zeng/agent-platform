@@ -10,9 +10,11 @@ import com.github.agentos.agent.registry.AgentRegistry;
 import com.github.agentos.agent.workflow.AgentToolAdapter;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
@@ -42,17 +44,20 @@ public class ConfigAgentConfiguration implements SmartInitializingSingleton {
     private final AgentRegistry agentRegistry;
     private final ObjectMapper objectMapper;
     private final String configFile;
+    private final FileAccessPolicy fileAccessPolicy;
 
     public ConfigAgentConfiguration(
             ChatClient chatClient,
             ToolRegistry toolRegistry,
             AgentRegistry agentRegistry,
             ObjectMapper objectMapper,
+            @Qualifier("rootedFileAccessPolicy") FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.agents.config-file:}") String configFile) {
         this.chatClient = chatClient;
         this.toolRegistry = toolRegistry;
         this.agentRegistry = agentRegistry;
         this.objectMapper = objectMapper;
+        this.fileAccessPolicy = fileAccessPolicy;
         this.configFile = configFile;
     }
 
@@ -61,7 +66,7 @@ public class ConfigAgentConfiguration implements SmartInitializingSingleton {
         if (configFile == null || configFile.isBlank()) {
             return;
         }
-        Path path = Path.of(configFile);
+        Path path = fileAccessPolicy.authorizeRead(Path.of(configFile));
         if (!Files.exists(path)) {
             LOGGER.info("[config-agents] config file not found, skipping: {}", path);
             return;

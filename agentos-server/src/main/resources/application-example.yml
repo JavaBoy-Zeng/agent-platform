@@ -82,6 +82,8 @@ agentos:
   security:
     # 生产环境必须设置；为空时仅适合本机开发。
     api-key: "${AGENTOS_API_KEY:}"
+    # 保持 false 可禁止 Shell、Git 和本地代码执行绕过文件根目录。
+    allow-host-processes: false
     identity:
       # 默认使用服务端固定身份，不信任调用方伪造的 team/user/role Header。
       team-id: "default-team"
@@ -89,6 +91,19 @@ agentos:
       roles: ""
       # 仅在可信 API Gateway 已完成身份认证和 Header 清洗时开启。
       trust-headers: false
+
+  tools:
+    file-access:
+      # 所有内置文件工具的唯一允许根目录；会阻止 .. 和符号链接逃逸。
+      # 根目录内的部署配置文件仍会被工具层隐藏，并拒绝读取和写入。
+      root: "/Users/whale_fall/agentos"
+    run-command:
+      enabled: false
+      work-dir: "/Users/whale_fall/agentos/work"
+    code-executor:
+      # 如需执行代码，建议改为 true + docker；不要在严格部署中使用 local。
+      enabled: false
+      mode: "docker"
 
 logging:
   level:

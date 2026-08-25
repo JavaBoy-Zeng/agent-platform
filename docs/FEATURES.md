@@ -42,7 +42,7 @@ AgentOS 是一个基于 Java 21、Maven 多模块与 Spring Boot 的模块化 Ag
 
 - 分包边界：`api` 提供工具协议，`runtime` 提供注册与统一调度，`builtin` 提供默认文件、Git、回显和天气工具；ArchUnit 自动守护依赖方向。
 - 核心类型：`AgentTool`、`ToolParameter` / `ToolDefinition`、`ToolCall`、`ToolResult`（含 `ToolFailureType`）、`ToolRegistry`、`ToolDispatcher`。
-- 文件访问：`FileAccessPolicy` 抽象；当前服务端装配 `AllowAllReadableFileAccessPolicy`。
+- 文件访问：`FileAccessPolicy` 抽象；当前服务端装配防路径遍历和符号链接逃逸的 `RootedFileAccessPolicy`。
 - 分页读取：`PagedFileReader` / `PagedReadResult` 支持按物理页和页内偏移读取（含 PDF），并显式返回 `hasMore` / `nextPage` / `nextOffset` / `truncated`。
 - 内置工具：
   - `directory_list`：有界列出目录，深度默认 2 / 最大 5，条目默认 200 / 最大 500，不跟随符号链接。
@@ -197,7 +197,7 @@ MainAgent
 - 持久化向量和向量索引：真实 Embedding 适配器已经提供，但当前仍在召回时逐条计算候选向量。
 - 团队 / 用户 / Agent 角色治理、ACL、Memory HTTP Gateway、SDK、适配器、管理面板：未实现。
 - 异步 HITL、持久化审批单、自动化恢复：未实现。
-- 文件访问沙箱：当前 `AllowAllReadableFileAccessPolicy`，不限制 workspace。
+- 文件访问边界：`RootedFileAccessPolicy` 将内置文件工具限制在配置根目录内。
 - API 鉴权：未内置网关鉴权，生产环境需在网关或安全层补齐。
 - 多租户、任务调度、指标、审计：仍处于原型阶段。
 

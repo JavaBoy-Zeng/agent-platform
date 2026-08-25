@@ -87,7 +87,7 @@ flowchart LR
   - `file_read`：文本和 PDF 物理页 + 页内偏移分页读取，返回 `totalPages / hasMore / nextPage / nextOffset / truncated`，必须续读到 `hasMore=false`。
   - `echo`：仅用于调用链测试，不承担最终回答。
   - `weather`：查询外部天气接口。
-- 文件路径授权由 `FileAccessPolicy` 统一抽象；服务端当前装配 `AllowAllReadableFileAccessPolicy`，未来可替换为 sandbox 策略。
+- 文件路径授权由 `FileAccessPolicy` 统一抽象；服务端装配 `RootedFileAccessPolicy`，阻止路径遍历和符号链接逃逸。
 - 结构化失败类型：`INVALID_ARGUMENT / NOT_FOUND / TRANSIENT / ACCESS_DENIED / PERMISSION_DENIED / SECURITY_DENIED / TOOL_INTERNAL_ERROR / UNKNOWN`，`UNKNOWN` 默认终止。
 
 ### 2.5 agentos-memory（记忆系统）
@@ -225,4 +225,4 @@ curl 'http://localhost:8080/api/memories?sessionId=session-1&recentLimit=20'
 - `agentos-memory` 中的 Skill 创建与管理、LLM-Wiki 文档解析 / FTS5 / 知识图谱、CodeGraph 仓库索引、`/v3/tools/*` 服务化接口、Team / User / Agent / Task / Asset 管理、ACL、SDK 适配层与生产部署体系等仍**未实现**。
 - `agentos-memory` 已具备真实 LLM/Embedding 适配、SQLite 和阶段一回归测试；生产前仍需真实供应商质量评测、目标硬件压测、备份恢复及多节点方案。
 - `agentos-hitl` 默认仍为拒绝型 `ApprovalHandler`，需要接入真实审批渠道才能放行中高风险工具。
-- `agentos-tool` 文件路径当前为 `AllowAllReadableFileAccessPolicy`，需要替换为 sandbox 策略以匹配生产环境要求。
+- `agentos-tool` 文件路径由 `RootedFileAccessPolicy` 限制在配置根目录；宿主机进程工具需保持关闭或另行隔离。

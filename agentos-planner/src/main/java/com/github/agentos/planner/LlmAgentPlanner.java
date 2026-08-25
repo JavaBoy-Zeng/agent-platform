@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.nio.file.Path;
 
 /** 使用大语言模型生成初始计划和基于执行快照的重规划计划。 */
 public final class LlmAgentPlanner implements AgentPlanner {
@@ -28,6 +29,7 @@ public final class LlmAgentPlanner implements AgentPlanner {
     private final MemoryService memoryService;
     private final PlanValidator planValidator;
     private final AgentExecutionLimits limits;
+    private final Path fileAccessRoot;
 
     /** 创建迭代式大语言模型规划器。 */
     public LlmAgentPlanner(
@@ -36,11 +38,25 @@ public final class LlmAgentPlanner implements AgentPlanner {
             MemoryService memoryService,
             PlanValidator planValidator,
             AgentExecutionLimits limits) {
+        this(modelClient, toolRegistry, memoryService, planValidator, limits, null);
+    }
+
+    /** 创建带固定文件访问根目录事实的迭代式大语言模型规划器。 */
+    public LlmAgentPlanner(
+            ModelClient modelClient,
+            ToolRegistry toolRegistry,
+            MemoryService memoryService,
+            PlanValidator planValidator,
+            AgentExecutionLimits limits,
+            Path fileAccessRoot) {
         this.modelClient = Objects.requireNonNull(modelClient, "modelClient must not be null");
         this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
         this.memoryService = Objects.requireNonNull(memoryService, "memoryService must not be null");
         this.planValidator = Objects.requireNonNull(planValidator, "planValidator must not be null");
         this.limits = Objects.requireNonNull(limits, "limits must not be null");
+        this.fileAccessRoot = fileAccessRoot == null
+                ? null
+                : fileAccessRoot.toAbsolutePath().normalize();
     }
 
     /** 创建带模型生命周期拦截器的迭代式规划器。 */
@@ -91,6 +107,15 @@ public final class LlmAgentPlanner implements AgentPlanner {
             PlanOrigin origin) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
+        java.util.Optional<AgentPlan> boundaryDenial =
+                FileRequestBoundaryPolicy.denyExplicitOutsidePath(
+                        request, fileAccessRoot, origin);
+        if (boundaryDenial.isPresent()) {
+            LOGGER.info(
+                    "[agent-file-boundary] denied explicit outside path sessionId={} root={}",
+                    request.sessionId(), fileAccessRoot);
+            return boundaryDenial.get();
+        }
         MemoryScope scope = new MemoryScope(
                 context.teamId(),
                 context.userId(),

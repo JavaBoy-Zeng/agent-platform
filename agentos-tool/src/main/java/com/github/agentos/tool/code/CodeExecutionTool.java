@@ -38,13 +38,15 @@ public final class CodeExecutionTool implements AgentTool {
 
     @Override
     public String description() {
-        return "执行一段代码并返回标准输出、标准错误与退出码。支持语言: python、shell、java"
+        return "执行独立、自包含的代码片段并返回标准输出、标准错误与退出码。"
+                + "仅用于运行用户提供或为用户生成的 Python/Shell/Java 代码片段；"
+                + "宿主机命令、服务器文件/目录、构建、测试、curl 和网络查询必须使用 run_command，"
+                + "不得使用本工具代替。支持语言: python、shell、java"
                 + "（Java 需定义 public class Main 并提供 main 方法）。当前执行环境: "
                 + (executor.isSandboxed()
                         ? "Docker 沙箱（网络隔离、内存与 CPU 受限、源码只读挂载）；"
-                                + "沙箱内无法访问宿主机文件，也无法启动宿主机程序"
-                        : "用户本机的本地进程（无沙箱，需要人工审批）；"
-                                + "可读写本机文件、启动本机程序与 GUI 应用（如浏览器）");
+                                + "沙箱无网络，无法访问宿主机文件或启动宿主机程序"
+                        : "AgentOS 服务宿主机的本地进程（无沙箱，需要人工审批）");
     }
 
     @Override

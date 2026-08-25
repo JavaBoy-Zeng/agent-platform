@@ -55,9 +55,11 @@ public final class RunCommandTool implements AgentTool {
 
     @Override
     public String description() {
-        return "在用户本机的工作目录执行一条 shell 命令并返回输出。服务与用户在同一台机器，"
-                + "因此可用于运行测试、查看目录、执行构建，也可以启动本机程序与 GUI 应用"
-                + "（例如用 start/xdg-open/open 打开浏览器）。命令语法需匹配宿主机平台"
+        return "在运行 AgentOS 服务进程的宿主机工作目录执行一条 shell 命令并返回输出。"
+                + "当前命令工作目录: " + workDir.toAbsolutePath().normalize() + "。"
+                + "这可能是用户本机，也可能是部署 AgentOS 的远程服务器。"
+                + "当用户要求执行系统命令、查看服务器目录/网络状态、运行 curl、构建或测试时使用本工具；"
+                + "不要用 execute_code 代替宿主机命令。命令语法需匹配宿主机平台"
                 + "（当前: " + platformName() + "）；命令有超时限制，输出过长会被截断。"
                 + "该操作会改动系统状态，需要人工审批";
     }

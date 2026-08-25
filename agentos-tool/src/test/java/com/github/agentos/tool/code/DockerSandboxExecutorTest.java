@@ -75,8 +75,8 @@ class DockerSandboxExecutorTest {
     }
 
     @Test
-    void isAvailableReflectsDockerDaemonWithoutThrowing() {
-        // 不论守护进程是否运行，探测都应安静返回布尔值且结果被缓存。
+    void isAvailableReflectsDockerDaemonAndLocalImagesWithoutThrowing() {
+        // 不论守护进程/镜像是否就绪，探测都应安静返回布尔值且结果被缓存。
         boolean first = executor.isAvailable();
         assertThat(executor.isAvailable()).isEqualTo(first);
     }

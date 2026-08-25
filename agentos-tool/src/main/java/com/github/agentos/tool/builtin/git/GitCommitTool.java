@@ -6,6 +6,8 @@ import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.builtin.file.access.FileAccessException;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +23,13 @@ import java.util.concurrent.TimeUnit;
 public final class GitCommitTool implements AgentTool {
 
     private static final long COMMAND_TIMEOUT_SECONDS = 30;
+    private final FileAccessPolicy accessPolicy;
+
+    /** 创建只能操作文件访问策略允许范围内仓库的 Git 工具。 */
+    public GitCommitTool(FileAccessPolicy accessPolicy) {
+        this.accessPolicy = java.util.Objects.requireNonNull(
+                accessPolicy, "accessPolicy must not be null");
+    }
 
     @Override
     public String name() {
@@ -111,9 +120,9 @@ public final class GitCommitTool implements AgentTool {
         }
     }
 
-    private static Path repository(Object value) throws IOException {
-        Path requested = Path.of(requiredString(value, "repository"))
-                .toAbsolutePath().normalize();
+    private Path repository(Object value) throws IOException {
+        Path requested = accessPolicy.authorizeRead(
+                Path.of(requiredString(value, "repository")));
         if (!Files.isDirectory(requested)) {
             throw new IllegalArgumentException("repository is not a directory: " + requested);
         }
@@ -212,7 +221,9 @@ public final class GitCommitTool implements AgentTool {
     }
 
     private static ToolResult failure(Exception exception) {
-        ToolFailureType type = exception instanceof SecurityException
+        ToolFailureType type = exception instanceof FileAccessException accessException
+                ? accessException.failureType()
+                : exception instanceof SecurityException
                 ? ToolFailureType.SECURITY_DENIED
                 : exception instanceof IOException
                         ? ToolFailureType.ACCESS_DENIED

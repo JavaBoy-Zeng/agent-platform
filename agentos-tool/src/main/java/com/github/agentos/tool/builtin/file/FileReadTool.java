@@ -48,6 +48,7 @@ public final class FileReadTool implements AgentTool {
                 使用 nextOffset 续读。当 hasMore=true 时完整提取任务不得提前结束。
                 根据文件类型自动选择解析器。
                 未知项目结构时应先使用 directory_list 或 file_search。
+                受保护的部署配置文件禁止读取。
                 """;
     }
 

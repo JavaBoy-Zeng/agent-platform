@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -241,6 +242,61 @@ class LlmAgentPlannerTest {
     }
 
     @Test
+    void allowsAccessBoundaryAnswerWithoutCallingFileTool() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
+        try (MemoryService memoryService = MemoryService.inMemory()) {
+            ModelClient modelClient = request -> new ModelPlan(
+                    PlanType.EXECUTION,
+                    PlanOutcome.COMPLETE,
+                    "拒绝越界目录访问",
+                    null,
+                    "无法访问 /Users/whale_fall；允许根目录是 /Users/whale_fall/agentos。");
+            LlmAgentPlanner planner = planner(modelClient, toolRegistry, memoryService);
+
+            AgentPlan plan = planner.createPlan(
+                    AgentRequest.of("session-1", "列出上级目录中的文件"),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
+            assertThat(plan.steps()).isEmpty();
+            assertThat(plan.finalAnswer()).contains("无法访问", "允许根目录");
+        }
+    }
+
+    @Test
+    void rejectsExplicitOutsidePathBeforeModelPlanning() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
+        AtomicInteger modelCalls = new AtomicInteger();
+        try (MemoryService memoryService = MemoryService.inMemory()) {
+            ModelClient modelClient = request -> {
+                modelCalls.incrementAndGet();
+                throw new AssertionError("model must not be called for an explicit outside path");
+            };
+            java.nio.file.Path allowedRoot = java.nio.file.Path.of(
+                    "/Users/whale_fall/agentos");
+            LlmAgentPlanner planner = new LlmAgentPlanner(
+                    modelClient,
+                    toolRegistry,
+                    memoryService,
+                    new PlanValidator(toolRegistry, 10),
+                    new AgentExecutionLimits(6, 30, 30, 10),
+                    allowedRoot);
+
+            AgentPlan plan = planner.createPlan(
+                    AgentRequest.of(
+                            "session-1",
+                            "列出 /Users/whale_fall/agentos 的上级目录 /Users/whale_fall/"),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(modelCalls).hasValue(0);
+            assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
+            assertThat(plan.steps()).isEmpty();
+            assertThat(plan.finalAnswer())
+                    .contains("/Users/whale_fall", "/Users/whale_fall/agentos", "未调用文件工具");
+        }
+    }
+
+    @Test
     void replacesPrematureCompleteWithExactFileContinuation() {
         ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
         PlanStep currentStep = new PlanStep(
@@ -328,6 +384,34 @@ class LlmAgentPlannerTest {
                     snapshot(currentStep, result)))
                     .isInstanceOf(PlanValidationException.class)
                     .hasMessageContaining("上海联恩电子有限公司");
+        }
+    }
+
+    @Test
+    void doesNotTreatWebUrlAsAnAbsoluteFilePath() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
+        AtomicInteger modelCalls = new AtomicInteger();
+        try (MemoryService memoryService = MemoryService.inMemory()) {
+            ModelClient modelClient = request -> {
+                modelCalls.incrementAndGet();
+                return new ModelPlan(
+                        PlanType.EXECUTION, PlanOutcome.COMPLETE,
+                        "打开网页", null, "可以使用网页工具处理该地址。");
+            };
+            LlmAgentPlanner planner = new LlmAgentPlanner(
+                    modelClient,
+                    toolRegistry,
+                    memoryService,
+                    new PlanValidator(toolRegistry, 10),
+                    new AgentExecutionLimits(6, 30, 30, 10),
+                    java.nio.file.Path.of("/Users/whale_fall/agentos"));
+
+            AgentPlan plan = planner.createPlan(
+                    AgentRequest.of("session-1", "打开 https://example.com/docs"),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(modelCalls).hasValue(1);
+            assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
         }
     }
 

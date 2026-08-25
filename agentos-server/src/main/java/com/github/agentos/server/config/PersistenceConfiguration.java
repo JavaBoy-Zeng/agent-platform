@@ -13,6 +13,7 @@ import com.github.agentos.server.persistence.SqliteContinuationStore;
 import com.github.agentos.server.persistence.SqliteSessionService;
 import com.github.agentos.server.persistence.SqliteUsageStore;
 import com.github.agentos.server.usage.UsageStore;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -43,9 +44,10 @@ public class PersistenceConfiguration {
     @Bean
     @ConditionalOnProperty(name = "agentos.persistence.mode", havingValue = "sqlite")
     DataSource sqliteDataSource(
+            FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.persistence.sqlite-file:.agentos/runtime/runtime.sqlite}") String file)
             throws java.io.IOException {
-        Path databaseFile = Path.of(file).toAbsolutePath().normalize();
+        Path databaseFile = fileAccessPolicy.authorizeWrite(Path.of(file));
         if (databaseFile.getParent() != null) {
             Files.createDirectories(databaseFile.getParent());
         }

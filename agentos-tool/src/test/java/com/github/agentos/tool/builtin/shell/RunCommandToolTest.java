@@ -94,4 +94,14 @@ class RunCommandToolTest {
         assertThat(tool.name()).isEqualTo("run_command");
         assertThat(tool.parameters()).hasSize(2);
     }
+
+    @Test
+    void descriptionIdentifiesServiceHostAndConfiguredWorkingDirectory() {
+        RunCommandTool scoped = new RunCommandTool(tempDir, 30, 20000);
+
+        assertThat(scoped.description())
+                .contains("AgentOS 服务")
+                .contains(tempDir.toAbsolutePath().normalize().toString())
+                .contains("curl", "execute_code");
+    }
 }

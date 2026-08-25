@@ -1,6 +1,7 @@
 package com.github.agentos.server.config;
 
 import com.github.agentos.tool.skill.ClasspathSkillSource;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 import com.github.agentos.tool.skill.LoadSkillTool;
 import com.github.agentos.tool.skill.LocalSkillSource;
 import com.github.agentos.tool.skill.SkillRegistry;
@@ -36,6 +37,7 @@ public class SkillConfiguration {
      */
     @Bean
     SkillRegistry skillRegistry(
+            FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.skills.root:.agentos/skills}") String root,
             @Value("${agentos.skills.classpath-resources:skills/report-writing/SKILL.md,skills/code-review/SKILL.md}")
             String classpathResources) {
@@ -44,7 +46,7 @@ public class SkillConfiguration {
                 .filter(entry -> !entry.isEmpty())
                 .toList();
         List<SkillSource> sources = List.of(
-                new LocalSkillSource(Path.of(root)),
+                new LocalSkillSource(fileAccessPolicy.authorizeRead(Path.of(root))),
                 new ClasspathSkillSource(resources));
         try {
             return new SkillRegistry().loadFrom(sources);

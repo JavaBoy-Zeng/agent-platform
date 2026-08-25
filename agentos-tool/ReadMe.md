@@ -33,8 +33,8 @@
 | `FileAccessPolicy` | 所有文件工具共用的路径授权抽象。 |
 | `PagedFileReader / PagedReadResult` | 按物理页和页内偏移读取文件，并显式返回续读位置。 |
 
-当前服务端装配 `AllowAllReadableFileAccessPolicy`，允许读取本机任意可读路径，不限制 workspace。
-未来可以替换为 sandbox 策略而不修改工具实现。
+当前服务端装配 `RootedFileAccessPolicy`。相对路径固定从配置根目录解析，绝对路径、`..`
+或符号链接最终指向根目录外时都会被拒绝，尚不存在的写入目标也会检查最近的真实祖先。
 
 ## 内置工具
 
@@ -44,12 +44,12 @@
 | `file_search` | `NAME` glob 或 `CONTENT` 字面量搜索；深度默认 8、最大 12，结果默认 100、最大 500。 |
 | `file_read` | 在路径已确认后读取文件；PDF/DOCX 按物理页和页内偏移分页，并返回续读元数据。 |
 | `file_write` | 写入 `.txt` / `.md` / 真实 `.docx`；默认仅创建新文件，覆盖与追加需显式指定，高风险需审批。 |
-| `run_command` | 在受控工作目录执行 shell 命令；超时与输出截断可配置，按内容级风险策略决定是否审批。 |
+| `run_command` | 宿主机 Shell；严格模式默认不注册，因为工作目录不等于文件系统沙箱。 |
 | `web_fetch` | 抓取单个网页正文并截断，受超时限制。 |
 | `web_search` | Tavily 搜索；未配置 API Key 时不注册。 |
-| `git_commit` | 本地 Git 提交，高风险需审批。 |
+| `git_commit` | 本地 Git 提交；仓库必须位于文件根目录内，且仅允许开启宿主机进程时注册。 |
 | `load_skill` | 把注册表中的某项技能完整指令按需注入对话上下文，技能正文不常驻提示词。 |
-| `execute_code` | 执行 Python/Shell/Java 代码片段；风险等级跟随执行器：沙箱 LOW，宿主机直跑 HIGH 需审批。 |
+| `execute_code` | 执行 Python/Shell/Java 代码片段；严格模式只允许 Docker 沙箱，本地执行被拒绝。 |
 | `echo` | 仅用于调用链测试，不承担最终回答。 |
 | `today` | 返回当前日期与星期，用于日期类问答。 |
 | `weather` | 查询外部天气接口。 |

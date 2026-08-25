@@ -69,6 +69,16 @@ class CodeExecutionToolTest {
     }
 
     @Test
+    void descriptionKeepsHostAndNetworkCommandsOutOfSandbox() {
+        String description = new CodeExecutionTool(new FakeExecutor()).description();
+
+        assertThat(description)
+                .contains("独立、自包含")
+                .contains("curl", "run_command")
+                .contains("沙箱无网络");
+    }
+
+    @Test
     void languageAliasesAreNormalized() {
         FakeExecutor executor = new FakeExecutor();
         CodeExecutionTool tool = new CodeExecutionTool(executor);

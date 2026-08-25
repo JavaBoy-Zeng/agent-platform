@@ -16,6 +16,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -47,6 +48,9 @@ public class SpecialistConfiguration {
 
     /** 创建代码编写与执行 Agent。 */
     @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "'${agentos.security.allow-host-processes:false}' == 'true' && "
+                    + "'${agentos.tools.run-command.enabled:false}' == 'true'")
     CodeAgent codeAgent(
             ChatClient chatClient,
             FileWriteTool fileWriteTool,
@@ -70,6 +74,9 @@ public class SpecialistConfiguration {
 
     /** 把 CodeAgent 暴露为工具，供 MainAgent 规划器调用。 */
     @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "'${agentos.security.allow-host-processes:false}' == 'true' && "
+                    + "'${agentos.tools.run-command.enabled:false}' == 'true'")
     AgentToolAdapter codeAgentTool(CodeAgent codeAgent) {
         return new AgentToolAdapter(codeAgent);
     }
@@ -90,13 +97,13 @@ public class SpecialistConfiguration {
     SupervisorAgent supervisorAgent(
             ChatClient chatClient,
             SearchAgent searchAgent,
-            CodeAgent codeAgent,
+            ObjectProvider<CodeAgent> codeAgentProvider,
             ReportAgent reportAgent,
             MainAgent mainAgent) {
-        Map<String, Agent> specialists = Map.of(
-                SearchAgent.ID, searchAgent,
-                CodeAgent.ID, codeAgent,
-                ReportAgent.ID, reportAgent);
+        Map<String, Agent> specialists = new LinkedHashMap<>();
+        specialists.put(SearchAgent.ID, searchAgent);
+        specialists.put(ReportAgent.ID, reportAgent);
+        codeAgentProvider.ifAvailable(codeAgent -> specialists.put(CodeAgent.ID, codeAgent));
         return new SupervisorAgent(chatClient, specialists, mainAgent);
     }
 }

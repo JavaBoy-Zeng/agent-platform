@@ -40,7 +40,10 @@ PlanExecutor
 
 `agentos-server` 对 shell 命令使用内容级风险策略 `CommandRiskPolicy`：
 
-- 只读白名单命令（`ls`、`cat`、`grep`、`git status`、`mvn test` 等）直接执行，不打断任务。
+- 仅无内建写入或子进程能力的只读白名单命令（`ls`、`cat`、`grep`、`git status` 等）
+  直接执行，不打断任务。
+- `find`、`env`、`date`、`git branch` 以及构建/测试命令默认需要审批；这些命令分别可以
+  删除文件、启动子进程、修改系统时间、改动 Git 状态或执行项目代码。
 - 白名单之外、或包含管道/重定向/命令串联/命令替换等 shell 元字符的命令一律要求审批，
   避免 "cat file; rm -rf /" 这类以只读命令开头的拼接攻击绕过审批。
 - 其他高风险工具（`file_write`、`git_commit` 等）仍按 `MEDIUM` 审批阈值处理。

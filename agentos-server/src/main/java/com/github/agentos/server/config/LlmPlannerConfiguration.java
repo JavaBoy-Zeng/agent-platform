@@ -8,6 +8,7 @@ import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.PlanValidator;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.OpenAiCompatibleModelClient;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -47,12 +48,15 @@ public class LlmPlannerConfiguration {
     ModelClient openAiCompatibleModelClient(
             ModelClientProperties properties,
             ObjectMapper objectMapper,
-            com.github.agentos.planner.ModelUsageListener usageListener) {
+            com.github.agentos.planner.ModelUsageListener usageListener,
+            FileAccessPolicy fileAccessPolicy) {
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.getConnectTimeout())
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
-        return new OpenAiCompatibleModelClient(httpClient, objectMapper, properties, usageListener);
+        return new OpenAiCompatibleModelClient(
+                httpClient, objectMapper, properties, usageListener,
+                fileAccessPolicy.allowedRoot().orElse(null));
     }
 
     /**
@@ -70,8 +74,10 @@ public class LlmPlannerConfiguration {
             ToolRegistry toolRegistry,
             MemoryService memoryService,
             PlanValidator planValidator,
-            AgentExecutionLimits limits) {
+            AgentExecutionLimits limits,
+            FileAccessPolicy fileAccessPolicy) {
         return new LlmAgentPlanner(
-                modelClient, toolRegistry, memoryService, planValidator, limits);
+                modelClient, toolRegistry, memoryService, planValidator, limits,
+                fileAccessPolicy.allowedRoot().orElse(null));
     }
 }

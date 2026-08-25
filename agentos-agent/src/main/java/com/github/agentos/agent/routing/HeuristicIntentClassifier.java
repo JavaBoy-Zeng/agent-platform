@@ -109,7 +109,7 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             "date", "today", "yesterday", "tomorrow", "weekday", "what day", "which year", "what year", "current year", "current month", "current date",
             // 文件系统与网络
             "文件", "目录", "文件夹", "路径", "file", "folder", "directory", "path",
-            "http", "https", "www.", "git", "url", "website", "webpage",
+            "http", "https", "www.", "git", "url", "website", "webpage", "curl", "命令", "终端",
             // 英文实时信息
             "now", "current", "latest", "recent", "news", "price", "time", "traffic",
             "flight", "schedule", "score",

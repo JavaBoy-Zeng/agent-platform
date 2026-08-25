@@ -8,6 +8,7 @@ import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
@@ -33,21 +34,29 @@ public class McpToolRegistrar implements SmartInitializingSingleton {
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
     private final McpProperties properties;
+    private final boolean allowHostProcesses;
     private final List<McpToolset> toolsets = new ArrayList<>();
 
     public McpToolRegistrar(
             ToolRegistry toolRegistry,
             ObjectMapper objectMapper,
-            McpProperties properties) {
+            McpProperties properties,
+            @Value("${agentos.security.allow-host-processes:false}")
+            boolean allowHostProcesses) {
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.allowHostProcesses = allowHostProcesses;
     }
 
     @Override
     public void afterSingletonsInstantiated() {
         if (!properties.isEnabled()) {
             LOGGER.info("[mcp] disabled, skipping MCP server initialization");
+            return;
+        }
+        if (!allowHostProcesses) {
+            LOGGER.warn("[mcp] stdio servers disabled by agentos.security.allow-host-processes=false");
             return;
         }
         for (McpProperties.Server server : properties.getServers()) {

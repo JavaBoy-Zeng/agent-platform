@@ -16,8 +16,21 @@ class CodeExecutorConfigurationTest {
             .withConfiguration(UserConfigurations.of(CodeExecutorConfiguration.class));
 
     @Test
+    void defaultLocalModeRejectsHostProcessExecution() {
+        runner.run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure())
+                    .hasRootCauseMessage(
+                            "code executor local is disabled by "
+                                    + "agentos.security.allow-host-processes=false; use docker mode");
+        });
+    }
+
+    @Test
     void localMode_createsLocalExecutorAndTool() {
-        runner.withPropertyValues("agentos.tools.code-executor.mode=local")
+        runner.withPropertyValues(
+                        "agentos.tools.code-executor.mode=local",
+                        "agentos.security.allow-host-processes=true")
                 .run(context -> {
                     assertThat(context).hasSingleBean(CodeExecutor.class);
                     assertThat(context.getBean(CodeExecutor.class))

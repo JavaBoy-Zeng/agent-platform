@@ -6,6 +6,7 @@ import com.github.agentos.tool.api.ToolContexts;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.builtin.git.GitCommitTool;
+import com.github.agentos.tool.builtin.file.access.RootedFileAccessPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,7 +33,7 @@ class GitCommitToolTest {
         Files.writeString(repository.resolve("base.txt"), "base");
         git("add", "base.txt");
         git("commit", "-m", "initial");
-        tool = new GitCommitTool();
+        tool = new GitCommitTool(new RootedFileAccessPolicy(repository));
     }
 
     @Test
@@ -90,6 +91,19 @@ class GitCommitToolTest {
         assertThat(tool.riskLevel()).isEqualTo(AgentTool.RiskLevel.HIGH);
         assertThat(tool.parameters()).extracting(parameter -> parameter.name())
                 .containsExactly("repository", "paths", "message");
+    }
+
+    @Test
+    void rejectsRepositoryOutsideAllowedRoot(@TempDir Path otherRoot) throws Exception {
+        GitCommitTool restricted = new GitCommitTool(new RootedFileAccessPolicy(otherRoot));
+
+        ToolResult result = restricted.execute(
+                ToolContexts.testContext(restricted), call(
+                        List.of("base.txt"), "docs: forbidden repository"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.failureType()).isEqualTo(ToolFailureType.SECURITY_DENIED);
+        assertThat(result.error()).contains("outside the allowed root");
     }
 
     private ToolCall call(List<String> paths, String message) {

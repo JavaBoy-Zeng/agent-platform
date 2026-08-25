@@ -6,6 +6,8 @@ import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.builtin.file.reader.FileReaderFactory;
 import com.github.agentos.tool.builtin.file.access.AllowAllReadableFileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.ProtectedConfigurationFileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.RootedFileAccessPolicy;
 import com.github.agentos.tool.builtin.file.reader.PdfFileReader;
 import com.github.agentos.tool.builtin.file.reader.TextFileReader;
 import com.github.agentos.tool.builtin.file.DirectoryListTool;
@@ -93,6 +95,56 @@ class FileExplorationToolsTest {
         assertThat(names.output()).contains("MainAgent.java");
         assertThat(contents.success()).isTrue();
         assertThat(contents.output()).contains("MainAgent.java:2", "class MainAgent");
+    }
+
+    @Test
+    void protectedDeploymentConfigurationsAreInvisibleAndUnreadable() throws Exception {
+        String secret = "AGENTOS_PROTECTED_SECRET_6A9E1E";
+        Files.writeString(directory.resolve("Caddyfile"), secret, StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve(".env"), secret, StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("application.yml"), secret, StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("settings.json"), secret, StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("notes.txt"), "safe searchable text", StandardCharsets.UTF_8);
+        ProtectedConfigurationFileAccessPolicy policy = new ProtectedConfigurationFileAccessPolicy(
+                new RootedFileAccessPolicy(directory));
+        DirectoryListTool directoryList = new DirectoryListTool(policy);
+        FileSearchTool fileSearch = new FileSearchTool(policy);
+        FileReadTool fileRead = new FileReadTool(
+                policy,
+                new FileReaderFactory(List.of(new TextFileReader())));
+
+        ToolResult listing = directoryList.execute(
+                ToolContexts.testContext(directoryList),
+                new ToolCall("directory_list", Map.of("path", directory.toString())));
+        ToolResult names = fileSearch.execute(
+                ToolContexts.testContext(fileSearch),
+                new ToolCall("file_search", Map.of(
+                        "path", directory.toString(), "mode", "NAME", "query", "*")));
+        ToolResult protectedContent = fileSearch.execute(
+                ToolContexts.testContext(fileSearch),
+                new ToolCall("file_search", Map.of(
+                        "path", directory.toString(), "mode", "CONTENT", "query", secret)));
+        ToolResult safeContent = fileSearch.execute(
+                ToolContexts.testContext(fileSearch),
+                new ToolCall("file_search", Map.of(
+                        "path", directory.toString(), "mode", "CONTENT", "query", "searchable")));
+        ToolResult directRead = fileRead.execute(
+                ToolContexts.testContext(fileRead),
+                new ToolCall("file_read", Map.of("path", directory.resolve("Caddyfile").toString())));
+
+        assertThat(listing.success()).isTrue();
+        assertThat(listing.output()).contains("notes.txt")
+                .doesNotContain("Caddyfile", ".env", "application.yml", "settings.json", secret);
+        assertThat(names.success()).isTrue();
+        assertThat(names.output()).contains("notes.txt")
+                .doesNotContain("Caddyfile", ".env", "application.yml", "settings.json", secret);
+        assertThat(protectedContent.success()).isTrue();
+        assertThat(protectedContent.output()).isEqualTo("[no matches]");
+        assertThat(safeContent.success()).isTrue();
+        assertThat(safeContent.output()).contains("notes.txt:1: safe searchable text");
+        assertThat(directRead.success()).isFalse();
+        assertThat(directRead.failureType()).isEqualTo(ToolFailureType.SECURITY_DENIED);
+        assertThat(directRead.error()).doesNotContain("Caddyfile", secret);
     }
 
     @Test

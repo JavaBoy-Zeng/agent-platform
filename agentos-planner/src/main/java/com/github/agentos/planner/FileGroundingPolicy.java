@@ -49,6 +49,11 @@ final class FileGroundingPolicy {
             "内容", "里面", "文中", "包含", "是否", "有吗", "有没有", "哪些", "哪几");
     private static final Set<String> NEGATIVE_SIGNALS = Set.of(
             "没有", "不在", "未包含", "不包含", "无匹配", "未找到", "不存在", "并非");
+    private static final Set<String> FILE_ACCESS_DENIAL_SIGNALS = Set.of(
+            "无法访问", "不能访问", "无权访问", "没有权限", "不允许访问", "拒绝访问",
+            "路径越界", "outside the allowed root", "outside allowed root");
+    private static final Set<String> FILE_BOUNDARY_SIGNALS = Set.of(
+            "允许根目录", "访问根目录", "allowedroot", "allowed root");
 
     private FileGroundingPolicy() {
     }
@@ -65,7 +70,9 @@ final class FileGroundingPolicy {
         if (modelPlan.outcome() != PlanOutcome.COMPLETE) {
             return modelPlan;
         }
-        if (requiresFreshFileEvidence(request) && !hasFreshFileEvidence(request.executionSnapshot())) {
+        if (requiresFreshFileEvidence(request)
+                && !hasFreshFileEvidence(request.executionSnapshot())
+                && !isFileAccessBoundaryAnswer(modelPlan)) {
             return initialReadPlan(request, toolRegistry).orElseThrow(() ->
                     new PlanValidationException(List.of(
                             "file-grounded completion requires a current file_read/file_search observation")));
@@ -84,6 +91,22 @@ final class FileGroundingPolicy {
                             + String.join(", ", unsupported)));
         }
         return modelPlan;
+    }
+
+    /**
+     * 访问边界说明不是文件内容结论，因此不应强制要求先产生文件读取证据。
+     *
+     * <p>必须同时包含明确拒绝语义和根目录边界语义，避免普通的“没找到文件”回答绕过
+     * 文件事实校验。</p>
+     */
+    private static boolean isFileAccessBoundaryAnswer(ModelPlan modelPlan) {
+        String answer = modelPlan.finalAnswer();
+        if (answer == null || answer.isBlank()) {
+            return false;
+        }
+        String normalized = answer.toLowerCase(Locale.ROOT);
+        return FILE_ACCESS_DENIAL_SIGNALS.stream().anyMatch(normalized::contains)
+                && FILE_BOUNDARY_SIGNALS.stream().anyMatch(normalized::contains);
     }
 
     private static boolean requiresFreshFileEvidence(PlanningRequest request) {

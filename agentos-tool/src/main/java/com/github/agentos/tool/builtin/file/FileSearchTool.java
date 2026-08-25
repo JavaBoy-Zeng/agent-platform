@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 /** 按文件名 glob 或文本内容搜索本地目录的有界工具。 */
@@ -40,7 +41,7 @@ public final class FileSearchTool implements AgentTool {
 
     @Override
     public String description() {
-        return "在目录中按 NAME（glob 文件名）或 CONTENT（文本字面量）搜索，不跟随符号链接";
+        return "在目录中按 NAME（glob 文件名）或 CONTENT（文本字面量）搜索，不跟随符号链接，也不返回或扫描受保护的部署配置文件";
     }
 
     @Override
@@ -110,10 +111,14 @@ public final class FileSearchTool implements AgentTool {
                     .filter(Files::isRegularFile)
                     .iterator();
             for (Path path : files) {
+                Optional<Path> discoverable = accessPolicy.authorizeDiscovery(path);
+                if (discoverable.isEmpty()) {
+                    continue;
+                }
                 if (++scanned > MAX_SCANNED_FILES) {
                     return new SearchResult(matches, true, resultLimitReached);
                 }
-                Path authorized = accessPolicy.authorizeRead(path);
+                Path authorized = discoverable.orElseThrow();
                 Path relative = root.relativize(authorized);
                 Path candidate = caseSensitive
                         ? relative
@@ -143,10 +148,14 @@ public final class FileSearchTool implements AgentTool {
                     .filter(Files::isRegularFile)
                     .iterator();
             for (Path path : files) {
+                Optional<Path> discoverable = accessPolicy.authorizeDiscovery(path);
+                if (discoverable.isEmpty()) {
+                    continue;
+                }
                 if (++scanned > MAX_SCANNED_FILES) {
                     return new SearchResult(matches, true, resultLimitReached);
                 }
-                Path authorized = accessPolicy.authorizeRead(path);
+                Path authorized = discoverable.orElseThrow();
                 if (!Files.isReadable(authorized)
                         || Files.size(authorized) > MAX_CONTENT_FILE_BYTES
                         || isProbablyBinary(authorized)) {

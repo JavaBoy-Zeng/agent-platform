@@ -109,6 +109,10 @@ RoutingAgentLoop（agent·routing）三级路由
 | 收口 | `AgentFinalizer` → `MemoryService.capture()` | 只有成功运行写入记忆，记忆失败不影响运行结果（fail-open） |
 | 事件与用量 | `AgentEventPublisher` / `AgentPluginManager` | 事件持久化支撑状态查询与补播；用量插件汇成 `/api/usage` 账本 |
 
+## 部署与运维
+
+- [Mac mini + Caddy + Cloudflare Tunnel 部署与排障手册](docs/MAC_MINI_CLOUDFLARE_DEPLOYMENT_RUNBOOK.md)：包含构建、启动、Cloudflare Access、健康检查、1033、`200` 白屏、升级与回滚流程。
+
 ## 启动
 
 ```bash

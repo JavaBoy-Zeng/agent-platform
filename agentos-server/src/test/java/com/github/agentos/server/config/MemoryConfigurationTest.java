@@ -1,9 +1,11 @@
 package com.github.agentos.server.config;
 
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.tool.builtin.file.access.RootedFileAccessPolicy;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -13,6 +15,7 @@ class MemoryConfigurationTest {
     void createsOpenAiCompatibleMemoryComponentsFromConfiguration() {
         AgentOsConfiguration configuration = new AgentOsConfiguration();
         try (MemoryService ignored = configuration.memoryService(
+                new RootedFileAccessPolicy(Path.of(".")),
                 "memory", ".unused", ".unused.sqlite",
                 "openai", "https://example.test/v1/chat/completions", "key", "memory-model",
                 Duration.ofSeconds(5),
@@ -26,6 +29,7 @@ class MemoryConfigurationTest {
     void rejectsUnknownProcessorAndEmbeddingModes() {
         AgentOsConfiguration configuration = new AgentOsConfiguration();
         assertThatThrownBy(() -> configuration.memoryService(
+                new RootedFileAccessPolicy(Path.of(".")),
                 "memory", ".unused", ".unused.sqlite",
                 "unknown", "", "", "", Duration.ofSeconds(5),
                 "hashing", "", "", "", Duration.ofSeconds(5)))
@@ -33,6 +37,7 @@ class MemoryConfigurationTest {
                 .hasMessageContaining("processor.mode");
 
         assertThatThrownBy(() -> configuration.memoryService(
+                new RootedFileAccessPolicy(Path.of(".")),
                 "memory", ".unused", ".unused.sqlite",
                 "rule", "", "", "", Duration.ofSeconds(5),
                 "unknown", "", "", "", Duration.ofSeconds(5)))

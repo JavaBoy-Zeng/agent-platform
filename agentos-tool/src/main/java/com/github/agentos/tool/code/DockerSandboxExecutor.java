@@ -147,13 +147,45 @@ public final class DockerSandboxExecutor implements CodeExecutor {
         };
     }
 
+    /**
+     * 只在 Docker 守护进程可达且所有配置镜像已存在本地时报告可用。
+     *
+     * <p>{@code auto} 模式依赖该结果决定是否使用沙箱。如果只检查守护进程，
+     * 未缓存镜像会让首次执行隐式访问 Docker Hub，在离线或受限网络中以
+     * exit code 125 失败。显式 {@code docker} 模式不调用该方法作启动阻断，
+     * 仍允许运维人员选择 Docker 的默认拉取行为。</p>
+     */
     private boolean probeDocker() {
+        if (!commandSucceeds(List.of(
+                "docker", "version", "--format", "{{.Server.Version}}"))) {
+            return false;
+        }
+        List<String> inspect = new ArrayList<>();
+        inspect.add("docker");
+        inspect.add("image");
+        inspect.add("inspect");
+        inspect.addAll(images.values().stream().distinct().sorted().toList());
+        return commandSucceeds(inspect);
+    }
+
+    /** 有界执行 Docker 探测命令，丢弃输出避免管道阻塞。 */
+    private static boolean commandSucceeds(List<String> command) {
+        Process process = null;
         try {
-            Process process = new ProcessBuilder("docker", "version", "--format", "{{.Server.Version}}")
+            process = new ProcessBuilder(command)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
                     .start();
             boolean finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
-            return finished && process.exitValue() == 0;
+            if (!finished) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
         } catch (IOException | InterruptedException exception) {
+            if (process != null) {
+                process.destroyForcibly();
+            }
             if (exception instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }

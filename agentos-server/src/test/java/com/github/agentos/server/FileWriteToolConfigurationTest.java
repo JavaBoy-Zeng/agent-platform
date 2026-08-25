@@ -1,6 +1,8 @@
 package com.github.agentos.server;
 
 import com.github.agentos.tool.api.AgentTool;
+import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
+import com.github.agentos.tool.builtin.file.access.ProtectedConfigurationFileAccessPolicy;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import org.junit.jupiter.api.Test;
@@ -22,6 +24,9 @@ class FileWriteToolConfigurationTest {
     @Autowired
     private ApplicationContext applicationContext;
 
+    @Autowired
+    private FileAccessPolicy fileAccessPolicy;
+
     @Test
     void exposesSingleDispatcherWithoutLegacyExecutorBean() {
         assertThat(toolDispatcher).isNotNull();
@@ -39,11 +44,13 @@ class FileWriteToolConfigurationTest {
     }
 
     @Test
-    void registersGitCommitToolAsHighRisk() {
-        AgentTool tool = toolRegistry.require("git_commit");
+    void doesNotRegisterGitCommitWhenHostProcessesAreDisabled() {
+        assertThat(toolRegistry.find("git_commit")).isEmpty();
+    }
 
-        assertThat(tool.riskLevel()).isEqualTo(AgentTool.RiskLevel.HIGH);
-        assertThat(tool.parameters()).extracting(parameter -> parameter.name())
-                .containsExactly("repository", "paths", "message");
+    @Test
+    void protectsDeploymentConfigurationFilesAtTheServerBoundary() {
+        assertThat(fileAccessPolicy)
+                .isInstanceOf(ProtectedConfigurationFileAccessPolicy.class);
     }
 }

@@ -222,6 +222,7 @@ class HeuristicIntentClassifierTest {
         // 任务信号词优先于简单问答：需要工具/实时信息的短请求必须走 MainAgent
         for (String input : new String[] {
                 "查天气", "读一下这个文件", "创建一个文件", "git 提交一下",
+                "直接使用 curl 进行处理", "运行命令", "打开终端",
                 "search for cats", "run the tests", "open the config",
                 "现在几点", "最新新闻", "黄金价格", "北京现在堵车吗",
                 "what is the latest news", "current gold price",
