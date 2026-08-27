@@ -2,6 +2,11 @@ package com.github.agentos.agent.specialist;
 
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.AgentExecutionResult;
+import com.github.agentos.agent.routing.AgentCapability;
+import com.github.agentos.agent.routing.RouteAcceptance;
+import com.github.agentos.agent.routing.RouteScope;
+import com.github.agentos.agent.routing.RoutableAgent;
+import com.github.agentos.agent.routing.SupervisorRouteDecision;
 import com.github.agentos.agent.workflow.BaseAgent;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
@@ -23,10 +28,13 @@ import com.github.agentos.tool.api.ToolResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
+import java.util.Set;
 
 /**
  * 文档生成 Agent。
@@ -37,7 +45,7 @@ import java.util.Objects;
  * <p>该 Agent 通过 {@link com.github.agentos.agent.workflow.AgentToolAdapter} 暴露为
  * {@code report_agent} 工具，规划器可按需调用。</p>
  */
-public final class ReportAgent extends BaseAgent implements Agent {
+public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent {
 
     /** 注册标识，同时作为 AgentToolAdapter 的工具名。 */
     public static final String ID = "report-agent";
@@ -49,6 +57,8 @@ public final class ReportAgent extends BaseAgent implements Agent {
             2. 内容专业、条理清晰
             3. 如果用户提供了上下文信息，基于信息生成；否则基于通用知识生成
             4. 只返回文档内容本身，不要添加额外说明
+            5. 第一行必须是准确概括主题的一级标题（# 标题），不能使用“顶部引用块”“正文”等结构名称
+            6. 不要输出思考过程、生成计划、保存说明，也不要用 ```markdown 包裹整篇文档
             """;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ReportAgent.class);
@@ -85,6 +95,23 @@ public final class ReportAgent extends BaseAgent implements Agent {
     }
 
     @Override
+    public Set<AgentCapability> capabilities() {
+        return Set.of(AgentCapability.DOCUMENT_GENERATION);
+    }
+
+    @Override
+    public RouteAcceptance accepts(AgentRequest request, SupervisorRouteDecision decision) {
+        if (decision.scope() == RouteScope.EXTERNAL_WORLD
+                || decision.scope() == RouteScope.LOCAL_RUNTIME) {
+            return RouteAcceptance.reject("report-agent requires a document generation task");
+        }
+        if (!decision.requiredCapabilities().contains(AgentCapability.DOCUMENT_GENERATION)) {
+            return RouteAcceptance.reject("report-agent requires DOCUMENT_GENERATION intent");
+        }
+        return RoutableAgent.super.accepts(request, decision);
+    }
+
+    @Override
     public AgentState run(
             AgentRequest request,
             InvocationContext context,
@@ -100,25 +127,87 @@ public final class ReportAgent extends BaseAgent implements Agent {
                 request.objective(),
                 Map.of("agentId", ID)));
 
+        String planId = "report-" + UUID.randomUUID();
+        String writeStepId = "write-document";
         try {
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.PLAN_CREATED,
+                    request.sessionId(),
+                    "生成结构化 Markdown 文档并登记为会话产物",
+                    Map.of(
+                            "agentId", ID,
+                            "planId", planId,
+                            "type", "EXECUTION",
+                            "origin", "SPECIALIST",
+                            "outcome", "CONTINUE",
+                            "stepCount", 1,
+                            "modelCalls", 1,
+                            "replans", 0)));
+
             // 第一步：LLM 生成文档内容
             LlmRequest generateRequest = llmFlow.build(request)
                     .withSystemInstruction(SYSTEM_INSTRUCTION);
-            String content = chatClient.chat(request.sessionId(), generateRequest);
+            String rawContent = chatClient.chat(request.sessionId(), generateRequest);
+            GeneratedMarkdownDocument document = GeneratedMarkdownDocument.from(
+                    request.objective(), rawContent);
 
-            // 第二步：确定文件名并写入
-            String fileName = deriveFileName(request.objective());
-            Path filePath = Path.of(System.getProperty("user.dir"), fileName);
+            // 第二步：按文档标题生成可读文件名；同名文件使用递增序号，避免覆盖历史产物。
+            Path filePath = nextAvailablePath(
+                    Path.of(System.getProperty("user.dir")), document.fileName());
+            String fileName = filePath.getFileName().toString();
 
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.TOOL_STARTED,
+                    request.sessionId(),
+                    "写入 Markdown 文档 " + fileName,
+                    Map.of(
+                            "agentId", ID,
+                            "planId", planId,
+                            "stepId", writeStepId,
+                            "toolName", "file_write",
+                            "position", 1,
+                            "stepCount", 1)));
             ToolResult writeResult = callTool(fileWriteTool, "file_write",
                     Map.of("path", filePath.toString(),
-                            "content", content,
-                            "mode", "OVERWRITE",
+                            "content", document.content(),
+                            "mode", "CREATE_NEW",
                             "createParentDirectories", true),
                     request, context);
 
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.TOOL_FINISHED,
+                    request.sessionId(),
+                    writeResult.success() ? "工具执行完成" : "工具执行失败",
+                    Map.of(
+                            "agentId", ID,
+                            "planId", planId,
+                            "stepId", writeStepId,
+                            "toolName", "file_write",
+                            "status", writeResult.success() ? "COMPLETED" : "FAILED",
+                            "attempts", 1)));
             if (!writeResult.success()) {
                 String error = "文档写入失败: " + writeResult.error();
+                eventSink.emit(AgentRunEvent.of(
+                        AgentRunEvent.Type.OBSERVATION,
+                        request.sessionId(),
+                        error,
+                        Map.of(
+                                "agentId", ID,
+                                "planId", planId,
+                                "stepId", writeStepId,
+                                "toolName", "file_write",
+                                "status", "FAILED",
+                                "failureType", writeResult.failureType().name(),
+                                "attempts", 1)));
+                eventSink.emit(AgentRunEvent.of(
+                        AgentRunEvent.Type.DECISION,
+                        request.sessionId(),
+                        "文档写入失败，终止本次运行",
+                        Map.of(
+                                "agentId", ID,
+                                "outcome", "ABORT",
+                                "planId", planId,
+                                "reason", "TOOL_FAILED")));
                 eventSink.emit(AgentRunEvent.of(
                         AgentRunEvent.Type.RUN_FAILED,
                         request.sessionId(),
@@ -137,9 +226,36 @@ public final class ReportAgent extends BaseAgent implements Agent {
                 resultSummary = "文档已生成并保存：" + fileName;
             }
 
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.OBSERVATION,
+                    request.sessionId(),
+                    resultSummary,
+                    Map.of(
+                            "agentId", ID,
+                            "planId", planId,
+                            "stepId", writeStepId,
+                            "toolName", "file_write",
+                            "status", "COMPLETED",
+                            "failureType", "NONE",
+                            "attempts", 1)));
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.DECISION,
+                    request.sessionId(),
+                    "文档已经生成并成功登记为产物",
+                    Map.of(
+                            "agentId", ID,
+                            "outcome", "COMPLETE",
+                            "planId", planId,
+                            "reason", "DOCUMENT_SAVED",
+                            "observationCount", 1)));
             LOGGER.info("[report-agent] finished sessionId={} file={} durationMs={}",
                     request.sessionId(), fileName,
                     (System.nanoTime() - started) / 1_000_000);
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.OUTPUT_DELTA,
+                    request.sessionId(),
+                    resultSummary,
+                    Map.of("agentId", ID, "sequence", 0, "source", "runtime-result")));
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.RUN_COMPLETED,
                     request.sessionId(),
@@ -176,17 +292,20 @@ public final class ReportAgent extends BaseAgent implements Agent {
         }
     }
 
-    /** 根据目标文本派生一个合理的文件名。 */
-    private static String deriveFileName(String objective) {
-        String safe = objective.replaceAll("[^\\u4e00-\\u9fa5a-zA-Z0-9]", "_")
-                .replaceAll("_+", "_")
-                .trim();
-        if (safe.length() > 30) {
-            safe = safe.substring(0, 30);
+    /** 返回未被占用的输出路径；同名时依次追加 {@code -2}、{@code -3}。 */
+    private static Path nextAvailablePath(Path directory, String fileName) {
+        Path candidate = directory.resolve(fileName);
+        if (Files.notExists(candidate)) {
+            return candidate;
         }
-        if (safe.isBlank()) {
-            safe = "report";
+        String stem = fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".md")
+                ? fileName.substring(0, fileName.length() - 3) : fileName;
+        for (int suffix = 2; suffix < 10_000; suffix++) {
+            candidate = directory.resolve(stem + "-" + suffix + ".md");
+            if (Files.notExists(candidate)) {
+                return candidate;
+            }
         }
-        return safe + "_" + System.currentTimeMillis() + ".md";
+        throw new IllegalStateException("无法为文档分配可用文件名: " + fileName);
     }
 }

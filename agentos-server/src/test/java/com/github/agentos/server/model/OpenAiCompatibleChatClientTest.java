@@ -99,6 +99,66 @@ class OpenAiCompatibleChatClientTest {
     }
 
     @Test
+    void stripsNamespacedReasoningAndRequestsSeparatedReasoning() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        String rawContent = """
+                <think>内部推理</think>
+                这仍然是草稿
+                </mm:think>
+                ```markdown
+                # 最终文档
+
+                正文
+                ```
+                """;
+        String response = objectMapper.writeValueAsString(java.util.Map.of(
+                "choices", java.util.List.of(java.util.Map.of(
+                        "message", java.util.Map.of(
+                                "content", rawContent)))));
+
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, response);
+        });
+        server.start();
+
+        ModelClientProperties properties = properties("test-model", "");
+        properties.setReasoningSplit(true);
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper, properties);
+
+        String answer = client.chat("s1", LlmRequest.of("生成文档"));
+
+        assertThat(answer)
+                .startsWith("```markdown\n# 最终文档")
+                .doesNotContain("内部推理", "草稿", "mm:think");
+        assertThat(objectMapper.readTree(requestBody.get())
+                .path("reasoning_split").booleanValue()).isTrue();
+    }
+
+    @Test
+    void rejectsNonStreamingResponseContainingOnlyReasoning() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        String response = objectMapper.writeValueAsString(java.util.Map.of(
+                "choices", java.util.List.of(java.util.Map.of(
+                        "message", java.util.Map.of(
+                                "content", "<mm:think>只有推理</mm:think>")))));
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> respond(exchange, 200, response));
+        server.start();
+
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper, properties("test-model", ""));
+
+        assertThatThrownBy(() -> client.chat("s1", LlmRequest.of("hi")))
+                .isInstanceOf(ModelClientException.class)
+                .hasMessageContaining("reasoning but no final answer");
+    }
+
+    @Test
     void rejectsRequestWithoutMessages() {
         // 参数校验发生在 HTTP 请求之前，无需启动 mock server。
         ModelClientProperties properties = new ModelClientProperties();

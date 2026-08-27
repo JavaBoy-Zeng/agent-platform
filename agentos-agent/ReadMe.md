@@ -12,7 +12,7 @@ com.github.agentos.agent
 ├── registry/    AgentRegistry 与内存实现
 ├── finalize/    AgentFinalizer 收口器
 ├── loop/        MainAgent / SimpleQaAgent 等可执行实现
-├── routing/     三级意图路由
+├── routing/     分层作用域、能力匹配、接单校验与安全回退
 ├── strategy/    执行策略路由（DIRECT / REACT / PLAN）
 └── workflow/    BaseAgent 体系与 Workflow Agents
 ```
@@ -30,7 +30,7 @@ AgentRunner.run(AgentRequest, InvocationContext)
         ├── PlanExecutor.execute(...)
         ├── AgentPlanner.replan(..., PlanExecutionSnapshot)
         │       └── 可重复，受累计预算限制
-        ├── AgentFinalizer.finish(EXECUTION / COMPLETE)
+        ├── AgentFinalizer.finishStreaming(EXECUTION / COMPLETE)
         └── MemoryService.capture(CompletedTurn.success)
 ```
 
@@ -45,7 +45,8 @@ Agent、任务身份、会话状态与执行预算，是单次执行的完整运
 - `EXECUTION_COMPLETED`：工具执行完成，需要模型综合真实结果。
 
 只有 `EXECUTION / COMPLETE` 会进入 `AgentFinalizer`。Finalizer 是 Runner 内部控制动作，
-不会出现在工具注册表中，也不会额外调用模型。
+不会出现在工具注册表中。生产装配使用文本模型 SSE 生成最终回答，每个可见增量直接变成
+`OUTPUT_DELTA`，该额外模型调用计入运行预算。
 
 记忆采用 fail-open：只有最终成功的运行会写入 `CompletedTurn`；记忆存储失败不会把成功运行改成
 失败。工具观察写入记忆前按单条 20,000 字符、总计 100,000 字符限制，并优先保留最新结果。
@@ -54,6 +55,12 @@ Agent、任务身份、会话状态与执行预算，是单次执行的完整运
 保存上下文，进程重启（sqlite 持久化模式）后凭 `invocationId` 恢复继续执行。
 `SimpleQaAgent` 是简单问答的直答实现：单轮响应、不携带工具定义，配合
 `SessionHistoryService` 注入的最近轮次支持指代消解。
+
+路由层先处理确定性的本地运行时自省，再由 Supervisor 以结构化 JSON 描述 `scope`、
+`requiredCapabilities`、`targetAgent` 和 `confidence`。实现 `RoutableAgent` 的专家在产生
+任何副作用前执行接单校验；不匹配时回退 MainAgent，低置信度且作用域有歧义时直接询问用户。
+`SearchAgent` 只接受 `EXTERNAL_WORLD + WEB_RESEARCH`，并在内部再次拒绝当前 AgentOS
+目录问题，确保错误直派也不会调用网络工具。
 
 ## Workflow Agents
 
@@ -72,3 +79,18 @@ Agent、任务身份、会话状态与执行预算，是单次执行的完整运
 下发目标（可选 `sessionId` 指定会话），适配器将其转换为 `AgentRequest` 执行被包装的
 Agent，并把 COMPLETED 状态映射为工具成功、其余状态映射为结构化失败。
 由此任何 Agent 都可以注册进工具注册表，被其他 Agent 作为工具调用。
+
+### SearchAgent 的可靠性门槛
+
+`SearchAgent` 必须同时装配 `web_search` 与 `web_fetch`。它不会在搜索服务缺失时让模型
+猜测 URL，也不会把单个 HTTP 2xx 页面直接视为充分证据。一次成功检索需要满足：
+
+- 从搜索结果中提取候选链接，并按域名去重；
+- 自动抓取并切换候选来源，至少获得两个不同站点的有效正文；
+- 正文不少于 200 字，且不包含“加载中”“验证码”“请启用 JavaScript”等拦截标记；
+- 模型请求或工具遇到 HTTP 429、5xx、超时时，最多重试三次并指数退避；
+- 来源不足时发出 `ABORT / INSUFFICIENT_SEARCH_EVIDENCE` 和 `RUN_FAILED`，不会标记
+  `COMPLETE`，也不会继续让模型凭自身知识补齐答案。
+
+生产环境需通过 `AGENTOS_WEB_SEARCH_API_KEY` 配置 Tavily Key；未配置时
+`web_search` 不会注册，检索任务会以 `SEARCH_UNAVAILABLE` 明确失败。

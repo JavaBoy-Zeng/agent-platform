@@ -12,6 +12,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
@@ -75,14 +76,21 @@ public final class WebFetchTool implements AgentTool {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return ToolResult.failure(ToolFailureType.TIMEOUT, "web fetch was interrupted");
-        } catch (IOException | IllegalArgumentException exception) {
+        } catch (HttpTimeoutException exception) {
             return ToolResult.failure(
-                    ToolFailureType.ACCESS_DENIED, "failed to fetch " + url + ": "
+                    ToolFailureType.TIMEOUT, "web fetch timed out for " + url);
+        } catch (IOException exception) {
+            return ToolResult.failure(
+                    ToolFailureType.TRANSIENT, "failed to fetch " + url + ": "
+                            + exception.getMessage());
+        } catch (IllegalArgumentException exception) {
+            return ToolResult.failure(
+                    ToolFailureType.INVALID_ARGUMENT, "failed to fetch " + url + ": "
                             + exception.getMessage());
         }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             return ToolResult.failure(
-                    ToolFailureType.NOT_FOUND,
+                    failureTypeForStatus(response.statusCode()),
                     "web fetch returned HTTP " + response.statusCode() + " for " + url);
         }
         String contentType = headerOrEmpty(response, "Content-Type").toLowerCase(Locale.ROOT);
@@ -117,6 +125,19 @@ public final class WebFetchTool implements AgentTool {
                 || contentType.contains("json")
                 || contentType.contains("xml")
                 || contentType.contains("javascript");
+    }
+
+    private static ToolFailureType failureTypeForStatus(int statusCode) {
+        if (statusCode == 408) {
+            return ToolFailureType.TIMEOUT;
+        }
+        if (statusCode == 429 || statusCode >= 500) {
+            return ToolFailureType.TRANSIENT;
+        }
+        if (statusCode == 401 || statusCode == 403) {
+            return ToolFailureType.ACCESS_DENIED;
+        }
+        return ToolFailureType.NOT_FOUND;
     }
 
     private static java.nio.charset.Charset charsetOf(String contentType) {

@@ -1,7 +1,11 @@
 import { AgentApiError } from './agentApi.js'
+import { apiFetch, apiUrl, authHeaders } from './apiConfig.js'
 
-async function request(path, options) {
-  const response = await fetch(path, options)
+async function request(path, options = {}) {
+  const response = await apiFetch(apiUrl(path), {
+    ...options,
+    headers: { ...authHeaders(), ...(options.headers || {}) }
+  })
   if (response.status === 204) return null
   const contentType = response.headers.get('content-type') || ''
   const body = contentType.includes('application/json')
@@ -58,8 +62,29 @@ export const getMemory = (sessionId, agentId = 'main-agent') => {
   return request(`/api/memories?${query}`)
 }
 
-export function downloadArtifact(artifactId) {
+export async function downloadArtifact(artifactId) {
+  const url = apiUrl(`/api/artifacts/${encodeURIComponent(artifactId)}`)
+  const headers = authHeaders()
+  // 无鉴权时用原生下载（链接导航不受 CORS 限制）；带 Key 时必须走 fetch 才能带上请求头
+  if (!Object.keys(headers).length) {
+    const link = document.createElement('a')
+    link.href = url
+    link.click()
+    return
+  }
+  const response = await fetch(url, { headers })
+  if (!response.ok) {
+    throw new AgentApiError(`下载产物失败 (${response.status})`, response.status)
+  }
+  const blob = await response.blob()
+  const disposition = response.headers.get('content-disposition') || ''
+  const filenameMatch = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i)
+  const blobUrl = URL.createObjectURL(blob)
   const link = document.createElement('a')
-  link.href = `/api/artifacts/${encodeURIComponent(artifactId)}`
+  link.href = blobUrl
+  link.download = filenameMatch
+    ? decodeURIComponent(filenameMatch[1].replace(/"$/, ''))
+    : `artifact-${artifactId}`
   link.click()
+  URL.revokeObjectURL(blobUrl)
 }

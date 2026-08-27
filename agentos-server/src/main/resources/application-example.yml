@@ -6,6 +6,25 @@ server:
   port: 8080
 
 agentos:
+  cors:
+    # 桌面壳（Tauri）等跨域客户端的来源白名单，逗号分隔；"*" 放行全部。
+    # 默认已放行 tauri://localhost 与 http://tauri.localhost，无需额外配置。
+    allowed-origins: "tauri://localhost,http://tauri.localhost"
+
+  auth:
+    # 多用户登录鉴权。总开关：显式 true/false 优先；留空时自动探测——
+    # 配置了 admin-password 或用户库非空即启用，否则全放行（本地零配置开发）。
+    enabled: "${AGENTOS_AUTH_ENABLED:}"
+    # 首次启动引导：用户表为空时用以下账号创建 ADMIN；非空时忽略。生产必配密码。
+    admin-user: "${AGENTOS_AUTH_ADMIN_USER:admin}"
+    admin-password: "${AGENTOS_AUTH_ADMIN_PASSWORD:}"
+    # JWT 签名密钥（≥32 字符随机串，openssl rand -hex 32 生成）；
+    # 留空则每次启动随机生成——重启后所有登录失效。更换密钥 = 全端登出。
+    secret: "${AGENTOS_AUTH_SECRET:}"
+    # 登录令牌有效期；失败 5 次锁定 15 分钟。
+    token-ttl: "30d"
+    max-login-failures: 5
+    lockout: "15m"
   runtime:
     # 全部入口共享的实际执行并发上限；超限快速返回 429。
     max-concurrent-runs: 128
@@ -26,11 +45,18 @@ agentos:
     max-step-count: 30
     max-tool-calls: 30
     max-model-calls: 6
+    # 复杂任务完成后会额外调用一次文本模型，并把上游 SSE 增量直接转发为 output_delta。
+    # 该调用计入 max-model-calls；以下上限在流式过程中生效。
+    max-final-answer-chars: 100000
+    max-final-draft-chars: 32000
     # 仅将摘要后的工具结果反馈给模型，避免多轮规划持续放大上下文。
     max-observation-chars: 4000
     max-observation-total-chars: 24000
 
   router:
+    # Supervisor 只有达到该置信度才直接派发专业 Agent；低置信度请求澄清或回退主 Agent。
+    supervisor:
+      min-confidence: ${AGENTOS_ROUTER_SUPERVISOR_MIN_CONFIDENCE:0.75}
     short-circuit:
       max-chars: 16
       greeting-message: "你好！有什么我可以帮你的吗？"
@@ -80,7 +106,7 @@ agentos:
       timeout: "30s"
 
   security:
-    # 生产环境必须设置；为空时仅适合本机开发。
+    # 兼容脚本/机器调用的固定密钥；为空时仅登录令牌可用。
     api-key: "${AGENTOS_API_KEY:}"
     # 保持 false 可禁止 Shell、Git 和本地代码执行绕过文件根目录。
     allow-host-processes: false
@@ -104,6 +130,28 @@ agentos:
       # 如需执行代码，建议改为 true + docker；不要在严格部署中使用 local。
       enabled: false
       mode: "docker"
+    web-fetch:
+      timeout-seconds: 20
+      max-chars: 12000
+    web-search:
+      # SearchAgent 要求 web_search + web_fetch，并至少验证两个不同站点后才会完成。
+      # 留空时不会注册 web_search，检索任务会明确失败，且不会让模型猜 URL。
+      endpoint: "https://api.tavily.com/search"
+      api-key: "${AGENTOS_WEB_SEARCH_API_KEY:}"
+      timeout-seconds: 20
+    firecrawl:
+      # 配置 API Key 后自动注册 web_crawl 与 web_map；自部署且未启用认证时可显式开启。
+      enabled: false
+      base-url: "${FIRECRAWL_API_URL:https://api.firecrawl.dev}"
+      api-key: "${FIRECRAWL_API_KEY:}"
+      request-timeout-seconds: 30
+      crawl-timeout-seconds: 120
+      poll-interval-millis: 1000
+      # 限制模型单次调用可消耗的页面、链接和上下文规模。
+      crawl-max-pages: 100
+      crawl-max-output-chars: 40000
+      map-max-links: 500
+      map-max-output-chars: 30000
 
 logging:
   level:

@@ -19,6 +19,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,6 +90,75 @@ class OpenAiCompatibleChatClientStreamTest {
         assertThat(deltas).containsExactly("JVM 是", "Java 虚拟机。");
         assertThat(response.usage()).isNotNull();
         assertThat(response.usage().totalTokens()).isEqualTo(16);
+    }
+
+    @Test
+    void deliversFirstDeltaBeforeTheProviderResponseCompletes() throws Exception {
+        CountDownLatch firstChunkWritten = new CountDownLatch(1);
+        CountDownLatch allowCompletion = new CountDownLatch(1);
+        server.createContext("/chat-delayed", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n")
+                        .getBytes(StandardCharsets.UTF_8));
+                out.flush();
+                firstChunkWritten.countDown();
+                if (!allowCompletion.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test did not release delayed SSE response");
+                }
+                out.write(("data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\n"
+                        + "data: [DONE]\n\n").getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        properties.setEndpoint(java.net.URI.create(
+                "http://localhost:" + server.getAddress().getPort() + "/chat-delayed"));
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+        CountDownLatch firstDeltaReceived = new CountDownLatch(1);
+        List<String> deltas = new ArrayList<>();
+
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var responseFuture = executor.submit(() -> client.chatStream(
+                    "s1", LlmRequest.of("hi"), delta -> {
+                        deltas.add(delta);
+                        firstDeltaReceived.countDown();
+                    }));
+
+            assertThat(firstChunkWritten.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(firstDeltaReceived.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(deltas).containsExactly("first");
+            assertThat(responseFuture.isDone()).isFalse();
+
+            allowCompletion.countDown();
+            assertThat(responseFuture.get(2, TimeUnit.SECONDS).answer())
+                    .isEqualTo("firstsecond");
+        } finally {
+            allowCompletion.countDown();
+        }
+        assertThat(deltas).containsExactly("first", "second");
+    }
+
+    @Test
+    void filtersNamespacedReasoningWhenTagsAreSplitAcrossDeltas() {
+        serve("""
+                {"choices":[{"delta":{"content":"<mm:thi"}}]}
+                {"choices":[{"delta":{"content":"nk>内部推理"}}]}
+                {"choices":[{"delta":{"content":"仍应过滤</mm:th"}}]}
+                {"choices":[{"delta":{"content":"ink>最终答案"}}]}
+                """);
+        List<String> deltas = new ArrayList<>();
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        ChatClient.ChatResponse response = client.chatStream(
+                "s1", LlmRequest.of("hi"), deltas::add);
+
+        assertThat(response.answer()).isEqualTo("最终答案");
+        assertThat(deltas).containsExactly("最终答案");
     }
 
     @Test

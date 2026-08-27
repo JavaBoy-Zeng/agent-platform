@@ -83,6 +83,14 @@ final class SqliteSupport {
                     created_at_ms INTEGER NOT NULL,
                     last_active_at_ms INTEGER NOT NULL
                 )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    roles TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL
+                )
                 """
         };
         try (Connection connection = open(dataSource);

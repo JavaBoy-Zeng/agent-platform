@@ -49,8 +49,11 @@ class RoutingAgentLoopTest {
         assertThat(result.output()).isEqualTo("pong");
         assertThat(fallbackCalls.get()).isZero();
         assertThat(events).extracting(AgentRunEvent::type).containsExactly(
-                AgentRunEvent.Type.RUN_STARTED, AgentRunEvent.Type.RUN_COMPLETED);
-        assertThat(events.get(1).data()).containsEntry("router", "short-circuit");
+                AgentRunEvent.Type.RUN_STARTED,
+                AgentRunEvent.Type.OUTPUT_DELTA,
+                AgentRunEvent.Type.RUN_COMPLETED);
+        assertThat(events.get(1).message()).isEqualTo("pong");
+        assertThat(events.get(2).data()).containsEntry("router", "short-circuit");
     }
 
     @Test

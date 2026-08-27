@@ -8,6 +8,7 @@ import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -50,7 +51,9 @@ public final class AgentEventStreamController {
      * 其他旧版事件使用 {@code runtime.*}。
      */
     @PostMapping(value = "/runs/event-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@RequestBody EventStreamRequest body) {
+    public SseEmitter stream(
+            @RequestBody EventStreamRequest body, HttpServletResponse response) {
+        disableEventStreamBuffering(response);
         EventStreamInvocation invocation = normalize(body);
         SseEmitter emitter = new SseEmitter(0L);
         AtomicBoolean connected = new AtomicBoolean(true);
@@ -87,6 +90,11 @@ public final class AgentEventStreamController {
                     "session already has a running stream: " + invocation.request().sessionId());
         }
         return emitter;
+    }
+
+    private static void disableEventStreamBuffering(HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
     }
 
     private static void sendDomain(

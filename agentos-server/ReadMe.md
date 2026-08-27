@@ -104,8 +104,10 @@ Accept: text/event-stream
 ```
 
 接口依次发送 `run_started`、`plan_created`、`tool_started`、`tool_finished`、
-`observation`、`decision`、可选的 `replan`，最后发送 `state`。流式内容是运行阶段事件；
-Planner 的模型响应仍采用完整结构化 JSON 校验，最终回答随 `run_completed`/`state` 返回。
+`observation`、`decision`、可选的 `replan`、一个或多个 `output_delta`，最后发送
+`run_completed` 和 `state`。Planner 的模型响应仍采用完整结构化 JSON 校验；面向用户的
+模型回答由 `ChatClient.chatStream` 按上游 SSE 到达顺序直接转发，不做定长二次切片。
+短路回答和工具结果不是模型生成内容，会作为单个确定性 `output_delta` 返回。
 
 ### 可恢复的后台运行
 
@@ -326,6 +328,8 @@ agentos:
     max-step-count: 30
     max-tool-calls: 30
     max-model-calls: 10
+    max-final-answer-chars: 100000
+    max-final-draft-chars: 32000
     max-observation-chars: 4000
     max-observation-total-chars: 24000
   model:
@@ -370,7 +374,10 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.tools.run-command.timeout-seconds` | `AGENTOS_RUN_COMMAND_TIMEOUT_SECONDS` | `60` |
 | `agentos.tools.run-command.max-output-chars` | `AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS` | `20000` |
 | `agentos.tools.web-fetch.timeout-seconds` | `AGENTOS_WEB_FETCH_TIMEOUT_SECONDS` | `20` |
+| `agentos.tools.web-fetch.max-chars` | `AGENTOS_WEB_FETCH_MAX_CHARS` | `12000` |
+| `agentos.tools.web-search.endpoint` | `AGENTOS_WEB_SEARCH_ENDPOINT` | Tavily Search API |
 | `agentos.tools.web-search.api-key` | `AGENTOS_WEB_SEARCH_API_KEY` | 空，不注册 `web_search` |
+| `agentos.tools.web-search.timeout-seconds` | `AGENTOS_WEB_SEARCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.code-executor.enabled` | `AGENTOS_CODE_EXECUTOR_ENABLED` | `false` |
 | `agentos.tools.code-executor.mode` | `AGENTOS_CODE_EXECUTOR_MODE` | `local` |
 | `agentos.tools.code-executor.timeout-seconds` | `AGENTOS_CODE_EXECUTOR_TIMEOUT_SECONDS` | `60` |
@@ -385,6 +392,7 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.router.short-circuit.acknowledgement-message` | — | `好的。` |
 | `agentos.router.short-circuit.thanks-message` | — | `不客气！有需要随时告诉我。` |
 | `agentos.router.short-circuit.farewell-message` | — | `晚安，祝你好梦。` |
+| `agentos.router.supervisor.min-confidence` | `AGENTOS_ROUTER_SUPERVISOR_MIN_CONFIDENCE` | `0.75` |
 | `agentos.runtime.max-concurrent-runs` | — | `128` |
 | `agentos.runtime.stream.max-concurrent-runs` | — | `128` |
 | `agentos.runtime.stream.queue-capacity` | — | `256` |
@@ -409,13 +417,20 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 
 ## 意图路由
 
-请求先经规则三级分类，避免任务被误判为简单问答：
+请求先经分层作用域和能力分类，避免一次错误路由扩散到整条执行链：
 
 1. 问候、感谢、确认和告别白名单（≤16 字符）按类别返回自然应答，不调用模型；
    `yes/no` 等上下文回答在存在会话历史时不会直接短路。
-2. 简单 QA（≤64 字符且不含任务信号词）派发到 `simple-qa-agent` 单次直答，
+2. 当前 AgentOS 的工具、Agent、Skill、MCP、模型和限制由 `system-catalog-agent`
+   直接读取运行时注册表，不调用模型和网络工具；同名外部产品有歧义时先澄清。
+3. 简单 QA（≤64 字符且不含任务信号词）派发到 `simple-qa-agent` 单次直答，
    不携带工具定义、不进入规划循环。
-3. 其余请求（含 "帮我看下…"、"今天/几号" 等任务信号）进入 MainAgent 规划链路。
+4. 其余请求由 Supervisor 输出结构化的作用域、所需能力、目标 Agent 和置信度；
+   专家执行前必须通过能力与作用域接单校验，拒单或非法决策安全回退 MainAgent。
+
+Supervisor 低于 `agentos.router.supervisor.min-confidence` 时不会直接派发：作用域歧义返回
+澄清问题，其余请求回退 MainAgent。只有执行前拒单会自动改派；工具调用开始后的失败按真实
+执行失败处理，避免重复写文件、运行命令或触发其他副作用。
 
 路由分级阈值经 `agentos.router.*` 配置，规则细节见 [`agentos-agent`](../agentos-agent/ReadMe.md)。
 

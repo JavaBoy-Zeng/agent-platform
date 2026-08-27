@@ -28,6 +28,7 @@ flowchart LR
 - [`agentos-memory`](agentos-memory/ReadMe.md)：L0–L3 分层记忆、混合召回、持久化 Pipeline 与统一服务。
 - [`agentos-hitl`](agentos-hitl/ReadMe.md)：风险策略与人工审批端口；shell 命令按内容级策略放行只读命令、审批破坏性命令。
 - [`agentos-console`](agentos-console/ReadMe.md)：基于 Vue 3 的独立 Agent 操作控制台；含对话页与 13 个管理面板（Agents/Runs/Sessions/Tools/MCP/Skills/Memory/Plans/Traces/Artifacts/Approvals/Models/Evals）。
+- [`agentos-desktop`](agentos-desktop/ReadMe.md)：基于 Tauri 2 的 macOS 桌面壳，复用控制台并直连本地或远端 server；含连接设置与健康检查。
 - [`agentos-server`](agentos-server/ReadMe.md)：Spring Boot 依赖注入、REST API（运行/事件流/事件轨迹/会话/产物/用量/记忆/评估/Console 目录）、持久化与鉴权。
 
 ## 代码流转
@@ -82,7 +83,8 @@ RoutingAgentLoop（agent·routing）三级路由
                   ├─ 信息充分 ──► COMPLETE
                   └─ 信息不足 ──► REPLAN ──► 回到「规划」（受预算限制）
                               ▼
-              AgentFinalizer 收口最终回答（agent·finalize）
+              ModelStreamingAgentFinalizer 流式收口最终回答（agent·finalize）
+                  └─ ChatClient.chatStream 增量 ──► OUTPUT_DELTA
                   └─► MemoryService.capture() 写入记忆（fail-open）
                               ▼
                         最终 AgentState 返回
@@ -106,7 +108,7 @@ RoutingAgentLoop（agent·routing）三级路由
 | 执行 | `PlanExecutor` → `ToolDispatcher` | 失败分类器决定重试/跳过/重规划/终止；拦截器先做风险判断 |
 | 审批 | `ApprovalToolInterceptor` → `CommandRiskPolicy` | 内容级风险策略；等待审批的运行保存 Checkpoint，重启可恢复 |
 | 产物 | `FileWriteTool` → `ArtifactService` | 写入成功自动登记，`artifactId` 随工具结果返回 |
-| 收口 | `AgentFinalizer` → `MemoryService.capture()` | 只有成功运行写入记忆，记忆失败不影响运行结果（fail-open） |
+| 收口 | `ModelStreamingAgentFinalizer` → `ChatClient.chatStream` → `MemoryService.capture()` | 上游模型 SSE 增量直接输出；只有成功运行写入记忆，记忆失败不影响运行结果（fail-open） |
 | 事件与用量 | `AgentEventPublisher` / `AgentPluginManager` | 事件持久化支撑状态查询与补播；用量插件汇成 `/api/usage` 账本 |
 
 ## 部署与运维
@@ -198,7 +200,10 @@ npm run dev
 
 运行态（领域事件、审批 Checkpoint、断点续跑状态、用量账本）默认保存在进程内存中；
 设置 `AGENTOS_PERSISTENCE_MODE=sqlite` 后写入单一 SQLite 文件，进程重启后等待审批的任务
-可恢复执行。REST 接口默认不鉴权，配置 `AGENTOS_API_KEY` 后要求 `X-API-Key` 请求头。
+可恢复执行。REST 接口支持多用户登录鉴权（JWT）：配置 `AGENTOS_AUTH_ADMIN_PASSWORD` 完成首次
+引导后即启用，浏览器与桌面壳统一走登录页；脚本/机器调用可继续使用 `AGENTOS_API_KEY`
+（`X-API-Key` 头）。详见 [`application-example.yml`](agentos-server/src/main/resources/application-example.yml)
+的 `agentos.auth` 配置段。
 
 ## 项目文档
 

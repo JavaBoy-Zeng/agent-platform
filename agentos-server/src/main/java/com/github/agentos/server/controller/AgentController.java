@@ -14,6 +14,7 @@ import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
@@ -92,7 +93,9 @@ public class AgentController {
      * <p>该接口流式输出运行阶段，而模型规划响应仍使用结构化 JSON 一次性校验。</p>
      */
     @PostMapping(value = "/runs/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@RequestBody RunRequest request) {
+    public SseEmitter stream(
+            @RequestBody RunRequest request, HttpServletResponse response) {
+        disableEventStreamBuffering(response);
         RunInvocation invocation = normalize(request);
         SseEmitter emitter = new SseEmitter(0L);
         AtomicBoolean connected = new AtomicBoolean(true);
@@ -133,6 +136,11 @@ public class AgentController {
                     "session already has a running stream: " + invocation.request().sessionId());
         }
         return emitter;
+    }
+
+    private static void disableEventStreamBuffering(HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
     }
 
     /** 请求停止指定会话的流式运行，并中断其虚拟线程或平台线程。 */

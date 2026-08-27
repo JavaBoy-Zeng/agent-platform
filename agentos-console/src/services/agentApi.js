@@ -1,3 +1,5 @@
+import { apiFetch, apiUrl, authHeaders } from './apiConfig.js'
+
 export class AgentApiError extends Error {
   constructor(message, status) {
     super(message)
@@ -18,9 +20,9 @@ async function readBody(response) {
 }
 
 export async function runAgent(payload) {
-  const response = await fetch('/api/agents/runs', {
+  const response = await apiFetch(apiUrl('/api/agents/runs'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload)
   })
   const body = await readBody(response)
@@ -88,11 +90,12 @@ async function consumeEventStream(response, onEvent, finalValue) {
  * fetch 的 ReadableStream，同时保留结构化 POST 请求体。
  */
 export async function runAgentStream(payload, onEvent = () => {}) {
-  const response = await fetch('/api/agents/runs/stream', {
+  const response = await apiFetch(apiUrl('/api/agents/runs/stream'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Accept: 'text/event-stream'
+      Accept: 'text/event-stream',
+      ...authHeaders()
     },
     body: JSON.stringify(payload)
   })
@@ -111,9 +114,9 @@ export async function runAgentStream(payload, onEvent = () => {}) {
 
 /** 创建与页面连接解耦的后台 Agent 运行。 */
 export async function createAgentRun(payload) {
-  const response = await fetch('/api/agent-runs', {
+  const response = await apiFetch(apiUrl('/api/agent-runs'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload)
   })
   const body = await readBody(response)
@@ -125,7 +128,10 @@ export async function createAgentRun(payload) {
 
 /** 查询后台运行快照。 */
 export async function getAgentRun(runId) {
-  const response = await fetch(`/api/agent-runs/${encodeURIComponent(runId)}`)
+  const response = await fetch(
+    apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}`),
+    { headers: authHeaders() }
+  )
   const body = await readBody(response)
   if (!response.ok) {
     throw new AgentApiError(body?.detail || '无法读取后台 Agent 运行', response.status)
@@ -137,8 +143,8 @@ export async function getAgentRun(runId) {
 export async function streamAgentRun(runId, afterSequence = 0, onEvent = () => {}) {
   const query = new URLSearchParams({ after: String(Math.max(0, afterSequence || 0)) })
   const response = await fetch(
-    `/api/agent-runs/${encodeURIComponent(runId)}/events?${query}`,
-    { headers: { Accept: 'text/event-stream' } }
+    apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}/events?${query}`),
+    { headers: { Accept: 'text/event-stream', ...authHeaders() } }
   )
   if (!response.ok) {
     const body = await readBody(response)
@@ -157,8 +163,9 @@ export async function streamAgentRun(runId, afterSequence = 0, onEvent = () => {
 
 /** 显式取消后台运行。页面断开不会调用该接口。 */
 export async function cancelAgentRun(runId) {
-  const response = await fetch(`/api/agent-runs/${encodeURIComponent(runId)}/cancel`, {
-    method: 'POST'
+  const response = await apiFetch(apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}/cancel`), {
+    method: 'POST',
+    headers: authHeaders()
   })
   const body = await readBody(response)
   if (!response.ok) {
@@ -168,7 +175,10 @@ export async function cancelAgentRun(runId) {
 }
 
 export async function getAgentState(sessionId) {
-  const response = await fetch(`/api/agents/${encodeURIComponent(sessionId)}/state`)
+  const response = await fetch(
+    apiUrl(`/api/agents/${encodeURIComponent(sessionId)}/state`),
+    { headers: authHeaders() }
+  )
   const body = await readBody(response)
 
   if (!response.ok && response.status !== 404) {
@@ -178,7 +188,10 @@ export async function getAgentState(sessionId) {
 }
 
 export async function getPendingAction(sessionId) {
-  const response = await fetch(`/api/agents/${encodeURIComponent(sessionId)}/pending-action`)
+  const response = await fetch(
+    apiUrl(`/api/agents/${encodeURIComponent(sessionId)}/pending-action`),
+    { headers: authHeaders() }
+  )
   if (response.status === 204) return null
   const body = await readBody(response)
   if (!response.ok) {
@@ -189,16 +202,32 @@ export async function getPendingAction(sessionId) {
 
 export async function resolvePendingAction(invocationId, pendingActionId, approved) {
   const response = await fetch(
-    `/api/agents/invocations/${encodeURIComponent(invocationId)}/resolution`,
+    apiUrl(`/api/agents/invocations/${encodeURIComponent(invocationId)}/resolution`),
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ pendingActionId, approved, data: {} })
     }
   )
   const body = await readBody(response)
   if (!response.ok) {
     throw new AgentApiError(body?.detail || '处理审批操作失败', response.status)
+  }
+  return body
+}
+
+/** 连通性探针：超时或非 2xx 都视为不可达。 */
+export async function getServerHealth({ timeoutMs = 5000 } = {}) {
+  const response = await apiFetch(apiUrl('/api/health'), {
+    headers: authHeaders(),
+    signal: AbortSignal.timeout(timeoutMs)
+  })
+  if (!response.ok) {
+    throw new AgentApiError(`server 响应异常 (${response.status})`, response.status)
+  }
+  const body = await readBody(response)
+  if (body?.status !== 'UP') {
+    throw new AgentApiError('server 状态异常', response.status)
   }
   return body
 }

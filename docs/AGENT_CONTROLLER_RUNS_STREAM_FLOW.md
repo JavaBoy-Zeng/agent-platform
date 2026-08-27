@@ -31,7 +31,7 @@ POST /api/agents/runs/stream
 3. 将 Agent 任务提交到独立虚拟线程，并限制同一 `sessionId` 只能有一个流式任务；
 4. 将 Agent 内部事件转换为 SSE 命名事件；正常返回且连接可用时，最后发送统一的 `state` 事件并关闭连接。
 
-该接口输出的是 Agent 运行阶段流，不代表底层模型本身使用 token streaming。规划模型仍然返回并校验完整的结构化 JSON；最终回答由 `MainAgent` 按每段最多 160 个字符拆成 `output_delta` 事件。
+该接口同时输出 Agent 运行阶段事件和最终回答增量。规划模型仍然返回并校验完整的结构化 JSON；进入完成阶段后，`ModelStreamingAgentFinalizer` 调用文本模型的 SSE 接口，上游每个可见增量会立即变成一个 `output_delta`，不等待完整回答，也不做定长二次切片。短路回答或工具执行结果不是模型 token，会作为单个确定性 `output_delta` 返回。
 
 ## 2. 请求参数规范化
 
@@ -223,11 +223,12 @@ runtime.run(request, context, event -> sendEvent(emitter, connected, event))
 
 当 `plan.outcome == COMPLETE` 时：
 
-1. Finalizer 生成最终回答；
-2. 最终回答按每段最多 160 个字符发送一个或多个 `OUTPUT_DELTA`；
-3. 记录本次成功会话的记忆；
-4. 发送 `RUN_COMPLETED`；
-5. 返回 `AgentState.Status.COMPLETED`。
+1. 检查最终回答所需的模型调用预算并记账；
+2. Finalizer 校验候选答案，随后调用文本模型 SSE 生成最终回答；
+3. 每个上游可见增量到达时立即发送 `OUTPUT_DELTA`，并执行取消和长度上限检查；
+4. 记录本次成功会话的记忆；
+5. 发送 `RUN_COMPLETED`；
+6. 返回 `AgentState.Status.COMPLETED`。
 
 #### 计划需要执行工具
 
@@ -341,8 +342,11 @@ data:{
 | `tool_finished` | `PlanExecutor` | 工具步骤成功、跳过或终止失败 |
 | `observation` | `MainAgent` | 将工具结果整理为有界观察信息 |
 | `decision` | `MainAgent` | 决定完成、重规划，或等待外部动作 |
+| `route_decided` | `Router` / `SupervisorAgent` | 记录作用域、能力、目标 Agent 与置信度 |
+| `route_rejected` | `SupervisorAgent` / Specialist | 专家执行前拒单并安全回退，或阻止错误直派 |
+| `route_clarification_required` | `Router` / `SupervisorAgent` | 作用域歧义，返回澄清问题而不执行工具 |
 | `replan` | `MainAgent` | 接受一次重规划并切换到新计划 |
-| `output_delta` | `MainAgent` | 最终回答文本分片；`data.sequence` 从 0 递增 |
+| `output_delta` | `MainAgent` / Specialist / Router | 模型 SSE 原始可见增量，或单个确定性运行结果；`data.sequence` 从 0 递增，`data.source` 标识 `model-sse`、`tool-result` 或 `runtime-result` |
 | `run_completed` | `MainAgent` | Agent 成功完成 |
 | `run_cancelled` | `MainAgent` | 检测到线程中断或取消信号 |
 | `run_failed` | `MainAgent` | 规划、执行或预算等原因导致失败 |

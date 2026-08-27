@@ -26,6 +26,9 @@ public final class AgentRunTaskRegistry {
         Objects.requireNonNull(executor, "executor must not be null");
         Objects.requireNonNull(action, "action must not be null");
         RunningTask task = new RunningTask();
+        //putIfAbsent
+        //只有当 key 不存在，或者当前值为 null 时，才放入 value。
+        //如果 key 已经有值，则不会覆盖原值，并返回原来的值
         if (tasks.putIfAbsent(sessionId, task) != null) {
             return false;
         }

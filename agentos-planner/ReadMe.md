@@ -9,7 +9,7 @@
 | --- | --- |
 | `AgentPlanner` | 提供 `createPlan`、兼容的 `replan`，以及基于 Observation 的 `decide`。 |
 | `LlmAgentPlanner` | 召回记忆、调用 `ModelClient`、把模型 DTO 转成领域计划并校验。 |
-| `ChatClient` | 简单问答直答的单轮/流式模型端口，与 `ModelClient` 平行；不携带工具定义。 |
+| `ChatClient` | 简单问答、Specialist 总结和复杂任务最终回答使用的单轮/流式模型端口；与 `ModelClient` 平行，不携带工具定义。 |
 | `flow.LlmFlow` | LLM 请求组装流水线：按序执行 `LlmRequestProcessor` 链后产出最终请求。 |
 | `flow.LlmRequest / LlmMessage` | 面向厂商的消息模型（system 指令 + user/assistant 序列）。 |
 | `flow.InstructionProcessor / HistoryProcessor` | 默认处理器：注入系统指令、把会话历史展开为消息序列。 |

@@ -119,6 +119,24 @@ public final class RoutingAgentLoop implements AgentLoop {
                 request.sessionId(),
                 "router short-circuit",
                 Map.of("intent", classification.intent(), "router", "short-circuit")));
+        if (classification.intent().endsWith("-clarification")) {
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.ROUTE_CLARIFICATION_REQUIRED,
+                    request.sessionId(), answer,
+                    Map.of(
+                            "intent", classification.intent(),
+                            "confidence", classification.confidence(),
+                            "router", "heuristic")));
+        }
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.OUTPUT_DELTA,
+                request.sessionId(),
+                answer,
+                Map.of(
+                        "intent", classification.intent(),
+                        "router", "short-circuit",
+                        "sequence", 0,
+                        "source", "runtime-result")));
         eventSink.emit(AgentRunEvent.of(
                 AgentRunEvent.Type.RUN_COMPLETED,
                 request.sessionId(),
@@ -149,6 +167,15 @@ public final class RoutingAgentLoop implements AgentLoop {
                 classification.intent(),
                 agentId,
                 classification.confidence());
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.ROUTE_DECIDED,
+                request.sessionId(),
+                "请求已路由到 " + agentId,
+                Map.of(
+                        "intent", classification.intent(),
+                        "targetAgent", agentId,
+                        "confidence", classification.confidence(),
+                        "router", "heuristic")));
         return targetLoop.run(
                 routedRequest(request, classification),
                 context.withAgentId(agentId),

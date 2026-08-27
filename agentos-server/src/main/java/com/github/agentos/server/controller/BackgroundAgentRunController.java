@@ -4,6 +4,7 @@ import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.run.AgentRunCoordinator;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -76,10 +77,17 @@ public final class BackgroundAgentRunController {
     public SseEmitter events(
             @PathVariable String runId,
             @RequestParam(name = "after", defaultValue = "0") long after,
-            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId,
+            HttpServletResponse response) {
+        disableEventStreamBuffering(response);
         long cursor = Math.max(after, parseLastEventId(lastEventId));
         return coordinator.stream(runId, cursor).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "run not found: " + runId));
+    }
+
+    private static void disableEventStreamBuffering(HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
     }
 
     /** 只有显式调用该接口才会取消后台任务。 */

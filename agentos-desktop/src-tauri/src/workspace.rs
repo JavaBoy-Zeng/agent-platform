@@ -1,0 +1,1334 @@
+use base64::Engine;
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri_plugin_dialog::DialogExt;
+use uuid::Uuid;
+
+const GRANT_TTL: Duration = Duration::from_secs(60);
+const FILE_LIMIT: u64 = 1024 * 1024;
+const DIFF_BYTE_LIMIT: usize = 2 * 1024 * 1024;
+const DIFF_LINE_LIMIT: usize = 20_000;
+const DIRECTORY_ENTRY_LIMIT: usize = 1_000;
+
+#[derive(Clone)]
+struct Grant {
+    window_label: String,
+    user: String,
+    expires_at: Instant,
+}
+
+#[derive(Clone)]
+struct WorkspaceEntry {
+    id: String,
+    root: PathBuf,
+    last_opened_at: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedWorkspace {
+    id: String,
+    root: String,
+    last_opened_at: u64,
+}
+
+struct TerminalNative {
+    grant_id: String,
+    window_label: String,
+    workspace_id: String,
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+}
+
+struct WorkspaceInner {
+    grants: HashMap<String, Grant>,
+    workspaces: HashMap<String, WorkspaceEntry>,
+    terminals: HashMap<String, TerminalNative>,
+}
+
+pub struct WorkspaceState {
+    inner: Mutex<WorkspaceInner>,
+    storage_file: PathBuf,
+}
+
+impl WorkspaceState {
+    pub fn new(storage_file: PathBuf) -> Self {
+        let mut workspaces = HashMap::new();
+        if let Ok(raw) = fs::read_to_string(&storage_file) {
+            if let Ok(entries) = serde_json::from_str::<Vec<PersistedWorkspace>>(&raw) {
+                for persisted in entries {
+                    if let Ok(root) = PathBuf::from(persisted.root).canonicalize() {
+                        if root.is_dir() {
+                            let id = persisted.id;
+                            workspaces.insert(
+                                id.clone(),
+                                WorkspaceEntry {
+                                    id,
+                                    root,
+                                    last_opened_at: persisted.last_opened_at,
+                                },
+                            );
+                        }
+                    }
+                }
+            } else if let Ok(paths) = serde_json::from_str::<Vec<String>>(&raw) {
+                // Migrate the first desktop preview format, which stored paths only.
+                for raw_path in paths {
+                    if let Ok(root) = PathBuf::from(raw_path).canonicalize() {
+                        if root.is_dir() {
+                            let id = Uuid::new_v4().to_string();
+                            workspaces.insert(
+                                id.clone(),
+                                WorkspaceEntry {
+                                    id,
+                                    root,
+                                    last_opened_at: now_millis(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Self {
+            inner: Mutex::new(WorkspaceInner {
+                grants: HashMap::new(),
+                workspaces,
+                terminals: HashMap::new(),
+            }),
+            storage_file,
+        }
+    }
+
+    fn require_grant(&self, grant_id: &str, window_label: &str) -> Result<Grant, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "工作区状态不可用".to_string())?;
+        let grant = inner
+            .grants
+            .get(grant_id)
+            .ok_or_else(|| "工作区授权不存在，请重新验证".to_string())?;
+        if grant.window_label != window_label {
+            return Err("工作区授权不属于当前窗口".to_string());
+        }
+        if grant.expires_at <= Instant::now() {
+            return Err("工作区授权已过期，请重新验证".to_string());
+        }
+        Ok(grant.clone())
+    }
+
+    fn workspace(&self, workspace_id: &str) -> Result<WorkspaceEntry, String> {
+        self.inner
+            .lock()
+            .map_err(|_| "工作区状态不可用".to_string())?
+            .workspaces
+            .get(workspace_id)
+            .cloned()
+            .ok_or_else(|| "工作区不存在或目录已失效".to_string())
+    }
+
+    fn persist(&self, inner: &WorkspaceInner) -> Result<(), String> {
+        let mut entries = inner
+            .workspaces
+            .values()
+            .map(|entry| PersistedWorkspace {
+                id: entry.id.clone(),
+                root: entry.root.to_string_lossy().to_string(),
+                last_opened_at: entry.last_opened_at,
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.id.cmp(&right.id));
+        let encoded = serde_json::to_vec_pretty(&entries).map_err(|error| error.to_string())?;
+        fs::write(&self.storage_file, encoded)
+            .map_err(|error| format!("无法保存最近工作区：{error}"))
+    }
+
+    fn close_terminal_locked(terminal: &mut TerminalNative) {
+        if let Ok(mut child) = terminal.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn revoke_grant_locked(inner: &mut WorkspaceInner, grant_id: &str) {
+        inner.grants.remove(grant_id);
+        let ids = inner
+            .terminals
+            .iter()
+            .filter(|(_, terminal)| terminal.grant_id == grant_id)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            if let Some(mut terminal) = inner.terminals.remove(&id) {
+                Self::close_terminal_locked(&mut terminal);
+            }
+        }
+    }
+
+    pub fn cleanup_window(&self, window_label: &str) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let grant_ids = inner
+            .grants
+            .iter()
+            .filter(|(_, grant)| grant.window_label == window_label)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for grant_id in grant_ids {
+            Self::revoke_grant_locked(&mut inner, &grant_id);
+        }
+    }
+
+    fn reap_expired(&self) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let expired = inner
+            .grants
+            .iter()
+            .filter(|(_, grant)| grant.expires_at <= Instant::now())
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for grant_id in expired {
+            Self::revoke_grant_locked(&mut inner, &grant_id);
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct MeResponse {
+    username: String,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGrant {
+    grant_id: String,
+    user: String,
+    expires_at: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSummary {
+    id: String,
+    name: String,
+    root: String,
+    git_repository: bool,
+    last_opened_at: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    name: String,
+    relative_path: String,
+    kind: String,
+    size: u64,
+    modified_at: Option<u64>,
+    traversable: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    relative_path: String,
+    content: Option<String>,
+    binary: bool,
+    truncated: bool,
+    size: u64,
+    language: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusEntry {
+    path: String,
+    old_path: Option<String>,
+    index_status: String,
+    worktree_status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    repository: String,
+    branch: String,
+    upstream: Option<String>,
+    ahead: u64,
+    behind: u64,
+    entries: Vec<GitStatusEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiff {
+    scope: String,
+    path: Option<String>,
+    patch: String,
+    additions: usize,
+    deletions: usize,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSession {
+    id: String,
+    workspace_id: String,
+    shell: String,
+    cwd: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOutputEvent {
+    session_id: String,
+    data_base64: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalExitEvent {
+    session_id: String,
+    exit_code: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn authorize_workspace(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    server_url: String,
+    token: String,
+) -> Result<WorkspaceGrant, String> {
+    let base = reqwest::Url::parse(server_url.trim())
+        .map_err(|_| "Server 地址必须是有效的 http/https URL".to_string())?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err("Server 地址只支持 http/https".to_string());
+    }
+    if token.trim().is_empty() {
+        return Err("登录凭据为空".to_string());
+    }
+    let endpoint = base
+        .join("/api/auth/me")
+        .map_err(|error| format!("无法构造授权地址：{error}"))?;
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(endpoint)
+        .bearer_auth(token.trim())
+        .send()
+        .await
+        .map_err(|error| format!("无法验证工作区权限：{error}"))?;
+    if !response.status().is_success() {
+        return Err(if response.status().as_u16() == 401 {
+            "登录已失效，请重新登录".to_string()
+        } else {
+            format!("工作区权限验证失败：HTTP {}", response.status().as_u16())
+        });
+    }
+    let me = response
+        .json::<MeResponse>()
+        .await
+        .map_err(|error| format!("工作区权限响应无效：{error}"))?;
+    if !me
+        .roles
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case("WORKSPACE"))
+    {
+        return Err("当前账户缺少 WORKSPACE 角色".to_string());
+    }
+    let expires_at = Instant::now() + GRANT_TTL;
+    let expires_at_epoch = now_millis() + GRANT_TTL.as_millis() as u64;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    let window_label = window.label().to_string();
+    let grant_id = inner
+        .grants
+        .iter_mut()
+        .find_map(|(id, grant)| {
+            if grant.window_label == window_label && grant.user == me.username {
+                grant.expires_at = expires_at;
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            let id = Uuid::new_v4().to_string();
+            inner.grants.insert(
+                id.clone(),
+                Grant {
+                    window_label,
+                    user: me.username.clone(),
+                    expires_at,
+                },
+            );
+            id
+        });
+    Ok(WorkspaceGrant {
+        grant_id,
+        user: me.username,
+        expires_at: expires_at_epoch,
+    })
+}
+
+#[tauri::command]
+pub fn revoke_workspace(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+) -> Result<(), String> {
+    state.require_grant(&grant_id, window.label())?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    WorkspaceState::revoke_grant_locked(&mut inner, &grant_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pick_workspace(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+) -> Result<Option<WorkspaceSummary>, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let picked = app.dialog().file().blocking_pick_folder();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let root = picked
+        .into_path()
+        .map_err(|error| format!("无法读取所选目录：{error}"))?
+        .canonicalize()
+        .map_err(|error| format!("无法打开所选目录：{error}"))?;
+    if !root.is_dir() {
+        return Err("所选路径不是目录".to_string());
+    }
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    if let Some(existing) = inner
+        .workspaces
+        .values_mut()
+        .find(|entry| entry.root == root)
+    {
+        existing.last_opened_at = now_millis();
+        let summary = workspace_summary(existing);
+        state.persist(&inner)?;
+        return Ok(Some(summary));
+    }
+    let id = Uuid::new_v4().to_string();
+    let entry = WorkspaceEntry {
+        id: id.clone(),
+        root,
+        last_opened_at: now_millis(),
+    };
+    let summary = workspace_summary(&entry);
+    inner.workspaces.insert(id, entry);
+    state.persist(&inner)?;
+    Ok(Some(summary))
+}
+
+#[tauri::command]
+pub fn list_workspaces(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+) -> Result<Vec<WorkspaceSummary>, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let mut values = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?
+        .workspaces
+        .values()
+        .map(workspace_summary)
+        .collect::<Vec<_>>();
+    values.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+    Ok(values)
+}
+
+#[tauri::command]
+pub fn forget_workspace(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+) -> Result<(), String> {
+    state.require_grant(&grant_id, window.label())?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    let terminal_ids = inner
+        .terminals
+        .iter()
+        .filter(|(_, terminal)| terminal.workspace_id == workspace_id)
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in terminal_ids {
+        if let Some(mut terminal) = inner.terminals.remove(&id) {
+            WorkspaceState::close_terminal_locked(&mut terminal);
+        }
+    }
+    inner.workspaces.remove(&workspace_id);
+    state.persist(&inner)
+}
+
+#[tauri::command]
+pub fn list_directory(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+    relative_path: String,
+) -> Result<Vec<FileEntry>, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    let directory = resolve_existing(&workspace.root, &relative_path)?;
+    if !directory.is_dir() {
+        return Err("目标不是目录".to_string());
+    }
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|error| format!("无法读取目录：{error}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| !excluded(entry.file_name().as_os_str()))
+        .take(DIRECTORY_ENTRY_LIMIT)
+        .filter_map(|entry| file_entry(&workspace.root, entry).ok())
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        let a_dir = a.kind == "directory";
+        let b_dir = b.kind == "directory";
+        b_dir
+            .cmp(&a_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn read_file(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+    relative_path: String,
+) -> Result<FileContent, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    let path = resolve_existing(&workspace.root, &relative_path)?;
+    if !path.is_file() {
+        return Err("目标不是文件".to_string());
+    }
+    read_file_content(&path, relative_path)
+}
+
+fn read_file_content(path: &Path, relative_path: String) -> Result<FileContent, String> {
+    let size = path.metadata().map_err(|error| error.to_string())?.len();
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .map_err(|error| format!("无法打开文件：{error}"))?
+        .take(FILE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("无法读取文件：{error}"))?;
+    let truncated = bytes.len() as u64 > FILE_LIMIT;
+    bytes.truncate(FILE_LIMIT as usize);
+    let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err();
+    let content = if binary {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&bytes).to_string())
+    };
+    Ok(FileContent {
+        relative_path,
+        content,
+        binary,
+        truncated,
+        size,
+        language: language_for(&path),
+    })
+}
+
+#[tauri::command]
+pub fn git_status(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+) -> Result<GitStatus, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    ensure_repository_root(&workspace.root)?;
+    let branch = git_text(
+        &workspace.root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )
+    .unwrap_or_else(|_| "HEAD".to_string());
+    let upstream = git_text(
+        &workspace.root,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .ok();
+    let (ahead, behind) = if upstream.is_some() {
+        git_text(
+            &workspace.root,
+            &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        )
+        .ok()
+        .and_then(|value| {
+            let mut parts = value.split_whitespace();
+            Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+        })
+        .unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+    let output = git_bytes(
+        &workspace.root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        DIFF_BYTE_LIMIT,
+    )?;
+    Ok(GitStatus {
+        repository: workspace.root.to_string_lossy().to_string(),
+        branch,
+        upstream,
+        ahead,
+        behind,
+        entries: parse_status(&output),
+    })
+}
+
+#[tauri::command]
+pub fn git_diff(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+    scope: String,
+    path: Option<String>,
+) -> Result<GitDiff, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    ensure_repository_root(&workspace.root)?;
+    let scope = match scope.as_str() {
+        "working" | "staged" => scope,
+        _ => return Err("Diff scope 只能是 working 或 staged".to_string()),
+    };
+    let safe_path = path
+        .as_deref()
+        .map(|value| validate_relative(value).map(|_| value.to_string()))
+        .transpose()?;
+    let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--unified=3"];
+    if scope == "staged" {
+        args.push("--cached");
+    }
+    if let Some(ref selected) = safe_path {
+        args.push("--");
+        args.push(selected);
+    }
+    let mut patch = git_bytes(&workspace.root, &args, DIFF_BYTE_LIMIT + 1)
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())?;
+    if scope == "working" {
+        append_untracked_diff(&workspace.root, safe_path.as_deref(), &mut patch)?;
+    }
+    let (patch, additions, deletions, truncated) = truncate_diff(patch);
+    Ok(GitDiff {
+        scope,
+        path: safe_path,
+        patch,
+        additions,
+        deletions,
+        truncated,
+    })
+}
+
+#[tauri::command]
+pub fn terminal_create(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalSession, String> {
+    let grant = state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: rows.clamp(2, 300),
+            cols: cols.clamp(10, 500),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("无法创建终端：{error}"))?;
+    let mut command = CommandBuilder::new(&shell);
+    command.cwd(&workspace.root);
+    command.env("TERM", "xterm-256color");
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("无法启动 Shell：{error}"))?;
+    drop(pair.slave);
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("无法读取终端：{error}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| format!("无法写入终端：{error}"))?;
+    let session_id = Uuid::new_v4().to_string();
+    let reader_session = session_id.clone();
+    let window_label = grant.window_label.clone();
+    let output_app = app.clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let payload = TerminalOutputEvent {
+                        session_id: reader_session.clone(),
+                        data_base64: base64::engine::general_purpose::STANDARD
+                            .encode(&buffer[..count]),
+                    };
+                    let _ = output_app.emit_to(&window_label, "terminal-output", payload);
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let child = Arc::new(Mutex::new(child));
+    let monitor_child = Arc::clone(&child);
+    let monitor_session = session_id.clone();
+    let monitor_window = window.label().to_string();
+    let monitor_app = app.clone();
+    std::thread::spawn(move || loop {
+        let status = monitor_child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok().flatten());
+        if let Some(status) = status {
+            if let Ok(mut inner) = monitor_app.state::<WorkspaceState>().inner.lock() {
+                inner.terminals.remove(&monitor_session);
+            }
+            let _ = monitor_app.emit_to(
+                &monitor_window,
+                "terminal-exit",
+                TerminalExitEvent {
+                    session_id: monitor_session,
+                    exit_code: Some(status.exit_code()),
+                },
+            );
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    });
+    state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?
+        .terminals
+        .insert(
+            session_id.clone(),
+            TerminalNative {
+                grant_id,
+                window_label: window.label().to_string(),
+                workspace_id: workspace_id.clone(),
+                master: pair.master,
+                writer,
+                child,
+            },
+        );
+    Ok(TerminalSession {
+        id: session_id,
+        workspace_id,
+        shell: shell.clone(),
+        cwd: workspace.root.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn terminal_write(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    state.require_grant(&grant_id, window.label())?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    let terminal = inner
+        .terminals
+        .get_mut(&session_id)
+        .ok_or_else(|| "终端会话不存在".to_string())?;
+    if terminal.window_label != window.label() || terminal.grant_id != grant_id {
+        return Err("终端会话不属于当前授权".to_string());
+    }
+    terminal
+        .writer
+        .write_all(data.as_bytes())
+        .and_then(|_| terminal.writer.flush())
+        .map_err(|error| format!("无法写入终端：{error}"))
+}
+
+#[tauri::command]
+pub fn terminal_resize(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.require_grant(&grant_id, window.label())?;
+    let inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    let terminal = inner
+        .terminals
+        .get(&session_id)
+        .ok_or_else(|| "终端会话不存在".to_string())?;
+    terminal
+        .master
+        .resize(PtySize {
+            rows: rows.clamp(2, 300),
+            cols: cols.clamp(10, 500),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("无法调整终端尺寸：{error}"))
+}
+
+#[tauri::command]
+pub fn terminal_close(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    state.require_grant(&grant_id, window.label())?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "工作区状态不可用".to_string())?;
+    let mut terminal = inner
+        .terminals
+        .remove(&session_id)
+        .ok_or_else(|| "终端会话不存在".to_string())?;
+    if terminal.window_label != window.label() || terminal.grant_id != grant_id {
+        inner.terminals.insert(session_id, terminal);
+        return Err("终端会话不属于当前授权".to_string());
+    }
+    WorkspaceState::close_terminal_locked(&mut terminal);
+    Ok(())
+}
+
+pub fn start_grant_reaper(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(10));
+        app.state::<WorkspaceState>().reap_expired();
+    });
+}
+
+fn workspace_summary(entry: &WorkspaceEntry) -> WorkspaceSummary {
+    WorkspaceSummary {
+        id: entry.id.clone(),
+        name: entry
+            .root
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("Workspace")
+            .to_string(),
+        root: entry.root.to_string_lossy().to_string(),
+        git_repository: ensure_repository_root(&entry.root).is_ok(),
+        last_opened_at: entry.last_opened_at,
+    }
+}
+
+fn resolve_existing(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative = validate_relative(relative)?;
+    let path = root.join(relative);
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("路径不存在或不可访问：{error}"))?;
+    if !canonical.starts_with(root) {
+        return Err("路径越过工作区边界".to_string());
+    }
+    Ok(canonical)
+}
+
+fn validate_relative(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value.trim());
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("路径必须位于工作区内".to_string());
+    }
+    Ok(path)
+}
+
+fn file_entry(root: &Path, entry: fs::DirEntry) -> Result<FileEntry, String> {
+    let path = entry.path();
+    let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    let is_symlink = metadata.file_type().is_symlink();
+    let canonical = path.canonicalize().ok();
+    let inside = canonical
+        .as_ref()
+        .is_some_and(|value| value.starts_with(root));
+    let followed = fs::metadata(&path).ok();
+    let kind = if is_symlink && !inside {
+        "symlink"
+    } else if followed.as_ref().is_some_and(|value| value.is_dir()) {
+        "directory"
+    } else {
+        "file"
+    };
+    Ok(FileEntry {
+        name: entry.file_name().to_string_lossy().to_string(),
+        relative_path: root
+            .relativize(&path)
+            .unwrap_or_else(|| path.strip_prefix(root).unwrap_or(&path).to_path_buf())
+            .to_string_lossy()
+            .to_string(),
+        kind: kind.to_string(),
+        size: metadata.len(),
+        modified_at: metadata.modified().ok().map(system_time_millis),
+        traversable: !is_symlink || inside,
+    })
+}
+
+trait Relativize {
+    fn relativize(&self, path: &Path) -> Option<PathBuf>;
+}
+
+impl Relativize for Path {
+    fn relativize(&self, path: &Path) -> Option<PathBuf> {
+        path.strip_prefix(self).ok().map(Path::to_path_buf)
+    }
+}
+
+fn excluded(name: &OsStr) -> bool {
+    matches!(
+        name.to_string_lossy().as_ref(),
+        ".git" | "node_modules" | "target" | "dist" | ".idea" | ".gradle"
+    )
+}
+
+fn language_for(path: &Path) -> String {
+    match path.extension().and_then(OsStr::to_str).unwrap_or_default() {
+        "rs" => "rust",
+        "java" => "java",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" => "typescript",
+        "vue" => "vue",
+        "json" => "json",
+        "md" => "markdown",
+        "yml" | "yaml" => "yaml",
+        "toml" => "toml",
+        "xml" => "xml",
+        "css" => "css",
+        "html" => "html",
+        "sh" | "zsh" => "shell",
+        _ => "text",
+    }
+    .to_string()
+}
+
+fn ensure_repository_root(root: &Path) -> Result<(), String> {
+    let actual = git_text(root, &["rev-parse", "--show-toplevel"])?;
+    let actual = PathBuf::from(actual)
+        .canonicalize()
+        .map_err(|error| format!("无法解析 Git 仓库：{error}"))?;
+    if actual != root {
+        return Err("请选择 Git 仓库根目录以查看 Diff".to_string());
+    }
+    Ok(())
+}
+
+fn git_text(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = git_bytes(root, args, DIFF_BYTE_LIMIT)?;
+    Ok(String::from_utf8_lossy(&output).trim().to_string())
+}
+
+fn git_bytes(root: &Path, args: &[&str], limit: usize) -> Result<Vec<u8>, String> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("无法执行 Git：{error}"))?;
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法读取 Git 输出".to_string())?
+        .take(limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("无法读取 Git 输出：{error}"))?;
+    if bytes.len() >= limit {
+        let _ = child.kill();
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("无法等待 Git 退出：{error}"))?;
+    if !output.status.success() && bytes.len() < limit {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(bytes)
+}
+
+fn parse_status(output: &[u8]) -> Vec<GitStatusEntry> {
+    let records = output.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < records.len() {
+        let record = records[index];
+        if record.len() < 4 {
+            index += 1;
+            continue;
+        }
+        let index_status = (record[0] as char).to_string();
+        let worktree_status = (record[1] as char).to_string();
+        let path = String::from_utf8_lossy(&record[3..]).to_string();
+        let renamed = matches!(record[0], b'R' | b'C') || matches!(record[1], b'R' | b'C');
+        let old_path = if renamed && index + 1 < records.len() {
+            index += 1;
+            Some(String::from_utf8_lossy(records[index]).to_string())
+        } else {
+            None
+        };
+        entries.push(GitStatusEntry {
+            path,
+            old_path,
+            index_status,
+            worktree_status,
+        });
+        index += 1;
+    }
+    entries
+}
+
+fn append_untracked_diff(
+    root: &Path,
+    selected: Option<&str>,
+    patch: &mut String,
+) -> Result<(), String> {
+    let status = git_bytes(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        DIFF_BYTE_LIMIT,
+    )?;
+    for raw in status
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+    {
+        let relative = String::from_utf8_lossy(raw).to_string();
+        if selected.is_some_and(|value| value != relative) {
+            continue;
+        }
+        let path = resolve_existing(root, &relative)?;
+        if !path.is_file() || path.metadata().map(|value| value.len()).unwrap_or(0) > FILE_LIMIT {
+            continue;
+        }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "diff",
+                "--no-index",
+                "--no-color",
+                "--unified=3",
+                "--",
+                "/dev/null",
+            ])
+            .arg(&relative)
+            .output()
+            .map_err(|error| format!("无法读取未跟踪文件 Diff：{error}"))?;
+        if output.status.code() == Some(1) {
+            patch.push_str(&String::from_utf8_lossy(&output.stdout));
+        }
+        if patch.len() > DIFF_BYTE_LIMIT {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn truncate_diff(value: String) -> (String, usize, usize, bool) {
+    let mut additions = 0;
+    let mut deletions = 0;
+    let mut kept = String::new();
+    let mut truncated = value.len() > DIFF_BYTE_LIMIT;
+    for (index, line) in value.lines().enumerate() {
+        if index >= DIFF_LINE_LIMIT || kept.len() + line.len() + 1 > DIFF_BYTE_LIMIT {
+            truncated = true;
+            break;
+        }
+        if line.starts_with('+') && !line.starts_with("+++") {
+            additions += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            deletions += 1;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    (kept, additions, deletions, truncated)
+}
+
+fn now_millis() -> u64 {
+    system_time_millis(SystemTime::now())
+}
+
+fn system_time_millis(value: SystemTime) -> u64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary_directory(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("agentos-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn rejects_parent_and_absolute_paths() {
+        assert!(validate_relative("src/main.rs").is_ok());
+        assert!(validate_relative("../secret").is_err());
+        assert!(validate_relative("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn parses_porcelain_status() {
+        let parsed = parse_status(b" M src/main.rs\0?? notes.txt\0R  new.txt\0old.txt\0");
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].worktree_status, "M");
+        assert_eq!(parsed[1].index_status, "?");
+        assert_eq!(parsed[2].old_path.as_deref(), Some("old.txt"));
+    }
+
+    #[test]
+    fn diff_limits_and_counts_changes() {
+        let input = "--- a/file\n+++ b/file\n-old\n+new\n context\n".to_string();
+        let (_, additions, deletions, truncated) = truncate_diff(input);
+        assert_eq!((additions, deletions, truncated), (1, 1, false));
+    }
+
+    #[test]
+    fn grant_is_window_bound_and_expires() {
+        let root = temporary_directory("grant");
+        let state = WorkspaceState::new(root.join("workspaces.json"));
+        state.inner.lock().unwrap().grants.insert(
+            "valid".to_string(),
+            Grant {
+                window_label: "main".to_string(),
+                user: "alice".to_string(),
+                expires_at: Instant::now() + Duration::from_secs(1),
+            },
+        );
+        state.inner.lock().unwrap().grants.insert(
+            "expired".to_string(),
+            Grant {
+                window_label: "main".to_string(),
+                user: "alice".to_string(),
+                expires_at: Instant::now() - Duration::from_secs(1),
+            },
+        );
+        assert!(state.require_grant("valid", "main").is_ok());
+        assert!(state.require_grant("valid", "other").is_err());
+        assert!(state.require_grant("expired", "main").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_that_leaves_workspace() {
+        use std::os::unix::fs::symlink;
+        let root = temporary_directory("root");
+        let outside = temporary_directory("outside");
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        symlink(outside.join("secret.txt"), root.join("escape.txt")).unwrap();
+        assert!(resolve_existing(&root, "escape.txt").is_err());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn git_helpers_cover_staged_unstaged_untracked_and_binary() {
+        let root = temporary_directory("git");
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "agentos@example.invalid"]);
+        run(&["config", "user.name", "AgentOS Test"]);
+        fs::write(root.join("tracked.txt"), "one\n").unwrap();
+        run(&["add", "tracked.txt"]);
+        run(&["commit", "-qm", "initial"]);
+        fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        fs::write(root.join("untracked.txt"), "new\n").unwrap();
+        fs::write(root.join("binary.bin"), [0_u8, 1, 2, 3]).unwrap();
+        run(&["add", "staged.txt", "binary.bin"]);
+        let output = git_bytes(
+            &root,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            DIFF_BYTE_LIMIT,
+        )
+        .unwrap();
+        let entries = parse_status(&output);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "tracked.txt" && entry.worktree_status == "M"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "staged.txt" && entry.index_status == "A"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "untracked.txt" && entry.index_status == "?"));
+        let staged =
+            git_bytes(&root, &["diff", "--cached", "--no-color"], DIFF_BYTE_LIMIT).unwrap();
+        assert!(String::from_utf8_lossy(&staged).contains("Binary files"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn truncates_diff_by_line_count() {
+        let input = (0..=DIFF_LINE_LIMIT)
+            .map(|index| format!("+line-{index}\n"))
+            .collect::<String>();
+        let (patch, _, _, truncated) = truncate_diff(input);
+        assert!(truncated);
+        assert_eq!(patch.lines().count(), DIFF_LINE_LIMIT);
+    }
+
+    #[test]
+    fn pty_supports_output_resize_and_close() {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 10,
+                cols: 40,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", "printf agentos-ready"]);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        pair.master
+            .resize(PtySize {
+                rows: 20,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        let _ = child.wait();
+        assert!(String::from_utf8_lossy(&output).contains("agentos-ready"));
+    }
+
+    #[test]
+    fn file_preview_detects_binary_and_enforces_limit() {
+        let root = temporary_directory("file-preview");
+        let binary = root.join("image.bin");
+        fs::write(&binary, [1_u8, 0, 2, 3]).unwrap();
+        let binary_preview = read_file_content(&binary, "image.bin".to_string()).unwrap();
+        assert!(binary_preview.binary);
+        assert!(binary_preview.content.is_none());
+
+        let large = root.join("large.txt");
+        fs::write(&large, vec![b'x'; FILE_LIMIT as usize + 64]).unwrap();
+        let large_preview = read_file_content(&large, "large.txt".to_string()).unwrap();
+        assert!(large_preview.truncated);
+        assert_eq!(large_preview.content.unwrap().len(), FILE_LIMIT as usize);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persisted_workspace_keeps_opaque_id() {
+        let root = temporary_directory("persist-root");
+        let config = temporary_directory("persist-config");
+        let storage = config.join("workspaces.json");
+        let state = WorkspaceState::new(storage.clone());
+        let entry = WorkspaceEntry {
+            id: "opaque-workspace-id".to_string(),
+            root: root.clone(),
+            last_opened_at: 42,
+        };
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.workspaces.insert(entry.id.clone(), entry);
+            state.persist(&inner).unwrap();
+        }
+        let restored = WorkspaceState::new(storage);
+        assert!(restored
+            .inner
+            .lock()
+            .unwrap()
+            .workspaces
+            .contains_key("opaque-workspace-id"));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(config).unwrap();
+    }
+}

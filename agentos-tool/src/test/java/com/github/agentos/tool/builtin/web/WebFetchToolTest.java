@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin.web;
 
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContexts;
+import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -58,6 +59,18 @@ class WebFetchToolTest {
             exchange.sendResponseHeaders(404, 0);
             exchange.close();
         });
+        server.createContext("/rate-limited", exchange -> {
+            exchange.sendResponseHeaders(429, 0);
+            exchange.close();
+        });
+        server.createContext("/unavailable", exchange -> {
+            exchange.sendResponseHeaders(503, 0);
+            exchange.close();
+        });
+        server.createContext("/forbidden", exchange -> {
+            exchange.sendResponseHeaders(403, 0);
+            exchange.close();
+        });
         server.start();
         base = "http://localhost:" + server.getAddress().getPort();
         tool = new WebFetchTool(
@@ -108,6 +121,18 @@ class WebFetchToolTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).contains("HTTP 404");
+        assertThat(result.failureType()).isEqualTo(ToolFailureType.NOT_FOUND);
+    }
+
+    @Test
+    void classifiesRetryableAndAccessHttpErrors() {
+        ToolResult rateLimited = fetch("/rate-limited");
+        ToolResult unavailable = fetch("/unavailable");
+        ToolResult forbidden = fetch("/forbidden");
+
+        assertThat(rateLimited.failureType()).isEqualTo(ToolFailureType.TRANSIENT);
+        assertThat(unavailable.failureType()).isEqualTo(ToolFailureType.TRANSIENT);
+        assertThat(forbidden.failureType()).isEqualTo(ToolFailureType.ACCESS_DENIED);
     }
 
     @Test
@@ -115,5 +140,10 @@ class WebFetchToolTest {
         assertThatThrownBy(() -> tool.execute(ToolContexts.testContext(tool),
                 new ToolCall("web_fetch", Map.of("url", "ftp://example.com"))))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private ToolResult fetch(String path) {
+        return tool.execute(ToolContexts.testContext(tool),
+                new ToolCall("web_fetch", Map.of("url", base + path)));
     }
 }

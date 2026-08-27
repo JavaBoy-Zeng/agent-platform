@@ -190,8 +190,12 @@ class SimpleQaAgentTest {
                 .filter(event -> event.type() == AgentRunEvent.Type.OUTPUT_DELTA).toList();
         assertThat(deltas).extracting(AgentRunEvent::message)
                 .containsExactly("Java ", "是一门语言。");
-        assertThat(deltas.get(0).data()).containsEntry("sequence", 1);
-        assertThat(deltas.get(1).data()).containsEntry("sequence", 2);
+        assertThat(deltas.get(0).data())
+                .containsEntry("sequence", 0)
+                .containsEntry("source", "model-sse");
+        assertThat(deltas.get(1).data())
+                .containsEntry("sequence", 1)
+                .containsEntry("source", "model-sse");
     }
 
     @Test

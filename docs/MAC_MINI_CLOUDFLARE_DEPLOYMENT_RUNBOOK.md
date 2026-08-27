@@ -114,7 +114,7 @@ cd /Users/whale_fall/developer/java/agent-platform
 
 ```bash
 cd /Users/whale_fall/developer/java/agent-platform
-./scripts/deploy-mac-mini.sh
+./scripts/web.sh
 ```
 
 脚本会依次完成：后端完整测试、后端打包、`npm ci`、前端生产构建、新 JAR 独立端口
@@ -398,6 +398,19 @@ curl -I https://agent.touch-ai.tech/
 
 `CF_Authorization`、`CF_AppSession` 是登录凭据。排障时只记录状态码和响应头类型，不要复制完整 Cookie。
 
+> **2026-08 起已迁移到应用内登录，建议移除 Cloudflare Access。**
+> Access 的浏览器 SSO 依赖 Cookie，桌面壳（Tauri）的跨域 `fetch` 不会携带，
+> 导致桌面端整体不可用（表现为 `Invalid CORS request` 或 302 跳登录）。
+> 现在的门禁模型：后端多用户登录（JWT，`/api/auth/login` 签发，30 天免登录），
+> web 控制台与桌面壳共用；脚本/机器调用走 `X-API-Key`。
+> 迁移步骤：
+> 1. plist 增加环境变量 `AGENTOS_AUTH_ADMIN_PASSWORD`（首个 ADMIN 引导密码）与
+>    `AGENTOS_AUTH_SECRET`（`openssl rand -hex 32`，留空则重启后全员需重登）
+> 2. 重启后端，日志确认 `[auth] authentication enabled`
+> 3. Cloudflare Zero Trust 面板删除原 Access Application
+> 4. 浏览器访问 → 登录页 → admin 登录 → 设置页创建日常用户
+> 回滚：plist 去掉上述变量并重启，同时恢复 Access Application 即可。
+
 ### 5.4 Mac 重启后的恢复顺序
 
 1. 从密码管理器或 macOS Keychain 加载模型密钥，并用非回显检查确认变量已设置。
@@ -413,7 +426,13 @@ curl -I https://agent.touch-ai.tech/
 sudo launchctl print system/com.cloudflare.cloudflared | sed -n '1,100p'
 ```
 
-当前没有 AgentOS Java/Caddy 的 launchd 标签，因此文档不能提供虚假的 `launchctl restart` 命令。若后续新增服务，应把实际 plist、服务标签、环境变量来源和日志路径同步补充到本节。
+AgentOS Java 与 Caddy 已分别由 `tech.touch-ai.agentos`、`tech.touch-ai.agentos-caddy`
+两个用户级 LaunchAgent 托管。需要手动重启时执行：
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/tech.touch-ai.agentos"
+launchctl kickstart -k "gui/$(id -u)/tech.touch-ai.agentos-caddy"
+```
 
 ## 6. 每次启动后的健康检查
 
@@ -497,6 +516,30 @@ curl -I https://agent.touch-ai.tech/chat
 1. `/chat` 的 `Status Code`。
 2. `index-*.js` 的状态码、`Content-Type` 和传输大小。
 3. Console 第一条红色错误。
+
+### 第 6 层：真实回答流
+
+使用后台运行接口验证控制台实际采用的链路。该命令会产生一次真实模型调用：
+
+```bash
+session_id="stream-check-$(date +%s)"
+run_id="$(curl -fsS -X POST http://127.0.0.1:8080/api/agent-runs \
+  -H 'Content-Type: application/json' \
+  -d "{\"sessionId\":\"${session_id}\",\"input\":\"请用两句话解释 JVM 是什么，并列出一个用途。\"}" \
+  | jq -r '.runId')"
+
+curl -N -D /tmp/agentos-stream.headers \
+  "http://127.0.0.1:8080/api/agent-runs/${run_id}/events?after=0"
+```
+
+预期结果：
+
+- 响应头包含 `Content-Type: text/event-stream`、`Cache-Control: no-cache, no-transform` 和 `X-Accel-Buffering: no`；
+- 出现多个 `event:output_delta`，其中 `data.data.source` 为 `model-sse`；
+- `output_delta` 在 `run_completed` 和最终 `state` 之前陆续出现；
+- 增量长度由模型供应商决定，不应固定为 160 个字符。
+
+复杂任务的规划 JSON 必须完整返回后才能校验，因此规划阶段没有 token 增量属于正常行为；进入最终回答阶段后才开始真实模型 SSE。`tool-result` 和 `runtime-result` 表示确定性结果，本来就没有模型 token，会作为单个增量返回。
 
 ## 7. 常见故障速查
 

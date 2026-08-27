@@ -11,6 +11,7 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.server.controller.ConsoleCatalogController;
+import com.github.agentos.server.catalog.RuntimeCatalogService;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
@@ -92,9 +93,10 @@ class ConsoleCatalogControllerTest {
 
     private static ConsoleCatalogController controller(
             AgentRegistry registry, ToolRegistry tools) {
-        return new ConsoleCatalogController(
+        RuntimeCatalogService service = new RuntimeCatalogService(
                 tools, provider(registry), provider(null), provider(null),
                 new ModelClientProperties(), AgentExecutionLimits.defaults());
+        return new ConsoleCatalogController(service);
     }
 
     @SuppressWarnings("unchecked")

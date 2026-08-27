@@ -34,6 +34,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -80,6 +81,9 @@ class AgentControllerStreamTest {
 
             mockMvc.perform(asyncDispatch(started))
                     .andExpect(status().isOk())
+                    .andExpect(header().string(
+                            "Cache-Control", "no-cache, no-transform"))
+                    .andExpect(header().string("X-Accel-Buffering", "no"))
                     .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
                     .andExpect(content().string(containsString("event:run_started")))
                     .andExpect(content().string(containsString("event:state")))

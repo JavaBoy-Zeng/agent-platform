@@ -124,6 +124,18 @@ public class PersistenceConfiguration {
         return new InMemorySessionService();
     }
 
+    /** 登录用户存储：sqlite 落库（重启保留），memory 留在进程内（重启后重新引导）。 */
+    @Bean
+    com.github.agentos.server.security.UserStore userStore(
+            @Value("${agentos.persistence.mode:memory}") String mode,
+            ObjectProvider<DataSource> dataSource) {
+        if (isSqlite(mode)) {
+            return new com.github.agentos.server.persistence.SqliteUserStore(
+                    dataSource.getObject());
+        }
+        return new com.github.agentos.server.security.InMemoryUserStore();
+    }
+
     private static boolean isSqlite(String mode) {
         return mode != null && "sqlite".equals(mode.trim().toLowerCase(Locale.ROOT));
     }

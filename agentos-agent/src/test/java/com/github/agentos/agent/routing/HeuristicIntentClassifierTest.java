@@ -17,7 +17,7 @@ class HeuristicIntentClassifierTest {
 
     private final HeuristicIntentClassifier classifier =
             new HeuristicIntentClassifier(
-                    16, 64, "simple-qa-agent",
+                    16, 64, "simple-qa-agent", "system-catalog-agent",
                     "你好！有什么我可以帮你的吗？",
                     "好的。",
                     "不客气！有需要随时告诉我。",
@@ -177,6 +177,54 @@ class HeuristicIntentClassifierTest {
     }
 
     // ---------- 简单问答分级 ----------
+
+    @Test
+    void routesStrongLocalRuntimeQuestionsToCatalogAgent() {
+        for (String input : new String[] {
+                "AgentOS 现在有哪些工具", "你当前能调用什么工具", "本系统有哪些 Agent"}) {
+            IntentClassification result = classifier.classify(
+                    new AgentRequest("s1", input, Map.of()),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(result.agentId()).as(input).isEqualTo("system-catalog-agent");
+            assertThat(result.intent()).as(input).isEqualTo("system-introspection");
+        }
+    }
+
+    @Test
+    void clarifiesBareAgentOsCatalogQuestionWithoutHistory() {
+        IntentClassification result = classifier.classify(
+                new AgentRequest("s1", "AgentOS 有哪些工具", Map.of()),
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.isShortCircuit()).isTrue();
+        assertThat(result.intent()).isEqualTo("system-introspection-clarification");
+        assertThat(result.directAnswer()).contains("当前运行的 AgentOS", "同名产品");
+    }
+
+    @Test
+    void usesHistoryToResolveBareAgentOsAsLocalRuntime() {
+        IntentClassification result = classifier.classify(
+                new AgentRequest("s1", "AgentOS 有哪些工具", Map.of(
+                        HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
+                        "助手：我运行在 AgentOS 平台上。")),
+                InvocationContext.of("main-agent"));
+
+        assertThat(result.agentId()).isEqualTo("system-catalog-agent");
+    }
+
+    @Test
+    void explicitExternalAgentOsAndSalaryQuestionsStillUseSupervisor() {
+        for (String input : new String[] {
+                "网上有哪些 AgentOS 框架", "Agent 开发工程师现在薪资多少"}) {
+            IntentClassification result = classifier.classify(
+                    new AgentRequest("s1", input, Map.of()),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(result.hasAgentTarget()).as(input).isFalse();
+            assertThat(result.intent()).as(input).isEqualTo("heuristic-fallback");
+        }
+    }
 
     @Test
     void routesShortConceptQuestionToSimpleQa() {

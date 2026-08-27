@@ -76,6 +76,18 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
 
     private static final String CONVERSATION_HISTORY_ATTRIBUTE = "conversationHistory";
 
+    private static final Set<String> CATALOG_OBJECT_SIGNALS = Set.of(
+            "工具", "tool", "tools", "agent", "agents", "智能体", "skill", "skills",
+            "技能", "mcp", "模型", "model", "models", "配置", "限制", "能力", "功能");
+    private static final Set<String> STRONG_LOCAL_RUNTIME_SIGNALS = Set.of(
+            "当前系统", "本系统", "这个系统", "当前平台", "本平台", "这个平台",
+            "当前agentos", "本agentos", "这个agentos", "当前注册", "本机agentos",
+            "你当前", "你现在", "你有哪些", "你有什么", "你支持哪些",
+            "你的工具", "你的能力", "你能调用", "你可以调用");
+    private static final Set<String> EXTERNAL_SCOPE_SIGNALS = Set.of(
+            "联网", "网上", "网络搜索", "公开资料", "外部资料", "agno", "agentx",
+            "http", "https", "www.");
+
     /** 需要继承文件事实的常见追问信号。 */
     private static final Set<String> FILE_CONTEXT_FOLLOW_UP_SIGNALS = Set.of(
             "文件", "简历", "文档", "内容", "里面", "其中", "上面", "前面", "刚才",
@@ -108,7 +120,8 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             "昨天", "明天", "后天", "本月", "这月", "今年", "今年是",
             "date", "today", "yesterday", "tomorrow", "weekday", "what day", "which year", "what year", "current year", "current month", "current date",
             // 文件系统与网络
-            "文件", "目录", "文件夹", "路径", "file", "folder", "directory", "path",
+            "文件", "目录", "文件夹", "路径", "联网", "网上", "公开资料", "外部资料",
+            "file", "folder", "directory", "path",
             "http", "https", "www.", "git", "url", "website", "webpage", "curl", "命令", "终端",
             // 英文实时信息
             "now", "current", "latest", "recent", "news", "price", "time", "traffic",
@@ -123,6 +136,7 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     private final int maxChars;
     private final int simpleQaMaxChars;
     private final String simpleQaAgentId;
+    private final String systemCatalogAgentId;
     private final Map<ResponseKind, String> responses;
 
     /** 创建默认白名单配置的分类器（简单问答分级关闭，保持旧行为）。 */
@@ -141,7 +155,8 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     public HeuristicIntentClassifier(
             int maxChars, String shortCircuitMessage, int simpleQaMaxChars, String simpleQaAgentId) {
         this(maxChars, simpleQaMaxChars, simpleQaAgentId,
-                shortCircuitMessage, shortCircuitMessage, shortCircuitMessage, shortCircuitMessage);
+                null, shortCircuitMessage, shortCircuitMessage,
+                shortCircuitMessage, shortCircuitMessage);
     }
 
     /** 创建为不同社交意图配置独立回复的分类器。 */
@@ -149,6 +164,20 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             int maxChars,
             int simpleQaMaxChars,
             String simpleQaAgentId,
+            String greetingMessage,
+            String acknowledgementMessage,
+            String thanksMessage,
+            String farewellMessage) {
+        this(maxChars, simpleQaMaxChars, simpleQaAgentId, null,
+                greetingMessage, acknowledgementMessage, thanksMessage, farewellMessage);
+    }
+
+    /** 创建带本地运行时目录路由的分类器。 */
+    public HeuristicIntentClassifier(
+            int maxChars,
+            int simpleQaMaxChars,
+            String simpleQaAgentId,
+            String systemCatalogAgentId,
             String greetingMessage,
             String acknowledgementMessage,
             String thanksMessage,
@@ -165,6 +194,8 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
                 acknowledgementMessage, "acknowledgementMessage");
         this.simpleQaMaxChars = simpleQaMaxChars;
         this.simpleQaAgentId = simpleQaAgentId;
+        this.systemCatalogAgentId = systemCatalogAgentId == null
+                || systemCatalogAgentId.isBlank() ? null : systemCatalogAgentId.trim();
         this.responses = Map.of(
                 ResponseKind.GREETING, requireMessage(greetingMessage, "greetingMessage"),
                 ResponseKind.ACKNOWLEDGEMENT, acknowledgement,
@@ -187,10 +218,51 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
                     "file-context-follow-up", null, null, 1.0, null,
                     Map.of(HistoryProcessor.REQUIRES_FILE_EVIDENCE_ATTRIBUTE, true));
         }
+        IntentClassification catalog = localRuntimeCatalogIntent(normalized, request);
+        if (catalog != null) {
+            return catalog;
+        }
         if (isSimpleQa(normalized)) {
             return IntentClassification.routeTo(simpleQaAgentId, "simple-qa");
         }
         return IntentClassification.fallback("heuristic-fallback");
+    }
+
+    private IntentClassification localRuntimeCatalogIntent(
+            String normalized, AgentRequest request) {
+        if (systemCatalogAgentId == null || !containsAny(normalized, CATALOG_OBJECT_SIGNALS)) {
+            return null;
+        }
+        if (containsAny(normalized, EXTERNAL_SCOPE_SIGNALS)) {
+            return null;
+        }
+        boolean mentionsAgentOs = normalized.contains("agentos");
+        boolean strongLocal = containsAny(normalized, STRONG_LOCAL_RUNTIME_SIGNALS)
+                || (mentionsAgentOs && (normalized.contains("现在") || normalized.contains("当前")));
+        if (strongLocal || (mentionsAgentOs && historyIdentifiesLocalAgentOs(request))) {
+            return IntentClassification.routeTo(systemCatalogAgentId, "system-introspection");
+        }
+        if (mentionsAgentOs) {
+            return IntentClassification.shortCircuit(
+                    "system-introspection-clarification",
+                    "你指当前运行的 AgentOS，还是网上的同名产品？");
+        }
+        return null;
+    }
+
+    private static boolean historyIdentifiesLocalAgentOs(AgentRequest request) {
+        Object history = request.attributes().get(CONVERSATION_HISTORY_ATTRIBUTE);
+        if (!(history instanceof String text)) {
+            return false;
+        }
+        String normalized = text.toLowerCase(Locale.ROOT);
+        return normalized.contains("运行在 agentos")
+                || normalized.contains("agentos 平台")
+                || normalized.contains("当前 agentos");
+    }
+
+    private static boolean containsAny(String text, Set<String> signals) {
+        return signals.stream().anyMatch(signal -> containsSignal(text, signal));
     }
 
     private ResponseKind shortCircuitKind(String normalized, AgentRequest request) {

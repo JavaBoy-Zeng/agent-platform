@@ -1,7 +1,7 @@
 package com.github.agentos.server.config;
 
 import com.github.agentos.agent.finalize.AgentFinalizer;
-import com.github.agentos.agent.finalize.DefaultAgentFinalizer;
+import com.github.agentos.agent.finalize.ModelStreamingAgentFinalizer;
 import com.github.agentos.agent.loop.MainAgent;
 import com.github.agentos.agent.routing.RoutingAgentLoop;
 import com.github.agentos.hitl.ApprovalService;
@@ -48,7 +48,9 @@ import com.github.agentos.tool.builtin.file.FileSearchTool;
 import com.github.agentos.tool.builtin.file.FileWriteTool;
 import com.github.agentos.tool.builtin.git.GitCommitTool;
 import com.github.agentos.tool.builtin.shell.RunCommandTool;
+import com.github.agentos.tool.builtin.web.WebCrawlTool;
 import com.github.agentos.tool.builtin.web.WebFetchTool;
+import com.github.agentos.tool.builtin.web.WebMapTool;
 import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -195,6 +197,57 @@ public class AgentOsConfiguration {
         return new WebSearchTool(
                 java.net.http.HttpClient.newHttpClient(), objectMapper, endpoint,
                 apiKey, java.time.Duration.ofSeconds(timeoutSeconds));
+    }
+
+    /** 使用 Firecrawl 遍历网站并抓取多个页面正文。 */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "'${agentos.tools.firecrawl.enabled:false}' == 'true' || "
+                    + "!'${agentos.tools.firecrawl.api-key:}'.isBlank()")
+    WebCrawlTool webCrawlTool(
+            tools.jackson.databind.ObjectMapper objectMapper,
+            @Value("${agentos.tools.firecrawl.base-url:https://api.firecrawl.dev}") String baseUrl,
+            @Value("${agentos.tools.firecrawl.api-key:}") String apiKey,
+            @Value("${agentos.tools.firecrawl.request-timeout-seconds:30}")
+            long requestTimeoutSeconds,
+            @Value("${agentos.tools.firecrawl.crawl-timeout-seconds:120}")
+            long crawlTimeoutSeconds,
+            @Value("${agentos.tools.firecrawl.poll-interval-millis:1000}")
+            long pollIntervalMillis,
+            @Value("${agentos.tools.firecrawl.crawl-max-pages:100}") int maxPages,
+            @Value("${agentos.tools.firecrawl.crawl-max-output-chars:40000}")
+            int maxOutputChars) {
+        return new WebCrawlTool(
+                firecrawlHttpClient(), objectMapper, baseUrl, apiKey,
+                java.time.Duration.ofSeconds(requestTimeoutSeconds),
+                java.time.Duration.ofSeconds(crawlTimeoutSeconds),
+                java.time.Duration.ofMillis(pollIntervalMillis),
+                maxPages, maxOutputChars);
+    }
+
+    /** 使用 Firecrawl 快速发现网站中的内部链接。 */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "'${agentos.tools.firecrawl.enabled:false}' == 'true' || "
+                    + "!'${agentos.tools.firecrawl.api-key:}'.isBlank()")
+    WebMapTool webMapTool(
+            tools.jackson.databind.ObjectMapper objectMapper,
+            @Value("${agentos.tools.firecrawl.base-url:https://api.firecrawl.dev}") String baseUrl,
+            @Value("${agentos.tools.firecrawl.api-key:}") String apiKey,
+            @Value("${agentos.tools.firecrawl.request-timeout-seconds:30}")
+            long requestTimeoutSeconds,
+            @Value("${agentos.tools.firecrawl.map-max-links:500}") int maxLinks,
+            @Value("${agentos.tools.firecrawl.map-max-output-chars:30000}")
+            int maxOutputChars) {
+        return new WebMapTool(
+                firecrawlHttpClient(), objectMapper, baseUrl, apiKey,
+                java.time.Duration.ofSeconds(requestTimeoutSeconds), maxLinks, maxOutputChars);
+    }
+
+    private static java.net.http.HttpClient firecrawlHttpClient() {
+        return java.net.http.HttpClient.newBuilder()
+                .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                .build();
     }
 
     /**
@@ -363,8 +416,12 @@ public class AgentOsConfiguration {
     }
 
     @Bean
-    AgentFinalizer agentFinalizer() {
-        return new DefaultAgentFinalizer();
+    AgentFinalizer agentFinalizer(
+            ChatClient chatClient,
+            @Value("${agentos.runtime.max-final-answer-chars:100000}") int maxAnswerChars,
+            @Value("${agentos.runtime.max-final-draft-chars:32000}") int maxDraftChars) {
+        return new ModelStreamingAgentFinalizer(
+                chatClient, maxAnswerChars, maxDraftChars);
     }
 
     /**

@@ -2,6 +2,11 @@ package com.github.agentos.agent.specialist;
 
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.AgentExecutionResult;
+import com.github.agentos.agent.routing.AgentCapability;
+import com.github.agentos.agent.routing.RouteAcceptance;
+import com.github.agentos.agent.routing.RouteScope;
+import com.github.agentos.agent.routing.RoutableAgent;
+import com.github.agentos.agent.routing.SupervisorRouteDecision;
 import com.github.agentos.agent.workflow.BaseAgent;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
@@ -24,6 +29,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
+import java.util.Set;
 
 /**
  * 代码编写与执行 Agent。
@@ -34,7 +41,7 @@ import java.util.Objects;
  * <p>该 Agent 通过 {@link com.github.agentos.agent.workflow.AgentToolAdapter} 暴露为
  * {@code code_agent} 工具，规划器可按需调用。</p>
  */
-public final class CodeAgent extends BaseAgent implements Agent {
+public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
 
     /** 注册标识，同时作为 AgentToolAdapter 的工具名。 */
     public static final String ID = "code-agent";
@@ -72,6 +79,24 @@ public final class CodeAgent extends BaseAgent implements Agent {
     }
 
     @Override
+    public Set<AgentCapability> capabilities() {
+        return Set.of(AgentCapability.CODE_WRITE, AgentCapability.COMMAND_EXECUTION);
+    }
+
+    @Override
+    public RouteAcceptance accepts(AgentRequest request, SupervisorRouteDecision decision) {
+        if (decision.scope() == RouteScope.EXTERNAL_WORLD
+                || decision.scope() == RouteScope.LOCAL_RUNTIME) {
+            return RouteAcceptance.reject("code-agent requires a workspace or general code task");
+        }
+        if (!decision.requiredCapabilities().contains(AgentCapability.CODE_WRITE)
+                && !decision.requiredCapabilities().contains(AgentCapability.COMMAND_EXECUTION)) {
+            return RouteAcceptance.reject("code-agent requires a code capability");
+        }
+        return RoutableAgent.super.accepts(request, decision);
+    }
+
+    @Override
     public AgentState run(
             AgentRequest request,
             InvocationContext context,
@@ -87,7 +112,10 @@ public final class CodeAgent extends BaseAgent implements Agent {
                 request.objective(),
                 Map.of("agentId", ID)));
 
+        String initialPlanId = "code-" + UUID.randomUUID();
+        String currentPlanId = initialPlanId;
         try {
+            emitPlan(eventSink, request, currentPlanId, "INITIAL", 0);
             String objective = request.objective();
             String code = generateCode(objective, request.sessionId());
             String extension = detectExtension(code);
@@ -96,22 +124,34 @@ public final class CodeAgent extends BaseAgent implements Agent {
 
             for (int attempt = 0; attempt < MAX_FIX_ATTEMPTS; attempt++) {
                 // 写入文件
-                ToolResult writeResult = callTool(fileWriteTool, "file_write",
+                ToolResult writeResult = callObservedTool(fileWriteTool, "file_write",
                         Map.of("path", filePath.toString(),
                                 "content", code,
                                 "mode", "OVERWRITE",
                                 "createParentDirectories", true),
-                        request, context);
+                        request, context, eventSink, currentPlanId,
+                        "write-code-" + (attempt + 1), 1, 2,
+                        "写入第 " + (attempt + 1) + " 版代码");
                 if (!writeResult.success()) {
                     LOGGER.warn("[code-agent] file_write failed: {}", writeResult.error());
-                    return runningState.fail("无法写入代码文件: " + writeResult.error());
+                    String error = "无法写入代码文件: " + writeResult.error();
+                    emitDecision(eventSink, request, currentPlanId,
+                            "ABORT", "FILE_WRITE_FAILED", "代码文件写入失败");
+                    eventSink.emit(AgentRunEvent.of(
+                            AgentRunEvent.Type.RUN_FAILED,
+                            request.sessionId(),
+                            error,
+                            Map.of("agentId", ID, "attempts", attempt + 1)));
+                    return runningState.fail(error);
                 }
 
                 // 执行
                 String command = buildCommand(extension, filePath.toString());
-                ToolResult execResult = callTool(runCommandTool, "run_command",
+                ToolResult execResult = callObservedTool(runCommandTool, "run_command",
                         Map.of("command", command, "timeout_seconds", 30),
-                        request, context);
+                        request, context, eventSink, currentPlanId,
+                        "run-code-" + (attempt + 1), 2, 2,
+                        "执行第 " + (attempt + 1) + " 版代码");
 
                 if (execResult.success()) {
                     String output = execResult.output().trim();
@@ -125,6 +165,16 @@ public final class CodeAgent extends BaseAgent implements Agent {
                     LOGGER.info("[code-agent] finished sessionId={} attempts={} durationMs={}",
                             request.sessionId(), attempt + 1,
                             (System.nanoTime() - started) / 1_000_000);
+                    emitDecision(eventSink, request, currentPlanId,
+                            "COMPLETE", "CODE_EXECUTED", "代码已经成功执行");
+                    eventSink.emit(AgentRunEvent.of(
+                            AgentRunEvent.Type.OUTPUT_DELTA,
+                            request.sessionId(),
+                            output,
+                            Map.of(
+                                    "agentId", ID,
+                                    "sequence", 0,
+                                    "source", "tool-result")));
                     eventSink.emit(AgentRunEvent.of(
                             AgentRunEvent.Type.RUN_COMPLETED,
                             request.sessionId(),
@@ -142,10 +192,25 @@ public final class CodeAgent extends BaseAgent implements Agent {
                         attempt + 1, error.substring(0, Math.min(error.length(), 200)));
 
                 if (attempt < MAX_FIX_ATTEMPTS - 1) {
+                    String nextPlanId = "code-" + UUID.randomUUID();
+                    eventSink.emit(AgentRunEvent.of(
+                            AgentRunEvent.Type.REPLAN,
+                            request.sessionId(),
+                            "根据执行错误修复代码并重试",
+                            Map.of(
+                                    "agentId", ID,
+                                    "previousPlanId", currentPlanId,
+                                    "planId", nextPlanId,
+                                    "replanCount", attempt + 1,
+                                    "maxReplanCount", MAX_FIX_ATTEMPTS - 1)));
+                    currentPlanId = nextPlanId;
+                    emitPlan(eventSink, request, currentPlanId, "REPLANNED", attempt + 1);
                     code = fixCode(objective, code, error, request.sessionId());
                 } else {
                     String failure = "代码执行失败（尝试 " + MAX_FIX_ATTEMPTS + " 次）：\n"
                             + "错误：" + error + "\n\n最终代码：\n" + code;
+                    emitDecision(eventSink, request, currentPlanId,
+                            "ABORT", "MAX_ATTEMPTS_EXHAUSTED", "代码修复次数已经耗尽");
                     eventSink.emit(AgentRunEvent.of(
                             AgentRunEvent.Type.RUN_FAILED,
                             request.sessionId(),
@@ -155,12 +220,22 @@ public final class CodeAgent extends BaseAgent implements Agent {
                 }
             }
 
-            return runningState.fail("代码执行失败");
+            String failure = "代码执行失败";
+            emitDecision(eventSink, request, currentPlanId,
+                    "ABORT", "EXECUTION_FAILED", failure);
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.RUN_FAILED,
+                    request.sessionId(),
+                    failure,
+                    Map.of("agentId", ID)));
+            return runningState.fail(failure);
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();
             LOGGER.warn("[code-agent] failed sessionId={} error={}",
                     request.sessionId(), message);
+            emitDecision(eventSink, request, currentPlanId,
+                    "ABORT", "UNEXPECTED_ERROR", "代码任务执行失败");
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.RUN_FAILED,
                     request.sessionId(),
@@ -225,6 +300,98 @@ public final class CodeAgent extends BaseAgent implements Agent {
                     + Path.of(filePath).getParent() + " " + Path.of(filePath).getFileName();
             default -> (windows ? "python " : "python3 ") + filePath;
         };
+    }
+
+    /** 调用工具并返回结果。 */
+    private static void emitPlan(
+            AgentEventSink eventSink,
+            AgentRequest request,
+            String planId,
+            String origin,
+            int replans) {
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.PLAN_CREATED,
+                request.sessionId(),
+                "生成代码、写入临时文件并执行验证",
+                Map.of(
+                        "agentId", ID,
+                        "planId", planId,
+                        "type", "EXECUTION",
+                        "origin", origin,
+                        "outcome", "CONTINUE",
+                        "stepCount", 2,
+                        "modelCalls", replans + 1,
+                        "replans", replans)));
+    }
+
+    private static void emitDecision(
+            AgentEventSink eventSink,
+            AgentRequest request,
+            String planId,
+            String outcome,
+            String reason,
+            String message) {
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.DECISION,
+                request.sessionId(),
+                message,
+                Map.of(
+                        "agentId", ID,
+                        "planId", planId,
+                        "outcome", outcome,
+                        "reason", reason)));
+    }
+
+    private ToolResult callObservedTool(
+            AgentTool tool,
+            String toolName,
+            Map<String, Object> arguments,
+            AgentRequest request,
+            InvocationContext context,
+            AgentEventSink eventSink,
+            String planId,
+            String stepId,
+            int position,
+            int stepCount,
+            String description) {
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.TOOL_STARTED,
+                request.sessionId(),
+                description,
+                Map.of(
+                        "agentId", ID,
+                        "planId", planId,
+                        "stepId", stepId,
+                        "toolName", toolName,
+                        "position", position,
+                        "stepCount", stepCount)));
+        ToolResult result = callTool(tool, toolName, arguments, request, context);
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.TOOL_FINISHED,
+                request.sessionId(),
+                result.success() ? "工具执行完成" : "工具执行失败",
+                Map.of(
+                        "agentId", ID,
+                        "planId", planId,
+                        "stepId", stepId,
+                        "toolName", toolName,
+                        "status", result.success() ? "COMPLETED" : "FAILED",
+                        "attempts", 1)));
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.OBSERVATION,
+                request.sessionId(),
+                result.success()
+                        ? toolName + " 执行成功，返回 " + result.output().length() + " 个字符"
+                        : toolName + " 执行失败：" + result.error(),
+                Map.of(
+                        "agentId", ID,
+                        "planId", planId,
+                        "stepId", stepId,
+                        "toolName", toolName,
+                        "status", result.success() ? "COMPLETED" : "FAILED",
+                        "failureType", result.failureType().name(),
+                        "attempts", 1)));
+        return result;
     }
 
     /** 调用工具并返回结果。 */

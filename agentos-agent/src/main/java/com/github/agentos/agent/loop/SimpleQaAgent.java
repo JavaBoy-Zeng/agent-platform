@@ -134,7 +134,10 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
                             AgentRunEvent.Type.OUTPUT_DELTA,
                             request.sessionId(),
                             delta,
-                            Map.of("agentId", ID, "sequence", deltaSequence.incrementAndGet()))));
+                            Map.of(
+                                    "agentId", ID,
+                                    "sequence", deltaSequence.getAndIncrement(),
+                                    "source", "model-sse"))));
             String answer = response.answer();
             if (response.usage() != null) {
                 eventSink.emit(AgentRunEvent.of(

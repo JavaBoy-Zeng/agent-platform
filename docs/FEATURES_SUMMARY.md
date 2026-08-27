@@ -50,10 +50,10 @@ flowchart LR
   - `AgentPlanner.createPlan`
   - `PlanExecutor.execute`
   - `AgentPlanner.replan(PlanExecutionSnapshot)`
-  - `AgentFinalizer.finish(EXECUTION / COMPLETE)`
+  - `AgentFinalizer.finishStreaming(EXECUTION / COMPLETE)`
   - `MemoryService.capture(CompletedTurn.success)`
 - 触发重规划的四种场景：`DISCOVERY_COMPLETED`、`RECOVERABLE_FAILURE`、`INVALID_ASSUMPTION`、`EXECUTION_COMPLETED`。
-- `Finalizer` 是 Runtime 内部控制动作，不注册成工具、也不额外调用模型。
+- `Finalizer` 是 Runtime 内部控制动作，不注册成工具；生产装配会额外调用一次文本模型，并将其 SSE 增量直接下发，该调用受模型预算约束。
 - 记忆写入 fail-open：只有成功运行才会写 `CompletedTurn`；记忆失败不会让成功运行变成失败。
 - 工具 Observation 写入记忆前按“单条 20,000 字符 / 总计 100,000 字符”截断，优先保留最新结果。
 
@@ -127,7 +127,7 @@ flowchart LR
 - 对外 HTTP API：
   - `POST /api/agents/runs`：创建一次运行。
   - `GET  /api/agents/{sessionId}/state`：查询会话状态（不存在返回 404）。
-  - `POST /api/agents/runs/stream`：流式运行（SSE），依次发送 `run_started / plan_created / tool_started / tool_finished / observation / decision / replan` 可选事件和最终 `state`。
+  - `POST /api/agents/runs/stream`：流式运行（SSE），依次发送阶段事件、上游模型 `output_delta`、`run_completed` 和最终 `state`；不对完整回答做定长二次切片。
   - `POST /api/agent-runs`：可恢复的后台运行，返回 `202 Accepted` + `runId`。
   - `GET  /api/agent-runs/{runId}`：查询运行快照。
   - `GET  /api/agent-runs/{runId}/events?after=N`：按序号补播遗漏事件（事件 SSE `id` 与单调递增 `sequence` 一致）。
@@ -159,7 +159,7 @@ flowchart LR
 2. **结构化失败处理**：工具失败按 `ToolFailureType` 分类，明确重试 / 跳过 / 重规划 / 终止。
 3. **可恢复后台运行**：SSE 事件带单调 `sequence`，断开连接不取消任务；支持按游标补播。
 4. **风险门禁机制**：默认拒绝中高风险工具，待接入真实审批渠道。
-5. **流式执行视图**：前端可视化 Planner / Tool / Observation / Decision 实时管线。
+5. **全链路流式输出**：前端实时展示 Planner / Tool / Observation / Decision，并逐个消费供应商模型 SSE 增量。
 6. **记忆分层 L0–L3**：成功轮次快照 / 原子记忆 / 场景 / 用户画像，BM25 + 可替换向量 + RRF 混合检索。
 7. **PDF 物理分页读取**：返回完整续读元数据，强制按 `nextPage / nextOffset` 续读到 `hasMore=false`。
 8. **可替换路径授权**：`FileAccessPolicy` 抽象便于接入 sandbox。

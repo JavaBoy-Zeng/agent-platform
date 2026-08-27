@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * 由 {@link AgentDefinition} 驱动的通用专家 Agent。
@@ -103,9 +104,25 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                 request.objective(),
                 Map.of("agentId", definition.id())));
 
+        String planId = "config-" + UUID.randomUUID();
+        int plannedToolSteps = (tools.isEmpty() ? 0 : 1) + (definition.saveOutput() ? 1 : 0);
         try {
+            eventSink.emit(AgentRunEvent.of(
+                    AgentRunEvent.Type.PLAN_CREATED,
+                    request.sessionId(),
+                    "判断工具需求、执行可用工具并生成最终回答",
+                    Map.of(
+                            "agentId", definition.id(),
+                            "planId", planId,
+                            "type", "EXECUTION",
+                            "origin", "CONFIG_DRIVEN",
+                            "outcome", "CONTINUE",
+                            "stepCount", plannedToolSteps,
+                            "modelCalls", tools.isEmpty() ? 1 : 2,
+                            "replans", 0)));
             String objective = request.objective();
             StringBuilder contextBuilder = new StringBuilder();
+            int nextToolPosition = 1;
 
             // 如果有工具可用，让 LLM 决定调用哪个工具
             if (!tools.isEmpty()) {
@@ -124,7 +141,18 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                         .findFirst().orElse(null);
 
                 if (matched != null) {
-                    ToolResult result = callTool(matched, request, context);
+                    ToolResult result = callObservedTool(
+                            matched,
+                            matched.name(),
+                            Map.of(),
+                            request,
+                            context,
+                            eventSink,
+                            planId,
+                            "invoke-" + matched.name(),
+                            nextToolPosition++,
+                            plannedToolSteps,
+                            "调用配置工具 " + matched.name());
                     if (result.success()) {
                         String content = result.output();
                         if (content.length() > 4000) {
@@ -147,7 +175,20 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
             }
             LlmRequest answerRequest = new LlmRequest(definition.instruction(),
                     List.of(LlmMessage.user(answerPrompt)));
-            String answer = chatClient.chat(request.sessionId(), answerRequest);
+            java.util.concurrent.atomic.AtomicInteger deltaSequence =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            String answer = chatClient.chatStream(
+                    request.sessionId(),
+                    answerRequest,
+                    delta -> eventSink.emit(AgentRunEvent.of(
+                            AgentRunEvent.Type.OUTPUT_DELTA,
+                            request.sessionId(),
+                            delta,
+                            Map.of(
+                                    "agentId", definition.id(),
+                                    "sequence", deltaSequence.getAndIncrement(),
+                                    "source", "model-sse"))))
+                    .answer();
 
             // 如果定义了 saveOutput，写入文件
             if (definition.saveOutput()) {
@@ -156,15 +197,18 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                         .findFirst().orElse(null);
                 if (fileWrite != null) {
                     String filename = definition.id() + "-" + System.currentTimeMillis() + ".md";
-                    callToolWithArgs(fileWrite, "file_write",
+                    callObservedTool(fileWrite, "file_write",
                             Map.of("path", filename, "content", answer),
-                            request, context);
+                            request, context, eventSink, planId, "save-output",
+                            nextToolPosition, plannedToolSteps, "保存 Agent 输出文件");
                 }
             }
 
             LOGGER.info("[{}] finished sessionId={} answerChars={} durationMs={}",
                     definition.id(), request.sessionId(), answer.length(),
                     (System.nanoTime() - started) / 1_000_000);
+            emitDecision(eventSink, request, planId,
+                    "COMPLETE", "ANSWER_GENERATED", "配置 Agent 已生成最终回答");
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.RUN_COMPLETED,
                     request.sessionId(),
@@ -176,6 +220,8 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                     ? exception.getClass().getSimpleName() : exception.getMessage();
             LOGGER.warn("[{}] failed sessionId={} error={}",
                     definition.id(), request.sessionId(), message);
+            emitDecision(eventSink, request, planId,
+                    "ABORT", "EXECUTION_FAILED", "配置 Agent 执行失败");
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.RUN_FAILED,
                     request.sessionId(),
@@ -185,10 +231,76 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
         }
     }
 
-    /** 调用工具（无参数）并返回结果。 */
-    private ToolResult callTool(
-            AgentTool tool, AgentRequest request, InvocationContext context) {
-        return callToolWithArgs(tool, tool.name(), Map.of(), request, context);
+    private void emitDecision(
+            AgentEventSink eventSink,
+            AgentRequest request,
+            String planId,
+            String outcome,
+            String reason,
+            String message) {
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.DECISION,
+                request.sessionId(),
+                message,
+                Map.of(
+                        "agentId", definition.id(),
+                        "planId", planId,
+                        "outcome", outcome,
+                        "reason", reason)));
+    }
+
+    /** 调用工具并把执行阶段及观察结果写入统一运行轨迹。 */
+    private ToolResult callObservedTool(
+            AgentTool tool,
+            String toolName,
+            Map<String, Object> arguments,
+            AgentRequest request,
+            InvocationContext context,
+            AgentEventSink eventSink,
+            String planId,
+            String stepId,
+            int position,
+            int stepCount,
+            String description) {
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.TOOL_STARTED,
+                request.sessionId(),
+                description,
+                Map.of(
+                        "agentId", definition.id(),
+                        "planId", planId,
+                        "stepId", stepId,
+                        "toolName", toolName,
+                        "position", position,
+                        "stepCount", stepCount)));
+        ToolResult result = callToolWithArgs(
+                tool, toolName, arguments, request, context);
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.TOOL_FINISHED,
+                request.sessionId(),
+                result.success() ? "工具执行完成" : "工具执行失败",
+                Map.of(
+                        "agentId", definition.id(),
+                        "planId", planId,
+                        "stepId", stepId,
+                        "toolName", toolName,
+                        "status", result.success() ? "COMPLETED" : "FAILED",
+                        "attempts", 1)));
+        eventSink.emit(AgentRunEvent.of(
+                AgentRunEvent.Type.OBSERVATION,
+                request.sessionId(),
+                result.success()
+                        ? toolName + " 执行成功，返回 " + result.output().length() + " 个字符"
+                        : toolName + " 执行失败：" + result.error(),
+                Map.of(
+                        "agentId", definition.id(),
+                        "planId", planId,
+                        "stepId", stepId,
+                        "toolName", toolName,
+                        "status", result.success() ? "COMPLETED" : "FAILED",
+                        "failureType", result.failureType().name(),
+                        "attempts", 1)));
+        return result;
     }
 
     /** 调用工具（带参数）并返回结果。 */

@@ -72,6 +72,16 @@ class AgentRunnerIntegrationTest {
                         org.mockito.ArgumentMatchers.any(),
                         org.mockito.ArgumentMatchers.any()))
                 .thenReturn("main-agent");
+        org.mockito.Mockito.when(chatClient.chatStream(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> {
+                    java.util.function.Consumer<String> onDelta = invocation.getArgument(2);
+                    onDelta.accept("I prefer ");
+                    onDelta.accept("Java");
+                    return new ChatClient.ChatResponse("I prefer Java", null);
+                });
         AgentRequest request = AgentRequest.of("session-1", "I prefer Java");
         InvocationContext context = InvocationContext.of("main-agent");
 
@@ -112,7 +122,8 @@ class AgentRunnerIntegrationTest {
                 .extracting(AgentEvent::invocationId)
                 .containsOnly(invocationId);
         assertThat(runner.invocation(invocationId).orElseThrow()).satisfies(invocation -> {
-            assertThat(invocation.modelCalls()).isEqualTo(3);
+            // 初始规划 + 两次决策规划 + 最终回答 SSE。
+            assertThat(invocation.modelCalls()).isEqualTo(4);
             assertThat(invocation.toolCalls()).isEqualTo(2);
             assertThat(invocation.replans()).isEqualTo(1);
             assertThat(invocation.steps()).isEqualTo(2);

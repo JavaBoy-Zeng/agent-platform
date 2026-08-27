@@ -129,13 +129,20 @@ preflight() {
 }
 
 run_backend_tests_and_package() {
-    log "运行后端完整测试"
+    log "清理旧构建产物并运行后端完整测试"
     cd "$PROJECT_ROOT"
-    mvn test
+    mvn clean test
 
     log "打包 Spring Boot JAR"
     mvn -pl agentos-server -am package -DskipTests
     [[ -s "$BUILT_JAR" ]] || fail "JAR 未生成：$BUILT_JAR"
+
+    # Maven 不执行 clean 时，已从源码删除的资源仍可能残留在 target/classes，
+    # 并被重新打进 JAR。此检查避免旧 application.yml 污染部署配置。
+    if [[ ! -f "$SERVER_MODULE/src/main/resources/application.yml" ]] \
+        && jar tf "$BUILT_JAR" | grep -qx 'BOOT-INF/classes/application.yml'; then
+        fail "JAR 包含源码中不存在的 application.yml，请检查残留构建产物"
+    fi
 }
 
 run_frontend_build() {
@@ -153,6 +160,8 @@ smoke_test_packaged_jar() {
     SMOKE_LOG="$(mktemp "${TMPDIR:-/tmp}/agentos-smoke.XXXXXX")"
     cd "$DEPLOY_ROOT"
     env \
+        AGENTOS_AUTH_ENABLED=false \
+        AGENTOS_AUTH_ADMIN_PASSWORD= \
         AGENTOS_FILE_ACCESS_ROOT="$DEPLOY_ROOT" \
         AGENTOS_ALLOW_HOST_PROCESSES=false \
         AGENTOS_RUN_COMMAND_ENABLED=false \
@@ -164,7 +173,7 @@ smoke_test_packaged_jar() {
         >"$SMOKE_LOG" 2>&1 &
     SMOKE_PID="$!"
 
-    if ! wait_for_http "http://127.0.0.1:$SMOKE_PORT/api/sessions" 80; then
+    if ! wait_for_http "http://127.0.0.1:$SMOKE_PORT/api/health" 80; then
         tail -n 80 "$SMOKE_LOG" >&2 || true
         fail "新 JAR 冒烟测试启动失败"
     fi
@@ -229,7 +238,7 @@ deploy_release() {
         fail "Caddy LaunchAgent 重启失败"
     fi
 
-    if ! wait_for_http "http://127.0.0.1:8080/api/sessions" 100; then
+    if ! wait_for_http "http://127.0.0.1:8080/api/health" 100; then
         tail -n 100 "$DEPLOY_ROOT/logs/agentos-server.out.log" >&2 || true
         tail -n 100 "$DEPLOY_ROOT/logs/agentos-server.err.log" >&2 || true
         rollback "$jar_backup" "$console_backup"
@@ -241,7 +250,8 @@ deploy_release() {
         fail "部署后的前端健康检查失败，已回滚"
     fi
 
-    assert_safe_catalog "http://127.0.0.1:8080"
+    # 安全工具目录已在同一 JAR 的隔离冒烟进程中验证。生产服务启用 JWT 后，
+    # 不应把管理员密码或 Token 注入部署脚本来重复访问受保护目录。
     rendered_html="$(curl -fsS -H 'Host: agent.touch-ai.tech' http://127.0.0.1:3000/chat)"
     grep -q '<script' <<< "$rendered_html" || {
         rollback "$jar_backup" "$console_backup"

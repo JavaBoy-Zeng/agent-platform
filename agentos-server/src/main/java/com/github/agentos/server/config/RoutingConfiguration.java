@@ -12,6 +12,7 @@ import com.github.agentos.agent.specialist.SupervisorAgent;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.OpenAiCompatibleChatClient;
+import com.github.agentos.server.catalog.SystemCatalogAgent;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -43,7 +44,7 @@ public class RoutingConfiguration {
             @Value("${agentos.router.short-circuit.farewell-message:晚安，祝你好梦。}") String farewellMessage,
             @Value("${agentos.router.simple-qa.max-chars:64}") int simpleQaMaxChars) {
         return new HeuristicIntentClassifier(
-                maxChars, simpleQaMaxChars, SimpleQaAgent.ID,
+                maxChars, simpleQaMaxChars, SimpleQaAgent.ID, SystemCatalogAgent.ID,
                 greetingMessage, acknowledgementMessage, thanksMessage, farewellMessage);
     }
 

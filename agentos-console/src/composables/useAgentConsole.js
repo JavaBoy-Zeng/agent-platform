@@ -395,7 +395,7 @@ export function useAgentConsole() {
 
   function eventMessage(event, data) {
     const details = data?.data || {}
-    if (event === 'plan_created' && details.outcome !== 'COMPLETE') {
+    if (event === 'plan_created') {
       return `PLAN / ${details.type || ''} / ${data.message || ''}`
     }
     if (event === 'tool_started') {

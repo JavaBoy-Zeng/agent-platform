@@ -23,6 +23,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -38,6 +40,13 @@ import java.util.stream.Stream;
 public final class OpenAiCompatibleChatClient implements ChatClient {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OpenAiCompatibleChatClient.class);
+    private static final Pattern REASONING_BLOCK = Pattern.compile(
+            "(?is)<(?:[a-z0-9_.-]+:)?think\\b[^>]*>.*?"
+                    + "</(?:[a-z0-9_.-]+:)?think\\s*>");
+    private static final Pattern REASONING_OPEN_TAG = Pattern.compile(
+            "(?i)<(?:[a-z0-9_.-]+:)?think(?:\\s[^>]*)?>");
+    private static final Pattern REASONING_CLOSE_TAG = Pattern.compile(
+            "(?i)</(?:[a-z0-9_.-]+:)?think\\s*>");
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -136,6 +145,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 lines.forEach(line -> consumeSseLine(
                         sessionId, line, filter, usage));
             }
+            filter.finish();
             if (answer.isEmpty()) {
                 throw new ModelClientException(
                         "Chat stream produced no content; falling back is unavailable");
@@ -187,19 +197,16 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     }
 
     /**
-     * 过滤流式响应中的 {@code <think>} 推理块。
+     * 过滤流式响应中的 {@code <think>} / {@code <mm:think>} 推理块。
      *
-     * <p>部分模型（如 MiniMax-M3）在流式模式下把思考内容以
-     * {@code <think>...</think>} 包在 content 里；标签可能跨增量到达，
-     * 因此用状态机逐段过滤，只把可见部分回传。</p>
+     * <p>标签可能跨多个 SSE 增量到达，因此保留未闭合标签并用状态机过滤；
+     * 模型推理不会进入回答文本或下游事件。</p>
      */
     private static final class ReasoningFilter implements Consumer<String> {
 
-        private static final String OPEN = "<think>";
-        private static final String CLOSE = "</think>";
-
         private final StringBuilder answer;
         private final Consumer<String> downstream;
+        private final StringBuilder pending = new StringBuilder();
         private boolean insideReasoning;
 
         ReasoningFilter(StringBuilder answer, Consumer<String> downstream) {
@@ -209,26 +216,65 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
 
         @Override
         public void accept(String delta) {
-            String remaining = delta;
-            while (!remaining.isEmpty()) {
+            pending.append(delta);
+            drain(false);
+        }
+
+        /** 流结束后刷新尚未构成标签的文本。 */
+        void finish() {
+            drain(true);
+        }
+
+        private void drain(boolean endOfInput) {
+            while (!pending.isEmpty()) {
                 if (insideReasoning) {
-                    int close = remaining.indexOf(CLOSE);
-                    if (close < 0) {
+                    int tagStart = pending.indexOf("<");
+                    if (tagStart < 0) {
+                        pending.setLength(0);
                         return;
                     }
-                    remaining = remaining.substring(close + CLOSE.length());
-                    insideReasoning = false;
-                } else {
-                    int open = remaining.indexOf(OPEN);
-                    if (open < 0) {
-                        emitVisible(remaining);
+                    if (tagStart > 0) {
+                        pending.delete(0, tagStart);
+                    }
+                    int tagEnd = pending.indexOf(">");
+                    if (tagEnd < 0) {
+                        if (endOfInput) {
+                            pending.setLength(0);
+                        }
                         return;
                     }
-                    if (open > 0) {
-                        emitVisible(remaining.substring(0, open));
+                    String tag = pending.substring(0, tagEnd + 1);
+                    pending.delete(0, tagEnd + 1);
+                    if (REASONING_CLOSE_TAG.matcher(tag).matches()) {
+                        insideReasoning = false;
                     }
-                    remaining = remaining.substring(open + OPEN.length());
+                    continue;
+                }
+
+                int tagStart = pending.indexOf("<");
+                if (tagStart < 0) {
+                    emitVisible(pending.toString());
+                    pending.setLength(0);
+                    return;
+                }
+                if (tagStart > 0) {
+                    emitVisible(pending.substring(0, tagStart));
+                    pending.delete(0, tagStart);
+                }
+                int tagEnd = pending.indexOf(">");
+                if (tagEnd < 0) {
+                    if (endOfInput) {
+                        emitVisible(pending.toString());
+                        pending.setLength(0);
+                    }
+                    return;
+                }
+                String tag = pending.substring(0, tagEnd + 1);
+                pending.delete(0, tagEnd + 1);
+                if (REASONING_OPEN_TAG.matcher(tag).matches()) {
                     insideReasoning = true;
+                } else if (!REASONING_CLOSE_TAG.matcher(tag).matches()) {
+                    emitVisible(tag);
                 }
             }
         }
@@ -269,6 +315,9 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             body.put("stream", true);
             // 请求厂商在最后一个 SSE 块返回 usage；不支持的厂商会忽略该选项。
             body.put("stream_options", Map.of("include_usage", true));
+        }
+        if (properties.isReasoningSplit()) {
+            body.put("reasoning_split", true);
         }
         String serialized;
         try {
@@ -337,13 +386,43 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 }
             }
             if (!text.isEmpty()) {
-                return text.toString();
+                return requireVisibleAnswer(stripReasoning(text.toString()));
             }
         }
         if (content.isString() && !content.stringValue().isBlank()) {
-            return content.stringValue();
+            return requireVisibleAnswer(stripReasoning(content.stringValue()));
         }
         throw new ModelClientException("Chat response content was not usable text");
+    }
+
+    /**
+     * 删除非流式响应中混入 content 的推理块。
+     *
+     * <p>除标准 {@code <think>} 外，也接受带厂商命名空间的 {@code <mm:think>}。
+     * 某些兼容接口只返回结束标签；此时结束标签之前的内容按推理处理，避免泄漏到最终回答。</p>
+     */
+    private static String stripReasoning(String value) {
+        String visible = REASONING_BLOCK.matcher(value).replaceAll("");
+        Matcher danglingClose = REASONING_CLOSE_TAG.matcher(visible);
+        int lastCloseEnd = -1;
+        while (danglingClose.find()) {
+            lastCloseEnd = danglingClose.end();
+        }
+        if (lastCloseEnd >= 0) {
+            visible = visible.substring(lastCloseEnd);
+        }
+        Matcher danglingOpen = REASONING_OPEN_TAG.matcher(visible);
+        if (danglingOpen.find()) {
+            visible = visible.substring(0, danglingOpen.start());
+        }
+        return REASONING_CLOSE_TAG.matcher(visible).replaceAll("").strip();
+    }
+
+    private static String requireVisibleAnswer(String value) {
+        if (value.isBlank()) {
+            throw new ModelClientException("Chat response contained reasoning but no final answer");
+        }
+        return value;
     }
 
     private ModelUsage extractUsage(JsonNode root) {

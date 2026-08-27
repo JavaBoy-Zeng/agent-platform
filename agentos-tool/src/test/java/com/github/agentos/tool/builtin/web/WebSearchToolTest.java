@@ -2,6 +2,7 @@ package com.github.agentos.tool.builtin.web;
 
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContexts;
+import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -41,10 +42,22 @@ class WebSearchToolTest {
                 out.write(body);
             }
         });
+        server.createContext("/rate-limited", exchange -> {
+            exchange.sendResponseHeaders(429, 0);
+            exchange.close();
+        });
+        server.createContext("/unavailable", exchange -> {
+            exchange.sendResponseHeaders(503, 0);
+            exchange.close();
+        });
+        server.createContext("/forbidden", exchange -> {
+            exchange.sendResponseHeaders(403, 0);
+            exchange.close();
+        });
         server.start();
-        base = "http://localhost:" + server.getAddress().getPort() + "/search";
+        base = "http://localhost:" + server.getAddress().getPort();
         tool = new WebSearchTool(
-                java.net.http.HttpClient.newHttpClient(), new ObjectMapper(), base,
+                java.net.http.HttpClient.newHttpClient(), new ObjectMapper(), base + "/search",
                 "test-key", Duration.ofSeconds(5));
     }
 
@@ -93,5 +106,24 @@ class WebSearchToolTest {
                 java.net.http.HttpClient.newHttpClient(), new ObjectMapper(),
                 base, " ", Duration.ofSeconds(5)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void classifiesRetryableAndAccessHttpErrors() {
+        ToolResult rateLimited = searchWithEndpoint("/rate-limited");
+        ToolResult unavailable = searchWithEndpoint("/unavailable");
+        ToolResult forbidden = searchWithEndpoint("/forbidden");
+
+        assertThat(rateLimited.failureType()).isEqualTo(ToolFailureType.TRANSIENT);
+        assertThat(unavailable.failureType()).isEqualTo(ToolFailureType.TRANSIENT);
+        assertThat(forbidden.failureType()).isEqualTo(ToolFailureType.ACCESS_DENIED);
+    }
+
+    private ToolResult searchWithEndpoint(String path) {
+        WebSearchTool endpointTool = new WebSearchTool(
+                java.net.http.HttpClient.newHttpClient(), new ObjectMapper(), base + path,
+                "test-key", Duration.ofSeconds(5));
+        return endpointTool.execute(ToolContexts.testContext(endpointTool),
+                new ToolCall("web_search", Map.of("query", "agent")));
     }
 }

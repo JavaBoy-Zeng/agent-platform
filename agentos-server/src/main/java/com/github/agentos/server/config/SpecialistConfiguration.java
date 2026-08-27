@@ -15,6 +15,8 @@ import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -99,11 +101,13 @@ public class SpecialistConfiguration {
             SearchAgent searchAgent,
             ObjectProvider<CodeAgent> codeAgentProvider,
             ReportAgent reportAgent,
-            MainAgent mainAgent) {
+            MainAgent mainAgent,
+            @Value("${agentos.router.supervisor.min-confidence:0.75}") double minConfidence) {
         Map<String, Agent> specialists = new LinkedHashMap<>();
         specialists.put(SearchAgent.ID, searchAgent);
         specialists.put(ReportAgent.ID, reportAgent);
         codeAgentProvider.ifAvailable(codeAgent -> specialists.put(CodeAgent.ID, codeAgent));
-        return new SupervisorAgent(chatClient, specialists, mainAgent);
+        return new SupervisorAgent(
+                chatClient, specialists, mainAgent, new ObjectMapper(), minConfidence);
     }
 }

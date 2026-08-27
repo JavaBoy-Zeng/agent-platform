@@ -33,6 +33,11 @@ public final class RequestIdentityFilter extends OncePerRequestFilter {
     protected void doFilterInternal(
             HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        // 登录鉴权已绑定真实用户身份时不再覆盖，保持服务端固定身份仅用于匿名凭据（X-API-Key）。
+        if (request.getAttribute(RequestIdentity.REQUEST_ATTRIBUTE) != null) {
+            chain.doFilter(request, response);
+            return;
+        }
         RequestIdentity identity = fixedIdentity;
         if (trustHeaders) {
             String teamId = textOr(request.getHeader(TEAM_HEADER), fixedIdentity.teamId());

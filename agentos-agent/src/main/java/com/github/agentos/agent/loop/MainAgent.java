@@ -51,7 +51,6 @@ public final class MainAgent implements AgentLoop, Agent {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MainAgent.class);
     private static final int MAX_LOG_VALUE_LENGTH = 1_000;
-    private static final int OUTPUT_DELTA_LENGTH = 160;
     private final AgentPlanner planner;
     private final PlanExecutor planExecutor;
     private final MemoryService memoryService;
@@ -238,8 +237,34 @@ public final class MainAgent implements AgentLoop, Agent {
                 requireNotCancelled();
                 if (plan.outcome() == PlanOutcome.COMPLETE) {
                     requireNotCancelled();
-                    String finalAnswer = finalizer.finish(request, context, plan);
-                    emitAnswerDeltas(eventSink, request.sessionId(), finalAnswer);
+                    boolean modelStream = finalizer.requiresModelCall();
+                    if (modelStream) {
+                        if (modelCalls >= limits.maxModelCalls()) {
+                            return failed(
+                                    request, plan, runningState,
+                                    "maxModelCalls exhausted before streaming finalization: "
+                                            + limits.maxModelCalls(),
+                                    modelCalls, replanCount, processedSteps, toolCalls,
+                                    runStarted, eventSink);
+                        }
+                        modelCalls++;
+                        incrementModelCalls(context);
+                    }
+                    java.util.concurrent.atomic.AtomicInteger deltaSequence =
+                            new java.util.concurrent.atomic.AtomicInteger();
+                    String finalAnswer = finalizer.finishStreaming(
+                            request,
+                            context,
+                            plan,
+                            delta -> emit(eventSink, AgentRunEvent.of(
+                                    AgentRunEvent.Type.OUTPUT_DELTA,
+                                    request.sessionId(),
+                                    delta,
+                                    Map.of(
+                                            "sequence", deltaSequence.getAndIncrement(),
+                                            "source", modelStream
+                                                    ? "model-sse"
+                                                    : "runtime-result"))));
                     requireNotCancelled();
                     captureMemory(request, context, finalAnswer, cumulativeResults, plan.id());
                     LOGGER.info(
@@ -687,21 +712,6 @@ public final class MainAgent implements AgentLoop, Agent {
             eventSink.emit(event);
         } catch (RuntimeException exception) {
             LOGGER.debug("agent event sink rejected event type={}", event.type(), exception);
-        }
-    }
-
-    private static void emitAnswerDeltas(
-            AgentEventSink eventSink, String sessionId, String finalAnswer) {
-        int sequence = 0;
-        for (int offset = 0; offset < finalAnswer.length(); offset += OUTPUT_DELTA_LENGTH) {
-            requireNotCancelled();
-            String delta = finalAnswer.substring(
-                    offset, Math.min(finalAnswer.length(), offset + OUTPUT_DELTA_LENGTH));
-            emit(eventSink, AgentRunEvent.of(
-                    AgentRunEvent.Type.OUTPUT_DELTA,
-                    sessionId,
-                    delta,
-                    Map.of("sequence", sequence++)));
         }
     }
 

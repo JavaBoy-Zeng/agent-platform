@@ -47,6 +47,8 @@
 | `run_command` | 宿主机 Shell；严格模式默认不注册，因为工作目录不等于文件系统沙箱。 |
 | `web_fetch` | 抓取单个网页正文并截断，受超时限制。 |
 | `web_search` | Tavily 搜索；未配置 API Key 时不注册。 |
+| `web_map` | 通过 Firecrawl 发现站内 URL、标题与描述，不下载全部页面正文。 |
+| `web_crawl` | 通过 Firecrawl 创建并轮询网站遍历任务，返回有界的多页 Markdown 正文。 |
 | `git_commit` | 本地 Git 提交；仓库必须位于文件根目录内，且仅允许开启宿主机进程时注册。 |
 | `load_skill` | 把注册表中的某项技能完整指令按需注入对话上下文，技能正文不常驻提示词。 |
 | `execute_code` | 执行 Python/Shell/Java 代码片段；严格模式只允许 Docker 沙箱，本地执行被拒绝。 |
@@ -56,6 +58,11 @@
 
 `file_search` 最多扫描 20,000 个文件。内容搜索会跳过符号链接、二进制、不可读和大于 1 MiB 的
 文件，并返回带行号的匹配结果。
+
+`web_map` 与 `web_crawl` 共享 `agentos.tools.firecrawl` 配置。设置
+`FIRECRAWL_API_KEY` 后会自动注册；调用自部署且未启用认证的 Firecrawl 时，设置
+`enabled=true` 与 `FIRECRAWL_API_URL`。两个工具均限制单次链接/页面数量与输出字符数，
+`web_crawl` 还会响应 Invocation 取消并对任务轮询设置总超时。
 
 PDF 首次调用 `file_read` 时可省略 `page` 和 `offset`，默认从第 1 页、页内偏移 0 开始。
 每次正文最多返回 3000 字符，并同时返回 `totalPages`、`hasMore`、`nextPage`、

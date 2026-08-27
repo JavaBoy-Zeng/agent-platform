@@ -32,6 +32,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -91,6 +92,9 @@ class BackgroundAgentRunControllerTest {
             subscribed.getAsyncResult(2_000);
             mvc.perform(asyncDispatch(subscribed))
                     .andExpect(status().isOk())
+                    .andExpect(header().string(
+                            "Cache-Control", "no-cache, no-transform"))
+                    .andExpect(header().string("X-Accel-Buffering", "no"))
                     .andExpect(content().string(not(containsString("id:1\n"))))
                     .andExpect(content().string(not(containsString("id:2\n"))))
                     .andExpect(content().string(containsString("id:3")))

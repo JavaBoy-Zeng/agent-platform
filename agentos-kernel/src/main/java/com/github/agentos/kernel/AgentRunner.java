@@ -611,6 +611,10 @@ public final class AgentRunner {
         AgentEventType type = switch (event.type()) {
             case PLAN_CREATED -> AgentEventType.PLAN_CREATED;
             case REPLAN -> AgentEventType.REPLAN_STARTED;
+            case ROUTE_DECIDED -> AgentEventType.ROUTE_DECIDED;
+            case ROUTE_REJECTED -> AgentEventType.ROUTE_REJECTED;
+            case ROUTE_CLARIFICATION_REQUIRED ->
+                    AgentEventType.ROUTE_CLARIFICATION_REQUIRED;
             case TOOL_STARTED -> AgentEventType.STEP_STARTED;
             case TOOL_FINISHED -> "COMPLETED".equals(event.data().get("status"))
                     ? AgentEventType.STEP_COMPLETED : AgentEventType.STEP_FAILED;

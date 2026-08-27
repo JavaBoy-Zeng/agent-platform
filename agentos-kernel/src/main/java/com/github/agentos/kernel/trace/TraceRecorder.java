@@ -163,6 +163,10 @@ public final class TraceRecorder implements AgentPlugin {
                 case STEP_COMPLETED, STEP_FAILED ->
                         popAndCloseSpan(stack, traceId, event, Span.Kind.STEP);
                 case PLAN_CREATED, REPLAN_STARTED -> recordEventOnTop(stack, "plan", event);
+                case ROUTE_DECIDED -> recordEventOnTop(stack, "route-decided", event);
+                case ROUTE_REJECTED -> recordEventOnTop(stack, "route-rejected", event);
+                case ROUTE_CLARIFICATION_REQUIRED ->
+                        recordEventOnTop(stack, "route-clarification", event);
                 case HUMAN_ACTION_REQUIRED -> recordEventOnTop(stack, "await-approval", event);
                 case HUMAN_ACTION_RESOLVED -> recordEventOnTop(stack, "approval-resolved", event);
                 case AGENT_STARTED, AGENT_COMPLETED, AGENT_FAILED -> {

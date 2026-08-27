@@ -50,7 +50,7 @@ function setActive(index) {
     return
   }
   activeIndex.value = (index + props.options.length) % props.options.length
-  nextTick(() => optionElements.value[activeIndex.value]?.scrollIntoView({ block: 'nearest' }))
+  nextTick(() => optionElements.value[activeIndex.value]?.scrollIntoView?.({ block: 'nearest' }))
 }
 
 function openMenu() {
@@ -187,22 +187,22 @@ onUnmounted(() => document.removeEventListener('pointerdown', closeOnOutsideClic
   padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 5px;
-  color: #111111;
+  color: var(--text);
   text-align: left;
-  background: var(--app-select-trigger-bg, #ffffff);
+  background: var(--app-select-trigger-bg, var(--canvas));
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
-.app-select__trigger:hover:not(:disabled) { background: var(--app-select-trigger-hover, #f7f7f8); }
-.app-select--open .app-select__trigger { border-color: rgba(16, 163, 127, .48); box-shadow: 0 0 0 3px rgba(16, 163, 127, .08); }
-.app-select__trigger:disabled { color: #8a8a8a; background: #f2f2f3; cursor: default; }
-.app-select__trigger:focus-visible { outline: 2px solid rgba(0, 0, 0, .65); outline-offset: 2px; }
+.app-select__trigger:hover:not(:disabled) { background: var(--app-select-trigger-hover, var(--surface)); }
+.app-select--open .app-select__trigger { border-color: var(--muted); box-shadow: 0 0 0 3px var(--line-soft); }
+.app-select__trigger:disabled { color: var(--dim); background: var(--surface); cursor: default; }
+.app-select__trigger:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 
 .app-select__copy { display: grid; min-width: 0; gap: 2px; }
 .app-select__copy strong { overflow: hidden; font-family: var(--mono); font-size: 10px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.app-select__copy strong.is-placeholder { color: #6b6b6b; }
-.app-select__copy small { color: #6b6b6b; font-family: var(--mono); font-size: 7px; letter-spacing: .1em; }
+.app-select__copy strong.is-placeholder { color: var(--dim); }
+.app-select__copy small { color: var(--dim); font-family: var(--mono); font-size: 7px; letter-spacing: .1em; }
 .app-select--captioned .app-select__copy strong { font-family: var(--font); font-size: 11px; font-weight: 500; }
 
 .app-select__trigger > svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; transition: transform 140ms ease; }
@@ -221,17 +221,18 @@ onUnmounted(() => document.removeEventListener('pointerdown', closeOnOutsideClic
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #ffffff;
+  color: var(--text);
+  background: var(--canvas);
   box-shadow: 0 18px 55px rgba(0, 0, 0, .16);
   animation: app-select-in 120ms ease both;
 }
 
 .app-select--right .app-select__options { right: 0; left: auto; }
 .app-select__option { position: relative; display: grid; min-height: 36px; align-content: center; gap: 3px; padding: 8px 34px 8px 10px; border-radius: 5px; cursor: pointer; }
-.app-select__option.is-active { background: #eeeeef; }
-.app-select__option[aria-selected="true"] { color: #0b7a5f; background: rgba(16, 163, 127, .09); }
+.app-select__option.is-active { background: var(--surface); }
+.app-select__option[aria-selected="true"] { color: var(--text); background: var(--sidebar-active); }
 .app-select__option span { overflow: hidden; font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.app-select__option small { overflow: hidden; color: #5f5f5f; font-family: var(--mono); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.app-select__option small { overflow: hidden; color: var(--dim); font-family: var(--mono); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .app-select__option > svg { position: absolute; top: 50%; right: 10px; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; transform: translateY(-50%); }
 .app-select__empty { margin: 8px; color: #5f5f5f; font-size: 11px; }
 

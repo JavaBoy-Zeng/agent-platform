@@ -15,6 +15,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
@@ -94,6 +95,8 @@ public final class WebSearchTool implements AgentTool {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return ToolResult.failure(ToolFailureType.TIMEOUT, "web search was interrupted");
+        } catch (HttpTimeoutException exception) {
+            return ToolResult.failure(ToolFailureType.TIMEOUT, "web search request timed out");
         } catch (IOException exception) {
             return ToolResult.failure(
                     ToolFailureType.TRANSIENT,
@@ -101,7 +104,7 @@ public final class WebSearchTool implements AgentTool {
         }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             return ToolResult.failure(
-                    ToolFailureType.ACCESS_DENIED,
+                    failureTypeForStatus(response.statusCode()),
                     "web search returned HTTP " + response.statusCode());
         }
         return parseResults(response.body(), maxResults);
@@ -136,6 +139,19 @@ public final class WebSearchTool implements AgentTool {
         return ToolResult.success(
                 output.toString().stripTrailing(),
                 "", Map.of("resultCount", count), com.github.agentos.tool.api.ToolActions.none());
+    }
+
+    private static ToolFailureType failureTypeForStatus(int statusCode) {
+        if (statusCode == 408) {
+            return ToolFailureType.TIMEOUT;
+        }
+        if (statusCode == 429 || statusCode >= 500) {
+            return ToolFailureType.TRANSIENT;
+        }
+        if (statusCode == 401 || statusCode == 403) {
+            return ToolFailureType.ACCESS_DENIED;
+        }
+        return ToolFailureType.NOT_FOUND;
     }
 
     private static int maxResults(Object configured) {

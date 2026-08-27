@@ -80,7 +80,7 @@ AgentOS 是一个基于 Java 21、Maven 多模块与 Spring Boot 的模块化 Ag
 
 - 主 Agent：`MainAgent` 在运行预算内循环执行"规划 → 工具 → 重新规划"。
 - 重规划触发：`DISCOVERY_COMPLETED`、`RECOVERABLE_FAILURE`、`INVALID_ASSUMPTION`、`EXECUTION_COMPLETED`。
-- 终态控制：仅 `EXECUTION / COMPLETE` 进入 `AgentFinalizer`；Finalizer 是 Runtime 内部控制动作，不出现在工具注册表，也不额外调用模型。
+- 终态控制：仅 `EXECUTION / COMPLETE` 进入 `AgentFinalizer`；生产装配使用流式 Finalizer，额外消耗一次受预算约束的文本模型调用，并把可见 SSE 增量直接输出。Finalizer 是 Runtime 内部控制动作，不出现在工具注册表。
 - 记忆写入：只有最终成功的运行会写入 `CompletedTurn`；记忆存储失败不会把成功运行改成失败。
 
 ### 2.7 `agentos-server`（Spring Boot 装配与对外 API）
@@ -89,7 +89,7 @@ AgentOS 是一个基于 Java 21、Maven 多模块与 Spring Boot 的模块化 Ag
 - REST API：
   - `POST /api/agents/runs`：创建一次同步 Agent 运行（`agentId` / `sessionId` 可省略）。
   - `GET /api/agents/{sessionId}/state`：查询会话状态（不存在返回 404）。
-  - `POST /api/agents/runs/stream`：SSE 流式运行，依次发送 `run_started`、`plan_created`、`tool_started`、`tool_finished`、`observation`、`decision`、可选 `replan`、最后 `state`。
+  - `POST /api/agents/runs/stream`：SSE 流式运行，依次发送阶段事件、模型 `output_delta`、`run_completed` 和最终 `state`；模型增量不做定长二次切片。
   - `POST /api/agent-runs`：创建与浏览器连接解耦的后台运行，返回可持久化到前端的 `runId`。
   - `GET /api/agent-runs/{runId}`：查询后台运行快照。
   - `GET /api/agent-runs/{runId}/events?after={sequence}`：补播游标后的事件并继续实时订阅。
@@ -138,7 +138,7 @@ MainAgent
         │       ├── ApprovalToolInterceptor / RiskPolicy / ApprovalService
         │       └── 失败 → FailureClassifier → REPLAN / SKIP / ABORT
         ├── AgentPlanner.replan (受累计预算限制)
-        └── AgentFinalizer.finish (仅 EXECUTION / COMPLETE)
+        └── AgentFinalizer.finishStreaming (仅 EXECUTION / COMPLETE)
                 │
                 └── MemoryService.capture (成功后异步 L1–L3 加工)
 ```

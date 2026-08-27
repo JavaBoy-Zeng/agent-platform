@@ -112,6 +112,8 @@ sequenceDiagram
     participant AR as AgentRuntime
     participant MA as MainAgent
     participant AP as LlmAgentPlanner
+    participant AF as ModelStreamingAgentFinalizer
+    participant CC as ChatClient
     participant MS as MemoryService
     participant MC as ModelClient
     participant PE as PlanExecutor
@@ -152,9 +154,16 @@ sequenceDiagram
         MA->>AP: 基于累计观察再次决策
     end
 
+    MA->>AF: COMPLETE 候选答案
+    AF->>CC: chatStream(最终回答请求)
+    loop 每个上游可见 SSE 增量
+        CC-->>AF: delta
+        AF-->>MA: delta
+        MA-->>C: OUTPUT_DELTA(source=model-sse)
+    end
     MA->>MS: 成功后 capture(CompletedTurn)
     MS-->>MS: 保存 L0，异步加工 L1-L3
-    MA-->>C: OUTPUT_DELTA / RUN_COMPLETED / state
+    MA-->>C: RUN_COMPLETED / state
     MA-->>AR: COMPLETED / FAILED / CANCELLED
 ```
 
@@ -263,7 +272,7 @@ stateDiagram-v2
 
 `ModelClient` 是规划模块中的端口，业务方可以声明自定义 Spring Bean 覆盖默认实现，因此核心规划逻辑不绑定 MiniMax 或任何特定 SDK。
 
-当前 SSE 不是模型 token 流：模型规划请求完成后才产生计划；最终答案也由 `COMPLETE` 计划一次性返回，`MainAgent` 随后把完整答案切片为 `OUTPUT_DELTA` 事件供界面逐段展示。
+规划与最终回答采用不同的传输约束：规划请求必须完整返回结构化 JSON 后才能校验和执行，因此不会逐 token 暴露；最终回答通过 `ModelStreamingAgentFinalizer → ChatClient.chatStream → OpenAiCompatibleChatClient` 消费供应商 SSE，并在每个可见增量到达时立即发出 `OUTPUT_DELTA`。该链路不会等待完整回答，也不会按固定字符数重新切片。最终回答调用计入 `max-model-calls`，可通过 `max-final-answer-chars` 和 `max-final-draft-chars` 限制输出与候选上下文。
 
 ## 8. 工具与 HITL
 
