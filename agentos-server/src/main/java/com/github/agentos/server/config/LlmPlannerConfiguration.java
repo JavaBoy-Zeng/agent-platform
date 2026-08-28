@@ -37,10 +37,17 @@ public class LlmPlannerConfiguration {
     /**
      * 创建默认的 OpenAI-compatible 模型客户端。
      *
-     * <p>业务应用可以自行声明 {@link ModelClient} Bean 覆盖该默认适配器。</p>
+     * <p>业务应用可以自行声明 {@link ModelClient} Bean 覆盖该默认适配器：
+     * {@code @ConditionalOnMissingBean} 保证仅在容器中没有任何 {@link ModelClient}
+     * 实现时才装配本兜底实现。</p>
      *
-     * @param properties 模型端点配置
-     * @param objectMapper 应用 JSON 映射器
+     * <p>构造函数内部会执行 {@link ModelClientProperties#validate()}，
+     * 端点、模型名等关键配置缺失时应用启动即失败（快速失败）。</p>
+     *
+     * @param properties      模型端点配置（绑定 {@code agentos.model.*}）
+     * @param objectMapper    应用 JSON 映射器
+     * @param usageListener   模型调用成功后的用量回调，用于 token 记账
+     * @param fileAccessPolicy 文件访问策略，用于约束模型规划出的文件路径
      * @return 模型客户端适配器
      */
     @Bean
@@ -50,10 +57,14 @@ public class LlmPlannerConfiguration {
             ObjectMapper objectMapper,
             com.github.agentos.planner.ModelUsageListener usageListener,
             FileAccessPolicy fileAccessPolicy) {
+        // 独立构建 HttpClient：连接超时取自 agentos.model.connect-timeout（仅约束 TCP 建连阶段，
+        // 完整请求超时由 request-timeout 在每次构造请求时控制）；跟随重定向以兼容网关地址跳转
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.getConnectTimeout())
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
+        // allowedRoot() 限定模型生成文件读写路径的根目录，防止越权访问；
+        // 没有单一根目录时传 null（不做路径约束）
         return new OpenAiCompatibleModelClient(
                 httpClient, objectMapper, properties, usageListener,
                 fileAccessPolicy.allowedRoot().orElse(null));
