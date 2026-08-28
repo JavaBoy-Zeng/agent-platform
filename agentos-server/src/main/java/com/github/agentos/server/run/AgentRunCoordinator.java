@@ -7,6 +7,7 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.kernel.ChatStreamEvent;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -15,7 +16,6 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -323,10 +323,21 @@ public final class AgentRunCoordinator {
         }
 
         /**
-         * 将内核事件加入补播窗口，并实时广播给当前订阅者。
+         * 将内核事件映射为对话展示事件后加入补播窗口，并实时广播给当前订阅者。
+         *
+         * <p>映射由 {@link ChatEventMapper} 完成：与对话展示无关的事件（用量统计等）
+         * 不会占用事件窗口；映射失败不会中断运行。</p>
          */
         synchronized void publish(AgentRunEvent event) {
-            append(event.type().name().toLowerCase(Locale.ROOT), event);
+            ChatStreamEvent chatEvent;
+            try {
+                chatEvent = ChatEventMapper.map(event);
+            } catch (RuntimeException exception) {
+                return;
+            }
+            if (chatEvent != null) {
+                append(ChatEventMapper.eventName(chatEvent), chatEvent);
+            }
         }
 
         /**

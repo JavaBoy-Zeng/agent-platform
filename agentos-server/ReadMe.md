@@ -378,6 +378,8 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.tools.web-search.endpoint` | `AGENTOS_WEB_SEARCH_ENDPOINT` | Tavily Search API |
 | `agentos.tools.web-search.api-key` | `AGENTOS_WEB_SEARCH_API_KEY` | 空，不注册 `web_search` |
 | `agentos.tools.web-search.timeout-seconds` | `AGENTOS_WEB_SEARCH_TIMEOUT_SECONDS` | `20` |
+| `agentos.tools.browser-search.endpoint` | `AGENTOS_BROWSER_SEARCH_ENDPOINT` | `http://localhost:8888/search`（SearXNG） |
+| `agentos.tools.browser-search.timeout-seconds` | `AGENTOS_BROWSER_SEARCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.code-executor.enabled` | `AGENTOS_CODE_EXECUTOR_ENABLED` | `false` |
 | `agentos.tools.code-executor.mode` | `AGENTOS_CODE_EXECUTOR_MODE` | `local` |
 | `agentos.tools.code-executor.timeout-seconds` | `AGENTOS_CODE_EXECUTOR_TIMEOUT_SECONDS` | `60` |

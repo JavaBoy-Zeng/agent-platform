@@ -10,6 +10,8 @@ import {
 } from '../services/agentApi.js'
 import {
   deleteSessionRecord,
+  getConsoleCatalog,
+  getUsage,
   getSessionEvents,
   getSessionPage,
   updateSessionTitle
@@ -20,6 +22,31 @@ const ACTIVE_SESSION_KEY = 'agentos.console.active-session.v1'
 const SESSION_PAGE_SIZE = 20
 const SESSION_CACHE_SIZE = 20
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING'])
+const MODEL_STORAGE_KEY = 'agentos.console.models.v1'
+const SELECTED_MODEL_KEY = 'agentos.console.selected-model.v1'
+const APPROVAL_MODE_KEY = 'agentos.console.approval-mode.v1'
+const DEFAULT_MODEL = Object.freeze({
+  id: 'minimax-h3',
+  name: 'Server 默认模型',
+  modelId: ''
+})
+
+function readModels() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(MODEL_STORAGE_KEY) || '[]')
+    const models = Array.isArray(stored)
+      ? stored.filter(model => model?.id && model?.name).map(model => ({
+          ...model,
+          modelId: model.id === DEFAULT_MODEL.id
+            ? ''
+            : String(model.modelId || model.id).trim()
+        }))
+      : []
+    return [DEFAULT_MODEL, ...models.filter(model => model.id !== DEFAULT_MODEL.id)]
+  } catch {
+    return [DEFAULT_MODEL]
+  }
+}
 
 function randomId(prefix) {
   const token = globalThis.crypto?.randomUUID?.().slice(0, 8)
@@ -47,6 +74,9 @@ function newSession(id = randomId('session')) {
     updatedAt: nowIso(),
     state: null,
     activeStage: 0,
+    phase: '',
+    runBoundary: 0,
+    runError: '',
     submitting: false,
     messages: []
   }
@@ -94,6 +124,9 @@ export function useAgentConsole() {
   const agentId = ref('main-agent')
   const sessionId = ref('')
   const prompt = ref('')
+  const models = ref(readModels())
+  const selectedModelId = ref(localStorage.getItem(SELECTED_MODEL_KEY) || DEFAULT_MODEL.id)
+  const approvalMode = ref(localStorage.getItem(APPROVAL_MODE_KEY) || 'FULL_ACCESS')
   const connection = ref('standby')
   const loadingSessions = ref(false)
   const sessionHistoryError = ref('')
@@ -118,6 +151,9 @@ export function useAgentConsole() {
     updatedAt: null
   })
   const hasMoreSessions = computed(() => serverHasMoreSessions.value)
+  const currentPhase = computed(() => String(
+    currentSession.value?.phase
+    || (isSessionBusy(currentSession.value) ? '正在运行' : '')).trim())
 
   function persist() {
     const recent = sessions.value.slice(0, SESSION_CACHE_SIZE)
@@ -194,6 +230,7 @@ export function useAgentConsole() {
             createdAt: started.timestamp || trace.startedAt
           })
         }
+        recovered.push(...recoverOperationGroups(trace, events))
         if (completed?.message) {
           recovered.push({
             id: `${trace.invocationId}:assistant`,
@@ -219,6 +256,30 @@ export function useAgentConsole() {
     } finally {
       session.historyLoading = false
     }
+  }
+
+  // 操作记录只从事件存储中的 TOOL_CALL_* 领域事件重建，与实时 SSE 事件同源，
+  // 避免模型生成的文本描述进入执行记录。
+  function recoverOperationGroups(trace, events) {
+    return events.flatMap((event, eventIndex) => {
+      if (event.type !== 'TOOL_CALL_COMPLETED' && event.type !== 'TOOL_CALL_FAILED') return []
+      const data = event.data || {}
+      const kind = classifyTool(data.toolName || '')
+      return [{
+          id: `${trace.invocationId}:ops:${eventIndex}`,
+          role: 'ops',
+          kind,
+          items: [{
+            toolName: data.toolName || '',
+            arguments: data.arguments || {},
+            summary: data.summary || event.message || '',
+            success: event.type === 'TOOL_CALL_COMPLETED',
+            status: event.type === 'TOOL_CALL_COMPLETED' ? 'COMPLETED' : 'FAILED'
+          }],
+          expanded: false,
+          createdAt: event.timestamp || trace.startedAt
+        }]
+    })
   }
 
   function activateSession(session) {
@@ -358,6 +419,55 @@ export function useAgentConsole() {
     session.updatedAt = nowIso()
   }
 
+  function selectModel(modelId) {
+    if (!models.value.some(model => model.id === modelId)) return
+    selectedModelId.value = modelId
+    localStorage.setItem(SELECTED_MODEL_KEY, modelId)
+  }
+
+  function addModel(model) {
+    const modelId = String(model?.modelId || '').trim()
+    const name = String(model?.name || modelId).trim()
+    const id = String(model?.id || modelId).trim()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-zA-Z0-9._:/-]+/g, '')
+    if (!name || !modelId || !id) return false
+    const existing = models.value.find(item => item.id === id)
+    if (existing) {
+      selectModel(existing.id)
+      return false
+    }
+    models.value = [...models.value, { id, name, modelId }]
+    localStorage.setItem(MODEL_STORAGE_KEY, JSON.stringify(models.value))
+    selectModel(id)
+    return true
+  }
+
+  async function refreshServerModel() {
+    try {
+      const catalog = await getConsoleCatalog()
+      const routes = Array.isArray(catalog?.models) ? catalog.models : []
+      const route = routes.find(model => model.role === 'direct-chat')
+        || routes.find(model => model.role === 'planner')
+        || routes[0]
+      const modelId = String(route?.model || '').trim()
+      if (!modelId) return
+      models.value = models.value.map(model => model.id === DEFAULT_MODEL.id
+        ? { ...DEFAULT_MODEL, name: modelId }
+        : model)
+    } catch {
+      // 模型目录不可用时保留“Server 默认模型”，不影响任务提交。
+    }
+  }
+
+  function setApprovalMode(mode) {
+    const normalized = ['REQUEST_APPROVAL', 'RISK_BASED', 'FULL_ACCESS'].includes(mode)
+      ? mode
+      : 'FULL_ACCESS'
+    approvalMode.value = normalized
+    localStorage.setItem(APPROVAL_MODE_KEY, normalized)
+  }
+
   function startPipeline(session) {
     const pendingTimer = pipelineTimers.get(session.id)
     if (pendingTimer) window.clearTimeout(pendingTimer)
@@ -379,66 +489,130 @@ export function useAgentConsole() {
     pipelineTimers.set(session.id, timer)
   }
 
-  function streamStage(event, session) {
-    return {
-      run_started: 1,
-      plan_created: 2,
-      tool_started: 3,
-      tool_finished: 3,
-      observation: 4,
-      decision: 5,
-      replan: 2,
-      run_completed: 5,
-      run_failed: 5
-    }[event] || session.activeStage || 0
+  function streamStage(eventName, data) {
+    switch (eventName) {
+      case 'tool_started':
+      case 'tool_completed':
+      case 'file_read':
+      case 'file_edited':
+      case 'command_executed':
+        return 3
+      case 'assistant_message':
+      case 'final_answer':
+      case 'error':
+        return 5
+      case 'progress': {
+        const source = data?.sourceEvent
+        if (source === 'run_started' || source === 'route_decided') return 1
+        if (source === 'plan_created' || source === 'replan') return 2
+        if (source === 'decision') return 5
+        return null
+      }
+      default:
+        return null
+    }
   }
 
-  function eventMessage(event, data) {
-    const details = data?.data || {}
-    if (event === 'plan_created') {
-      return `PLAN / ${details.type || ''} / ${data.message || ''}`
+  // 文件读取、命令执行、文件修改等操作记录必须来源于 Runtime 真实工具事件，
+  // 这里仅按 toolName 分类，绝不依据模型生成的文本描述。
+  function classifyTool(toolName) {
+    if (toolName === 'file_read') return 'read'
+    if (toolName === 'file_write') return 'edit'
+    if (toolName === 'run_command') return 'command'
+    return 'tool'
+  }
+
+  function appendOperation(session, kind, item) {
+    session.messages.push({
+      id: randomId('ops'),
+      role: 'ops',
+      kind,
+      items: [item],
+      expanded: false,
+      createdAt: nowIso()
+    })
+  }
+
+  function applyOperationEvent(session, data, message = '') {
+    const calls = Array.isArray(data?.toolCalls) && data.toolCalls.length
+      ? data.toolCalls
+      : [{ toolName: data?.toolName || '', arguments: data?.arguments || {} }]
+    for (const call of calls) {
+      const toolName = call.toolName || data?.toolName || 'tool'
+      appendOperation(session, classifyTool(toolName), {
+        toolName,
+        arguments: call.arguments || {},
+        summary: data?.summary || message,
+        success: data?.success !== false,
+        status: data?.status || ''
+      })
     }
-    if (event === 'tool_started') {
-      return `TOOL / ${details.toolName || ''} / ${data.message || ''}`
+  }
+
+  function appendAssistantDelta(session, runId, delta) {
+    if (!delta) return
+    const last = session.messages[session.messages.length - 1]
+    if (last && last.role === 'assistant' && last.streaming) {
+      last.content += delta
+    } else {
+      addMessage(session, 'assistant', delta, {
+        id: `${runId}:assistant:${randomId('seg')}`,
+        streaming: true
+      })
     }
-    if (event === 'observation') {
-      return `OBSERVATION / ${details.toolName || ''}\n${data.message || '(empty result)'}`
+  }
+
+  function finalizeAssistantAnswer(session, answer) {
+    const streaming = session.messages.filter(
+      message => message.role === 'assistant' && message.streaming)
+    if (!streaming.length) {
+      if (answer) addMessage(session, 'assistant', answer)
+      return
     }
-    if (event === 'decision') {
-      if (details.pendingActionId) return ''
-      return `DECISION / ${details.outcome || ''} / ${data.message || ''}`
+    const last = streaming[streaming.length - 1]
+    if (answer && last.content !== answer) last.content = answer
+    streaming.forEach(message => { message.streaming = false })
+  }
+
+  function handleChatEvent(session, runId, eventName, payload) {
+    const data = payload?.data || {}
+    if (eventName === 'assistant_message') {
+      appendAssistantDelta(session, runId, payload?.message || '')
+    } else if (eventName === 'tool_started') {
+      session.phase = payload?.message
+        || (data.toolName ? `正在执行 ${data.toolName}` : '正在执行工具')
+    } else if (eventName === 'progress') {
+      session.phase = payload?.message || ''
+    } else if (eventName === 'error') {
+      session.runError = payload?.message || session.runError
+      session.phase = ''
+    } else if (eventName === 'final_answer') {
+      finalizeAssistantAnswer(session, payload?.message || '')
+      session.phase = ''
+    } else if (eventName === 'tool_completed'
+      || eventName === 'file_read'
+      || eventName === 'file_edited'
+      || eventName === 'command_executed') {
+      applyOperationEvent(session, data, payload?.message || '')
+      session.phase = ''
     }
-    if (event === 'replan') {
-      return `REPLAN ${details.replanCount || ''} / ${data.message || ''}`
-    }
-    return ''
+    session.updatedAt = nowIso()
   }
 
   function handleStreamEvent(session, packet, messageId = '') {
-    session.activeStage = streamStage(packet.event, session)
-    if (packet.event === 'output_delta') {
-      const runId = session.activeRunId || 'run'
-      const assistantId = `${runId}:assistant`
-      let message = session.messages.find(item => item.id === assistantId)
-      if (!message) {
-        addMessage(session, 'assistant', '', { id: assistantId, streaming: true })
-        message = session.messages.find(item => item.id === assistantId)
+    const eventName = packet.event
+    const payload = packet.data || {}
+    const stage = streamStage(eventName, payload?.data)
+    if (stage) session.activeStage = stage
+    if (eventName === 'state') {
+      session.activeStage = 5
+      if (payload?.state) {
+        session.state = payload.state
+        if (payload.state.status === 'WAITING') setPendingApproval(session, payload)
       }
-      message.content += packet.data?.message || ''
-      message.streaming = true
-      session.updatedAt = nowIso()
-      persist()
       return
     }
-    const content = eventMessage(packet.event, packet.data)
-    if (content && (!messageId || !session.messages.some(message => message.id === messageId))) {
-      addMessage(session, 'event', content, messageId ? { id: messageId } : {})
-    }
-    if (packet.event === 'state' && packet.data?.state) {
-      session.state = packet.data.state
-      if (packet.data.state.status === 'WAITING') setPendingApproval(session, packet.data)
-    }
-    persist()
+    handleChatEvent(session, packet.runId || session.activeRunId || 'run', eventName, payload)
   }
 
   function applyRunSnapshot(session, snapshot) {
@@ -450,32 +624,96 @@ export function useAgentConsole() {
     persist()
   }
 
+  function markRunResult(session, status, boundary, task, runId = '') {
+    const messages = session.messages.slice(boundary)
+    let target = status === 'COMPLETED'
+      ? [...messages].reverse().find(message => message.role === 'assistant')
+      : [...messages].reverse().find(message => message.role === 'error' || message.role === 'event')
+    if (!target) return null
+    const partialAnswer = [...messages].reverse().find(message => message.role === 'assistant')
+    target.runEnd = true
+    target.runStatus = status
+    target.retryPrompt = task
+    target.copyContent = status === 'COMPLETED'
+      ? target.content
+      : (partialAnswer?.content || target.content)
+    target.runId = runId
+    return target
+  }
+
+  async function refreshRunUsage(session, targetId, baseline) {
+    if (!targetId) return
+    try {
+      const usage = await getUsage(session.id)
+      const total = Number(usage?.totalTokens || 0)
+      const tokenUsage = Number.isFinite(baseline)
+        ? Math.max(0, total - baseline)
+        : total
+      const target = session.messages.find(message => message.id === targetId)
+      if (target) {
+        target.tokenUsage = tokenUsage
+        target.tokenUsageScope = Number.isFinite(baseline) ? 'run' : 'session'
+        persist()
+      }
+    } catch {
+      // Token accounting must never change the run result.
+    }
+  }
+
   function finalizeRun(session, snapshot) {
     const runId = snapshot.runId || session.activeRunId
+    const boundary = Number(session.runBoundary || 0)
+    const task = session.runTask || ''
+    const usageBaseline = Number.isFinite(session.runUsageBase)
+      ? session.runUsageBase
+      : null
     applyRunSnapshot(session, snapshot)
-    const assistantId = `${runId}:assistant`
-    const existingAssistant = session.messages.find(message => message.id === assistantId)
 
     if (snapshot.state.status === 'COMPLETED') {
-      if (existingAssistant) {
-        existingAssistant.content = snapshot.state.output || '任务已完成。'
-        existingAssistant.streaming = false
-      } else {
-        addMessage(session, 'assistant', snapshot.state.output || '任务已完成。', {
-          id: assistantId
-        })
+      const output = snapshot.state.output || ''
+      const streaming = session.messages.filter(
+        message => message.role === 'assistant' && message.streaming)
+      if (streaming.length) {
+        const last = streaming[streaming.length - 1]
+        if (output && last.content !== output) last.content = output
+        streaming.forEach(message => { message.streaming = false })
+      } else if (output && !session.messages.some(
+        message => message.role === 'assistant' && message.content === output)) {
+        addMessage(session, 'assistant', output)
       }
     } else if (snapshot.state.status === 'CANCELLED') {
+      markAssistantDone(session)
       addTerminalMessage(
-        session, `${runId}:cancelled`, 'event', snapshot.state.error || '任务已取消。')
+        session, `${runId}:cancelled`, 'event', session.runError || '任务已取消。')
     } else if (snapshot.state.status === 'FAILED') {
+      markAssistantDone(session)
       addTerminalMessage(
-        session, `${runId}:failed`, 'error', snapshot.state.error || 'Agent 未能完成任务。')
+        session, `${runId}:failed`, 'error',
+        session.runError || snapshot.state.error || 'Agent 未能完成任务。')
     }
 
     session.activeRunId = ''
+    session.phase = ''
+    if (snapshot.state.status === 'WAITING') {
+      session.updatedAt = nowIso()
+      persist()
+      return
+    }
+    const resultMessage = markRunResult(
+      session, snapshot.state.status, boundary, task, runId)
+    session.runBoundary = 0
+    session.runError = ''
+    session.runTask = ''
+    session.runUsageBase = null
     session.updatedAt = nowIso()
     persist()
+    void refreshRunUsage(session, resultMessage?.id, usageBaseline)
+  }
+
+  function markAssistantDone(session) {
+    session.messages.forEach(message => {
+      if (message.role === 'assistant') message.streaming = false
+    })
   }
 
   function addTerminalMessage(session, id, role, content) {
@@ -491,8 +729,10 @@ export function useAgentConsole() {
     if (sequence) session.lastSequence = sequence
     handleStreamEvent(session, {
       event: envelope.type || packet.event,
-      data: envelope.data
-    }, sequence ? `${runId}:${sequence}` : '')
+      data: envelope.data,
+      runId
+    })
+    persist()
   }
 
   async function recoverMissingRun(session, runId) {
@@ -531,6 +771,8 @@ export function useAgentConsole() {
 
     const monitoring = (async () => {
       startPipeline(session)
+      // 恢复监控时旧缓存可能缺少运行边界；从当前位置起算，避免混入上一轮的操作分组
+      if (!session.runBoundary) session.runBoundary = session.messages.length
       let retryCount = 0
       while (session.activeRunId === runId) {
         try {
@@ -611,6 +853,12 @@ export function useAgentConsole() {
     sessionId.value = normalizedSessionId
     agentId.value = normalizedAgentId
     addMessage(session, 'user', task)
+    // 本轮运行的操作分组从用户消息之后开始，避免与历史轮次合并
+    session.runBoundary = session.messages.length
+    session.runError = ''
+    session.runTask = task
+    session.runUsageBase = null
+    session.phase = '正在启动任务'
     session.state = {
       status: 'RUNNING',
       iteration: (session.state?.iteration || 0) + 1,
@@ -624,11 +872,23 @@ export function useAgentConsole() {
     persist()
 
     try {
+      try {
+        const usage = await getUsage(normalizedSessionId)
+        session.runUsageBase = Number(usage?.totalTokens || 0)
+      } catch {
+        session.runUsageBase = null
+      }
+      const selectedModel = models.value.find(model => model.id === selectedModelId.value)
+      const attributes = {
+        source: 'agentos-console',
+        approvalMode: approvalMode.value
+      }
+      if (selectedModel?.modelId) attributes.model = selectedModel.modelId
       const run = await createAgentRun({
         agentId: normalizedAgentId,
         sessionId: normalizedSessionId,
         input: task,
-        attributes: { source: 'agentos-console' }
+        attributes
       })
       connection.value = 'online'
       session.activeRunId = run.runId
@@ -645,7 +905,17 @@ export function useAgentConsole() {
         error: message,
         updatedAt: nowIso()
       }
-      addMessage(session, 'error', message)
+      addMessage(session, 'error', message, {
+        runEnd: true,
+        runStatus: 'FAILED',
+        retryPrompt: task,
+        copyContent: message
+      })
+      const target = session.messages[session.messages.length - 1]
+      void refreshRunUsage(session, target.id, session.runUsageBase)
+      session.runBoundary = 0
+      session.runTask = ''
+      session.runUsageBase = null
     } finally {
       session.submitting = false
       if (!session.activeRunId) stopPipeline(session)
@@ -676,6 +946,18 @@ export function useAgentConsole() {
         addMessage(session, 'event', '操作已拒绝，任务已停止。')
       } else {
         addMessage(session, 'error', response.state.error || 'Agent 未能完成任务。')
+      }
+      if (response.state.status !== 'WAITING') {
+        const result = markRunResult(
+          session,
+          response.state.status,
+          Number(session.runBoundary || 0),
+          session.runTask || '',
+          response.invocationId || '')
+        void refreshRunUsage(session, result?.id, session.runUsageBase)
+        session.runBoundary = 0
+        session.runTask = ''
+        session.runUsageBase = null
       }
     } catch (error) {
       connection.value = error instanceof TypeError ? 'offline' : 'online'
@@ -714,7 +996,14 @@ export function useAgentConsole() {
     persist()
   }
 
+  async function retryMessage(task) {
+    if (busy.value || !String(task || '').trim()) return
+    prompt.value = String(task).trim()
+    await execute()
+  }
+
   onMounted(async () => {
+    void refreshServerModel()
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
       sessions.value = Array.isArray(stored) ? stored : []
@@ -751,9 +1040,13 @@ export function useAgentConsole() {
     agentId,
     sessionId,
     prompt,
+    models,
+    selectedModelId,
+    approvalMode,
     busy,
     connection,
     activeStage,
+    currentPhase,
     messages,
     canStop,
     runtimeState,
@@ -767,7 +1060,11 @@ export function useAgentConsole() {
     deleteSessions,
     selectSession,
     loadMoreSessions,
+    selectModel,
+    addModel,
+    setApprovalMode,
     execute,
+    retryMessage,
     cancelCurrentRun,
     resolveApproval,
     clearTranscript

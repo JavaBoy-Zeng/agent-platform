@@ -85,7 +85,7 @@ class AgentControllerStreamTest {
                             "Cache-Control", "no-cache, no-transform"))
                     .andExpect(header().string("X-Accel-Buffering", "no"))
                     .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
-                    .andExpect(content().string(containsString("event:run_started")))
+                    .andExpect(content().string(containsString("event:progress")))
                     .andExpect(content().string(containsString("event:state")))
                     .andExpect(content().string(containsString("\"status\":\"COMPLETED\"")))
                     .andExpect(content().string(containsString("\"output\":\"done\"")));

@@ -39,12 +39,36 @@ class SupervisorAgentTest {
                 search, fallbackCalls, new AtomicReference<>());
 
         AgentState result = supervisor.run(
-                AgentRequest.of("s1", "Agent 开发薪资"),
+                new AgentRequest("s1", "Agent 开发薪资",
+                        Map.of("approvalMode", "FULL_ACCESS")),
                 InvocationContext.of("supervisor-agent"), running(), event -> { });
 
         assertThat(result.output()).isEqualTo("searched");
         assertThat(search.calls).hasValue(1);
         assertThat(fallbackCalls).hasValue(0);
+    }
+
+    @Test
+    void approvalModesRouteSpecialistsThroughMainAgentToolDispatcher() {
+        StubRoutableAgent search = new StubRoutableAgent(true);
+        AtomicInteger fallbackCalls = new AtomicInteger();
+        List<AgentRunEvent> events = new ArrayList<>();
+        SupervisorAgent supervisor = supervisor(json(
+                "EXTERNAL_WORLD", "WEB_RESEARCH", "search-agent", 0.94, ""),
+                search, fallbackCalls, new AtomicReference<>());
+
+        AgentState result = supervisor.run(
+                new AgentRequest("s1", "搜索 AgentOS",
+                        Map.of("approvalMode", "REQUEST_APPROVAL")),
+                InvocationContext.of("supervisor-agent"), running(), events::add);
+
+        assertThat(result.output()).isEqualTo("fallback");
+        assertThat(search.calls).hasValue(0);
+        assertThat(fallbackCalls).hasValue(1);
+        assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.ROUTE_REJECTED)
+                .singleElement()
+                .satisfies(event -> assertThat(event.data())
+                        .containsEntry("rejectionCode", "CENTRAL_APPROVAL_REQUIRED"));
     }
 
     @Test

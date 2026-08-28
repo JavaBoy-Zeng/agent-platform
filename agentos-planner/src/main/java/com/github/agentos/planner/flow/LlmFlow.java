@@ -26,7 +26,8 @@ public final class LlmFlow {
     /** 基于当前 Agent 请求构造 LLM 请求。 */
     public LlmRequest build(AgentRequest agentRequest) {
         Objects.requireNonNull(agentRequest, "agentRequest must not be null");
-        LlmRequest request = LlmRequest.of(agentRequest.objective());
+        LlmRequest request = LlmRequest.of(agentRequest.objective()).withModel(
+                String.valueOf(agentRequest.attributes().getOrDefault("model", "")));
         for (LlmRequestProcessor processor : processors) {
             request = processor.process(request, agentRequest);
         }

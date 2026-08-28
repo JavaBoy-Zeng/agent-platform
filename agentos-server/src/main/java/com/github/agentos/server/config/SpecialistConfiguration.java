@@ -8,9 +8,10 @@ import com.github.agentos.agent.specialist.SearchAgent;
 import com.github.agentos.agent.specialist.SupervisorAgent;
 import com.github.agentos.agent.workflow.AgentToolAdapter;
 import com.github.agentos.planner.ChatClient;
+import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.builtin.file.FileWriteTool;
 import com.github.agentos.tool.builtin.shell.RunCommandTool;
-import com.github.agentos.tool.builtin.web.WebFetchTool;
+import com.github.agentos.tool.builtin.web.BrowserSearchTool;
 import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
@@ -18,7 +19,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Value;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -39,13 +42,22 @@ import java.util.Map;
 @Configuration(proxyBeanMethods = false)
 public class SpecialistConfiguration {
 
-    /** 创建信息检索 Agent；web_search 不可用时退化为 web_fetch + LLM 直答。 */
+    /** 创建信息检索 Agent；browser_search 与 web_search 同时注册时并行使用两者的结果。 */
     @Bean
     SearchAgent searchAgent(
             ChatClient chatClient,
-            ObjectProvider<WebSearchTool> webSearchProvider,
-            WebFetchTool webFetchTool) {
-        return new SearchAgent(chatClient, webSearchProvider.getIfAvailable(), webFetchTool);
+            ObjectProvider<BrowserSearchTool> browserSearchProvider,
+            ObjectProvider<WebSearchTool> webSearchProvider) {
+        List<AgentTool> searchTools = new ArrayList<>();
+        BrowserSearchTool browserSearch = browserSearchProvider.getIfAvailable();
+        if (browserSearch != null) {
+            searchTools.add(browserSearch);
+        }
+        WebSearchTool webSearch = webSearchProvider.getIfAvailable();
+        if (webSearch != null) {
+            searchTools.add(webSearch);
+        }
+        return new SearchAgent(chatClient, List.copyOf(searchTools));
     }
 
     /** 创建代码编写与执行 Agent。 */
@@ -71,7 +83,8 @@ public class SpecialistConfiguration {
     /** 把 SearchAgent 暴露为工具，供 MainAgent 规划器调用。 */
     @Bean
     AgentToolAdapter searchAgentTool(SearchAgent searchAgent) {
-        return new AgentToolAdapter(searchAgent);
+        // 搜索本身保持 LOW：RISK_BASED 可直接放行；REQUEST_APPROVAL 仍会按工具名拦截联网。
+        return new AgentToolAdapter(searchAgent, AgentTool.RiskLevel.LOW);
     }
 
     /** 把 CodeAgent 暴露为工具，供 MainAgent 规划器调用。 */
@@ -80,20 +93,20 @@ public class SpecialistConfiguration {
             "'${agentos.security.allow-host-processes:false}' == 'true' && "
                     + "'${agentos.tools.run-command.enabled:false}' == 'true'")
     AgentToolAdapter codeAgentTool(CodeAgent codeAgent) {
-        return new AgentToolAdapter(codeAgent);
+        return new AgentToolAdapter(codeAgent, AgentTool.RiskLevel.HIGH);
     }
 
     /** 把 ReportAgent 暴露为工具，供 MainAgent 规划器调用。 */
     @Bean
     AgentToolAdapter reportAgentTool(ReportAgent reportAgent) {
-        return new AgentToolAdapter(reportAgent);
+        return new AgentToolAdapter(reportAgent, AgentTool.RiskLevel.HIGH);
     }
 
     /**
      * 创建监督 Agent，作为 RoutingAgentLoop 的 fallback。
      *
-     * <p>使用单次 LLM 调用将任务分类到专业 Agent 直接执行，
-     * 复杂任务回退到 MainAgent 走完整规划循环。</p>
+     * <p>使用单次 LLM 调用完成任务分类；FULL_ACCESS 可直接派发专业 Agent，
+     * 其余权限模式与复杂任务回退到 MainAgent 的统一工具审批/续跑链路。</p>
      */
     @Bean
     SupervisorAgent supervisorAgent(

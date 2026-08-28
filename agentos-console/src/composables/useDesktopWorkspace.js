@@ -14,6 +14,7 @@ export function useDesktopWorkspace(agentConsole) {
   const workspaces = ref([])
   const associations = ref(readAssociations())
   const authorizing = ref(false)
+  const picking = ref(false)
   const error = ref('')
   const inspectorMode = ref('')
   const terminalOpen = ref(false)
@@ -67,17 +68,45 @@ export function useDesktopWorkspace(agentConsole) {
   function bindWorkspace(workspaceId) {
     if (!currentSessionId.value) return
     associations.value = { ...associations.value, [currentSessionId.value]: workspaceId }
+    error.value = ''
     try { localStorage.setItem(SESSION_WORKSPACE_KEY, JSON.stringify(associations.value)) } catch { /* local only */ }
   }
 
+  function clearWorkspace() {
+    if (!currentSessionId.value) return
+    const next = { ...associations.value }
+    delete next[currentSessionId.value]
+    associations.value = next
+    error.value = ''
+    try { localStorage.setItem(SESSION_WORKSPACE_KEY, JSON.stringify(next)) } catch { /* local only */ }
+  }
+
   async function pickWorkspace() {
-    const grantId = await ensureGrant()
-    const workspace = await invokeDesktop('pick_workspace', { grantId })
-    if (workspace) {
-      await refreshWorkspaces()
-      bindWorkspace(workspace.id)
+    if (picking.value) return null
+    picking.value = true
+    error.value = ''
+    try {
+      const grantId = await ensureGrant()
+      const workspace = await invokeDesktop('pick_workspace', { grantId })
+      if (workspace) {
+        await refreshWorkspaces()
+        bindWorkspace(workspace.id)
+      }
+      return workspace
+    } catch (cause) {
+      error.value = String(cause).replace(/^Error:\s*/, '')
+      return null
+    } finally {
+      picking.value = false
     }
-    return workspace
+  }
+
+  async function uploadAttachments() {
+    if (!currentWorkspace.value) {
+      const picked = await pickWorkspace()
+      if (!picked) return []
+    }
+    return call('upload_attachments')
   }
 
   async function forgetWorkspace(workspaceId) {
@@ -143,6 +172,7 @@ export function useDesktopWorkspace(agentConsole) {
     hasRole,
     grant,
     authorizing,
+    picking,
     error,
     workspaces,
     currentWorkspace,
@@ -150,7 +180,9 @@ export function useDesktopWorkspace(agentConsole) {
     terminalOpen,
     authorize,
     bindWorkspace,
+    clearWorkspace,
     pickWorkspace,
+    uploadAttachments,
     forgetWorkspace,
     refreshWorkspaces,
     call,

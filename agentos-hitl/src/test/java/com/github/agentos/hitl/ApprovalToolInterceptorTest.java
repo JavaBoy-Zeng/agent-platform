@@ -46,14 +46,65 @@ class ApprovalToolInterceptorTest {
         assertThat(result.result()).isNull();
     }
 
+    @Test
+    void fullAccessBypassesRiskApproval() {
+        AgentTool tool = tool("file_write", AgentTool.RiskLevel.HIGH);
+
+        ToolBeforeResult result = interceptor(AgentTool.RiskLevel.LOW).beforeExecute(
+                new ToolCall("file_write", Map.of("path", "notes.txt")),
+                context(tool, Map.of("approvalMode", "FULL_ACCESS")));
+
+        assertThat(result.proceed()).isTrue();
+    }
+
+    @Test
+    void requestApprovalGuardsInternetToolsEvenWhenLowRisk() {
+        AgentTool tool = tool("browser_search", AgentTool.RiskLevel.LOW);
+
+        ToolBeforeResult result = interceptor(AgentTool.RiskLevel.HIGH).beforeExecute(
+                new ToolCall("browser_search", Map.of("query", "AgentOS")),
+                context(tool, Map.of("approvalMode", "REQUEST_APPROVAL")));
+
+        assertThat(result.proceed()).isFalse();
+    }
+
+    @Test
+    void requestApprovalGuardsFileWrites() {
+        AgentTool tool = tool("file_write", AgentTool.RiskLevel.HIGH);
+
+        ToolBeforeResult result = interceptor(AgentTool.RiskLevel.MEDIUM).beforeExecute(
+                new ToolCall("file_write", Map.of(
+                        "path", "notes.txt", "mode", "CREATE_NEW")),
+                context(tool, Map.of("approvalMode", "REQUEST_APPROVAL")));
+
+        assertThat(result.proceed()).isFalse();
+        assertThat(result.result().actions().pendingAction().payload())
+                .containsEntry("toolName", "file_write");
+    }
+
+    @Test
+    void requestApprovalAlsoGuardsRiskyCompositeAgentTools() {
+        AgentTool tool = tool("report-agent", AgentTool.RiskLevel.HIGH);
+
+        ToolBeforeResult result = interceptor(AgentTool.RiskLevel.MEDIUM).beforeExecute(
+                new ToolCall("report-agent", Map.of("objective", "写报告")),
+                context(tool, Map.of("approvalMode", "REQUEST_APPROVAL")));
+
+        assertThat(result.proceed()).isFalse();
+    }
+
     private static ApprovalToolInterceptor interceptor(AgentTool.RiskLevel threshold) {
         return new ApprovalToolInterceptor(
                 new RiskPolicy(threshold), new ApprovalService(request -> false));
     }
 
     private static ToolContext context(AgentTool tool) {
+        return context(tool, Map.of());
+    }
+
+    private static ToolContext context(AgentTool tool, Map<String, Object> attributes) {
         return new ToolContext(
-                AgentRequest.of("session-1", "test"),
+                new AgentRequest("session-1", "test", attributes),
                 InvocationContext.of("main-agent"),
                 "plan-1",
                 "step-1",
@@ -63,8 +114,12 @@ class ApprovalToolInterceptorTest {
     }
 
     private static AgentTool tool(AgentTool.RiskLevel riskLevel) {
+        return tool("test", riskLevel);
+    }
+
+    private static AgentTool tool(String name, AgentTool.RiskLevel riskLevel) {
         return new AgentTool() {
-            @Override public String name() { return "test"; }
+            @Override public String name() { return name; }
             @Override public String description() { return "test tool"; }
             @Override public RiskLevel riskLevel() { return riskLevel; }
             @Override public ToolResult execute(ToolContext context, ToolCall call) { return ToolResult.success("ok"); }

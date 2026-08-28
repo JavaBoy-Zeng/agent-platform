@@ -35,10 +35,17 @@ public final class AgentToolAdapter implements AgentTool {
     public static final String SESSION_ID_PARAMETER = "sessionId";
 
     private final BaseAgent agent;
+    private final RiskLevel riskLevel;
 
-    /** 创建以工具形态暴露指定 Agent 的适配器。 */
+    /** 创建以低风险工具形态暴露指定 Agent 的适配器。 */
     public AgentToolAdapter(BaseAgent agent) {
+        this(agent, RiskLevel.LOW);
+    }
+
+    /** 创建以指定风险等级暴露指定 Agent 的适配器。 */
+    public AgentToolAdapter(BaseAgent agent, RiskLevel riskLevel) {
         this.agent = Objects.requireNonNull(agent, "agent must not be null");
+        this.riskLevel = Objects.requireNonNull(riskLevel, "riskLevel must not be null");
     }
 
     /** 返回被包装的 Agent。 */
@@ -54,6 +61,11 @@ public final class AgentToolAdapter implements AgentTool {
     @Override
     public String description() {
         return agent.description();
+    }
+
+    @Override
+    public RiskLevel riskLevel() {
+        return riskLevel;
     }
 
     @Override
@@ -78,7 +90,10 @@ public final class AgentToolAdapter implements AgentTool {
         String sessionId = call.arguments().get(SESSION_ID_PARAMETER) instanceof String value
                 && !value.isBlank() ? value
                         : "agent-tool-" + UUID.randomUUID();
-        AgentRequest request = AgentRequest.of(sessionId, text);
+        // 权限模式、模型选择和会话历史属于本次运行的安全与推理上下文，
+        // 包装为子 Agent 后仍必须原样传递，不能悄悄退回默认策略。
+        AgentRequest request = new AgentRequest(
+                sessionId, text, toolContext.request().attributes());
         InvocationContext context = toolContext.invocation().withAgentId(agent.id());
         AgentState state = agent.run(
                 request, context, AgentState.ready().startNextIteration(), AgentEventSink.NOOP);

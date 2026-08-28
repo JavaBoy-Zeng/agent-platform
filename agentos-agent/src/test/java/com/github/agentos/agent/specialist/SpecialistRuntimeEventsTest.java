@@ -25,14 +25,19 @@ class SpecialistRuntimeEventsTest {
         ChatClient chatClient = (sessionId, request) -> modelCalls.getAndIncrement() == 0
                 ? "AgentOS"
                 : "AgentOS 是一个 Agent 平台。";
-        AgentTool webSearch = tool("web_search", ToolResult.success(
-                "https://example.com/agentos 搜索结果\n"
-                        + "https://example.org/agentos 另一条搜索结果"));
-        AgentTool webFetch = tool("web_fetch", ToolResult.success(
-                "AgentOS 页面正文与产品说明。".repeat(30)));
+        AgentTool browserSearch = tool("browser_search", ToolResult.success("""
+                1. AgentOS 平台
+                   https://example.com/agentos
+                   AgentOS 是一个 Agent 平台的搜索结果摘要
+                """));
+        AgentTool webSearch = tool("web_search", ToolResult.success("""
+                1. AgentOS 介绍
+                   https://example.org/agentos
+                   AgentOS 页面正文与产品说明的搜索结果摘要
+                """));
         List<AgentRunEvent> events = new ArrayList<>();
 
-        AgentState result = new SearchAgent(chatClient, webSearch, webFetch).run(
+        AgentState result = new SearchAgent(chatClient, List.of(browserSearch, webSearch)).run(
                 AgentRequest.of("session-1", "搜索 AgentOS 是什么"),
                 InvocationContext.of(SearchAgent.ID),
                 AgentState.ready().startNextIteration(),
@@ -48,15 +53,12 @@ class SpecialistRuntimeEventsTest {
                 AgentRunEvent.Type.TOOL_STARTED,
                 AgentRunEvent.Type.TOOL_FINISHED,
                 AgentRunEvent.Type.OBSERVATION,
-                AgentRunEvent.Type.TOOL_STARTED,
-                AgentRunEvent.Type.TOOL_FINISHED,
-                AgentRunEvent.Type.OBSERVATION,
                 AgentRunEvent.Type.OUTPUT_DELTA,
                 AgentRunEvent.Type.DECISION,
                 AgentRunEvent.Type.RUN_COMPLETED);
         assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.TOOL_STARTED)
                 .extracting(event -> event.data().get("toolName"))
-                .containsExactly("web_search", "web_fetch", "web_fetch");
+                .containsExactly("browser_search", "web_search");
     }
 
     @Test

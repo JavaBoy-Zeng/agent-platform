@@ -86,7 +86,8 @@ public final class ModelStreamingAgentFinalizer implements AgentFinalizer {
 
                         [候选答案]
                         %s
-                        """.formatted(request.objective(), boundedDraft))));
+                        """.formatted(request.objective(), boundedDraft))))
+                .withModel(String.valueOf(request.attributes().getOrDefault("model", "")));
         BoundedDeltaConsumer bounded = new BoundedDeltaConsumer(
                 context, onDelta, maxAnswerLength);
         chatClient.chatStream(request.sessionId(), finalRequest, bounded);

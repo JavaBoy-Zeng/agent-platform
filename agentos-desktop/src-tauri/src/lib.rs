@@ -34,6 +34,7 @@ pub fn run() {
             workspace::revoke_workspace,
             workspace::pick_workspace,
             workspace::list_workspaces,
+            workspace::upload_attachments,
             workspace::forget_workspace,
             workspace::list_directory,
             workspace::read_file,

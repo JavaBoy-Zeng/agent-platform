@@ -159,7 +159,7 @@ class BackgroundAgentRunControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(content().string(not(containsString("id:1\n"))))
                     .andExpect(content().string(containsString("id:2")))
-                    .andExpect(content().string(containsString("event:output_delta")))
+                    .andExpect(content().string(containsString("event:assistant_message")))
                     .andExpect(content().string(containsString("event:state")))
                     .andExpect(content().string(containsString("\"lastSequence\":3")));
         }

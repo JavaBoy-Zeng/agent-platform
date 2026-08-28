@@ -1,15 +1,19 @@
 <script setup>
+import { ref } from 'vue'
 import { renderMarkdown } from '../utils/markdown.js'
+import OperationGroup from './OperationGroup.vue'
 import { useLocale } from '../composables/useLocale.js'
 
 const { localeTag, t } = useLocale()
 
 defineProps({
   messages: { type: Array, required: true },
-  busy: { type: Boolean, default: false }
+  busy: { type: Boolean, default: false },
+  phase: { type: String, default: '' }
 })
 
-defineEmits(['clear', 'resolve-approval'])
+const emit = defineEmits(['clear', 'resolve-approval', 'retry'])
+const copiedMessageId = ref('')
 
 function timeLabel(value) {
   return new Intl.DateTimeFormat(localeTag.value, {
@@ -25,6 +29,37 @@ function roleLabel(role) {
     approval: 'APPROVAL REQUIRED',
     error: 'SYSTEM ERROR'
   }[role] || role
+}
+
+function toggleOps(message) {
+  message.expanded = !message.expanded
+}
+
+function resultStatus(message) {
+  if (message.runStatus === 'CANCELLED') return t('手动终止输出')
+  if (message.runStatus === 'FAILED') return t('异常返回')
+  return ''
+}
+
+async function copyMessage(message) {
+  const content = String(message.copyContent || message.content || '')
+  if (!content) return
+  try {
+    await navigator.clipboard.writeText(content)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = content
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    textarea.remove()
+  }
+  copiedMessageId.value = message.id
+  window.setTimeout(() => {
+    if (copiedMessageId.value === message.id) copiedMessageId.value = ''
+  }, 1600)
 }
 </script>
 
@@ -52,7 +87,7 @@ function roleLabel(role) {
 
       <article v-for="(message, index) in messages" :key="message.id"
                class="message" :class="`message-${message.role}`">
-        <header>
+        <header v-if="message.role !== 'ops'">
           <span class="message-sequence">{{ String(index + 1).padStart(2, '0') }}</span>
           <strong>{{ roleLabel(message.role) }}</strong>
           <time>{{ timeLabel(message.createdAt) }}</time>
@@ -96,16 +131,39 @@ function roleLabel(role) {
             {{ t(message.approved ? '已批准并恢复执行' : '已拒绝') }}
           </span>
         </div>
-        <div
-          v-else
-          class="message-content markdown-body"
-          v-html="renderMarkdown(message.content)"
-        ></div>
+        <OperationGroup
+          v-else-if="message.role === 'ops'"
+          :kind="message.kind"
+          :items="message.items"
+          :expanded="message.expanded"
+          @toggle="toggleOps(message)"
+        />
+        <template v-else>
+          <div class="message-content markdown-body" v-html="renderMarkdown(message.content)"></div>
+          <footer v-if="message.runEnd" class="answer-actions" :class="{ abnormal: message.runStatus !== 'COMPLETED' }">
+            <span v-if="resultStatus(message)" class="answer-status">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v8M8 12h8" /></svg>{{ resultStatus(message) }}
+            </span>
+            <span v-if="resultStatus(message)" class="answer-divider" aria-hidden="true"></span>
+            <button type="button" :aria-label="t('复制回答')" :title="t('复制回答')" @click="copyMessage(message)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v10H8zM6 16H4V4h12v2" /></svg>
+              <span class="sr-only">{{ copiedMessageId === message.id ? t('已复制') : t('复制回答') }}</span>
+            </button>
+            <button type="button" :disabled="busy || !message.retryPrompt" :aria-label="t('重试')" :title="t('重试')" @click="emit('retry', message.retryPrompt)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6" /></svg>
+            </button>
+            <span v-if="message.tokenUsage !== undefined" class="answer-token">
+              {{ t('消耗') }} <b aria-hidden="true">✦</b> {{ Number(message.tokenUsage || 0).toLocaleString(localeTag) }} token
+            </span>
+          </footer>
+        </template>
       </article>
 
       <article v-if="busy" class="message message-agent message-pending">
         <header><span class="message-sequence">··</span><strong>MAIN AGENT</strong><time>PROCESSING</time></header>
-        <div class="thinking-line"><i></i><i></i><i></i><span>{{ t('Agent Loop 正在运行') }}</span></div>
+        <div class="thinking-line">
+          <i></i><i></i><i></i><span>{{ phase || t('Agent Loop 正在运行') }}</span>
+        </div>
       </article>
     </div>
   </section>

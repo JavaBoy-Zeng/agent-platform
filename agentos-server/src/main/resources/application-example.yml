@@ -139,6 +139,12 @@ agentos:
       endpoint: "https://api.tavily.com/search"
       api-key: "${AGENTOS_WEB_SEARCH_API_KEY:}"
       timeout-seconds: 20
+    browser-search:
+      # 主要的网页浏览器搜索工具：SearXNG（Docker 镜像 searxng/searxng:latest）。
+      # 需先部署 SearXNG 并在 settings.yml 中启用 JSON 输出格式（search.formats 含 json），
+      # 否则调用会返回 HTTP 403；部署方式见 docker/searxng/。
+      endpoint: "${AGENTOS_BROWSER_SEARCH_ENDPOINT:http://localhost:8888/search}"
+      timeout-seconds: 20
     firecrawl:
       # 配置 API Key 后自动注册 web_crawl 与 web_map；自部署且未启用认证时可显式开启。
       enabled: false

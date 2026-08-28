@@ -7,6 +7,7 @@ import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
+import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolParameter;
 import com.github.agentos.tool.api.ToolResult;
@@ -37,6 +38,7 @@ class AgentToolAdapterTest {
     @Test
     void executesWrappedAgentWithObjectiveArgument() {
         List<String> objectives = new java.util.ArrayList<>();
+        List<Map<String, Object>> attributes = new java.util.ArrayList<>();
         AgentToolAdapter adapter = new AgentToolAdapter(
                 new BaseAgent("research-agent", "research helper", List.of()) {
                     @Override
@@ -44,18 +46,33 @@ class AgentToolAdapterTest {
                             AgentRequest request, InvocationContext context,
                             AgentState runningState, AgentEventSink eventSink) {
                         objectives.add(request.objective());
+                        attributes.add(request.attributes());
                         assertThat(request.sessionId()).isEqualTo("session-9");
                         return runningState.complete("research result");
                     }
                 });
 
-        ToolResult result = adapter.execute(context(adapter), new ToolCall("research-agent", Map.of(
+        ToolResult result = adapter.execute(
+                context(adapter, Map.of("approvalMode", "REQUEST_APPROVAL")),
+                new ToolCall("research-agent", Map.of(
                 AgentToolAdapter.OBJECTIVE_PARAMETER, "研究一下 JVM",
                 AgentToolAdapter.SESSION_ID_PARAMETER, "session-9")));
 
         assertThat(result.success()).isTrue();
         assertThat(result.output()).isEqualTo("research result");
         assertThat(objectives).containsExactly("研究一下 JVM");
+        assertThat(attributes).singleElement()
+                .satisfies(value -> assertThat(value)
+                        .containsEntry("approvalMode", "REQUEST_APPROVAL"));
+    }
+
+    @Test
+    void exposesConfiguredRiskLevel() {
+        AgentToolAdapter adapter = new AgentToolAdapter(
+                scripted("report-agent", state -> state.complete("done")),
+                AgentTool.RiskLevel.HIGH);
+
+        assertThat(adapter.riskLevel()).isEqualTo(AgentTool.RiskLevel.HIGH);
     }
 
     @Test
@@ -95,8 +112,13 @@ class AgentToolAdapterTest {
     }
 
     private static ToolContext context(AgentToolAdapter adapter) {
+        return context(adapter, Map.of());
+    }
+
+    private static ToolContext context(
+            AgentToolAdapter adapter, Map<String, Object> attributes) {
         return new ToolContext(
-                AgentRequest.of("session-9", "test"),
+                new AgentRequest("session-9", "test", attributes),
                 InvocationContext.of("main-agent"),
                 "", "", AgentExecutionLimits.defaults(), Map.of(), adapter);
     }

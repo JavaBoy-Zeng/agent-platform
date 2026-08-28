@@ -1,0 +1,13 @@
+# SearXNG 最小配置：在默认配置基础上启用 JSON 输出格式，
+# 供 AgentOS browser_search 工具（GET /search?q=...&format=json）调用。
+# 生产环境请务必修改 secret_key（openssl rand -hex 32）。
+use_default_settings: true
+
+server:
+  secret_key: "agentos-searxng-change-me"
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json

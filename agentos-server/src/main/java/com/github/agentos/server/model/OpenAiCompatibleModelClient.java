@@ -218,8 +218,8 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
 
         23. 区分“打开界面”和“获取内容”这两类动作：
             用 run_command 启动浏览器只产生 GUI 副作用，页面内容不会回到你的上下文。
-            当用户要求基于网上资料回答时，必须用 web_fetch（或已注册的 web_search）
-            真实取回正文，再基于返回内容作答。
+            当用户要求基于网上资料回答时，必须用已注册的搜索工具
+            （browser_search 或 web_search）真实取回结果，再基于返回内容作答。
             禁止在没有取回内容的情况下声称已经检索、已参考资料或已核对来源；
             若只用内部知识作答，必须如实说明这一点。
             同时，工具清单里存在联网工具时，不得声称“当前环境不支持联网检索”。
@@ -315,10 +315,11 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             throw new ModelClientException("Cannot create a model plan because no tools are registered");
         }
 
+        String model = modelFor(request);
         HttpRequest httpRequest = createHttpRequest(request);
         long requestStarted = System.nanoTime();
         LOGGER.info("[model-call] started sessionId={} model={} endpoint={} replanning={}",
-                request.agentRequest().sessionId(), properties.getModel(), properties.getEndpoint(),
+                request.agentRequest().sessionId(), model, properties.getEndpoint(),
                 request.replanning());
         try {
             HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -328,7 +329,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             ModelPlan plan = parseResponse(response.body());
             notifyUsage(request, response.body());
             LOGGER.info("[model-call] finished sessionId={} model={} status={} type={} outcome={} stepCount={} durationMs={}",
-                    request.agentRequest().sessionId(), properties.getModel(), response.statusCode(),
+                    request.agentRequest().sessionId(), model, response.statusCode(),
                     plan.type(), plan.outcome(), plan.steps() == null ? 0 : plan.steps().size(),
                     elapsedMillis(requestStarted));
             return plan;
@@ -351,7 +352,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             if (prompt > 0 || completion > 0) {
                 usageListener.onUsage(request.agentRequest().sessionId(),
                         new com.github.agentos.kernel.ModelUsage(
-                                properties.getModel(), prompt, completion));
+                                modelFor(request), prompt, completion));
             }
         } catch (RuntimeException exception) {
             LOGGER.debug("[model-call] usage parsing skipped: {}", exception.getMessage());
@@ -381,7 +382,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 request.agentRequest().sessionId(), prompt.length(), properties.getMaxPromptChars(),
                 request.replanning());
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", properties.getModel());
+        body.put("model", modelFor(request));
         body.put("messages", List.of(
                 Map.of("role", "system", "content", SYSTEM_PROMPT),
                 Map.of("role", "user", "content", prompt)));
@@ -398,6 +399,12 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             body.put("reasoning_split", true);
         }
         return body;
+    }
+
+    private String modelFor(PlanningRequest request) {
+        Object requested = request.agentRequest().attributes().get("model");
+        return requested == null || String.valueOf(requested).isBlank()
+                ? properties.getModel() : String.valueOf(requested).trim();
     }
 
     /**

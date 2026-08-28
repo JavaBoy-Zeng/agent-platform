@@ -24,7 +24,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.Map;
 import java.util.Objects;
 
-/** 使用结构化作用域和能力决策派发专业 Agent，并在执行前拒绝错误路由。 */
+/** 使用结构化作用域和能力决策派发专业 Agent，并统一受限模式下的工具审批边界。 */
 public final class SupervisorAgent implements Agent, AgentLoop {
     public static final String ID = "supervisor-agent";
     public static final double DEFAULT_MIN_CONFIDENCE = 0.75;
@@ -153,11 +153,26 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             return rejectAndFallback(request, context, runningState, eventSink,
                     "AGENT_REJECTED", acceptance.reason(), decision);
         }
+        if (requiresCentralToolDispatch(request)) {
+            // 专业 Agent 内部仍有少量直连工具调用，直接派发会绕开 ToolDispatcher 的
+            // HITL 拦截器。非 FULL_ACCESS 模式统一回到 MainAgent，让专业 Agent 作为
+            // 带风险等级的工具执行，从而在任何文件写入、命令或联网动作前先挂起审批。
+            return rejectAndFallback(request, context, runningState, eventSink,
+                    "CENTRAL_APPROVAL_REQUIRED",
+                    "当前权限模式要求通过统一工具审批链执行", decision);
+        }
 
         LOGGER.info("[supervisor] dispatching sessionId={} target={} scope={} confidence={}",
                 request.sessionId(), decision.targetAgent(), decision.scope(), decision.confidence());
         return specialistLoop.run(request, context.withAgentId(decision.targetAgent()),
                 runningState, eventSink);
+    }
+
+    private static boolean requiresCentralToolDispatch(AgentRequest request) {
+        Object configured = request.attributes().getOrDefault("approvalMode", "RISK_BASED");
+        String mode = String.valueOf(configured).trim()
+                .toUpperCase(java.util.Locale.ROOT);
+        return !"FULL_ACCESS".equals(mode);
     }
 
     private SupervisorRouteDecision parseDecision(String raw) {

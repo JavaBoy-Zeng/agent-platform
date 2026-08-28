@@ -5,14 +5,18 @@ import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.InvocationContext;
+import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.runtime.ToolDispatcher;
+import com.github.agentos.tool.runtime.ToolEventSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -96,16 +100,14 @@ public final class PlanExecutor {
                     request.sessionId(), context.invocationId(), plan.id(), index + 1,
                     plan.steps().size(), step.id(),
                     step.toolCall().toolName(), step.optional(), logValue(step.description()));
+            Map<String, Object> startedData = toolEventData(plan.id(), step);
+            startedData.put("position", index + 1);
+            startedData.put("stepCount", plan.steps().size());
             emit(eventSink, AgentRunEvent.of(
                     AgentRunEvent.Type.TOOL_STARTED,
                     request.sessionId(),
                     step.description(),
-                    java.util.Map.of(
-                            "planId", plan.id(),
-                            "stepId", step.id(),
-                            "toolName", step.toolCall().toolName(),
-                            "position", index + 1,
-                            "stepCount", plan.steps().size())));
+                    startedData));
 
             int attempts = 0;
             while (true) {
@@ -166,13 +168,10 @@ public final class PlanExecutor {
                             AgentRunEvent.Type.TOOL_FINISHED,
                             request.sessionId(),
                             "工具执行完成",
-                            java.util.Map.of(
-                                    "planId", plan.id(),
-                                    "stepId", step.id(),
-                                    "toolName", step.toolCall().toolName(),
-                                    "toolCount", batchSize,
-                                    "status", StepStatus.COMPLETED.name(),
-                                    "attempts", attempts)));
+                            finishedData(
+                                    plan.id(), step, batchSize,
+                                    StepStatus.COMPLETED.name(), attempts,
+                                    summarizeResults(toolResults), null)));
                     break;
                 }
 
@@ -204,13 +203,11 @@ public final class PlanExecutor {
                         AgentRunEvent.Type.TOOL_FINISHED,
                         request.sessionId(),
                         toolResult.error(),
-                        java.util.Map.of(
-                                "planId", plan.id(),
-                                "stepId", step.id(),
-                                "toolName", step.toolCall().toolName(),
-                                "status", lastResult.status().name(),
-                                "failureType", lastResult.failureType().name(),
-                                "attempts", attempts)));
+                        finishedData(
+                                plan.id(), step, batchSize,
+                                lastResult.status().name(), attempts,
+                                ToolEventSupport.summarize(toolResult),
+                                lastResult.failureType().name())));
                 if (decision.action() == FailureAction.SKIP) {
                     break;
                 }
@@ -227,6 +224,49 @@ public final class PlanExecutor {
 
         return ExecutionResult.completed(
                 plan.id(), results, lastStep, lastResult, processedSteps, toolCalls);
+    }
+
+    /** 构造携带真实工具调用参数的 TOOL_STARTED 事件数据。 */
+    private static Map<String, Object> toolEventData(String planId, PlanStep step) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("planId", planId);
+        data.put("stepId", step.id());
+        data.put("toolName", step.toolCall().toolName());
+        data.put("arguments", ToolEventSupport.abbreviateArguments(step.toolCall()));
+        List<Map<String, Object>> toolCalls = new ArrayList<>();
+        for (ToolCall call : step.toolCalls()) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("toolName", call.toolName());
+            entry.put("arguments", ToolEventSupport.abbreviateArguments(call));
+            toolCalls.add(entry);
+        }
+        data.put("toolCalls", toolCalls);
+        return data;
+    }
+
+    /** 构造携带结果摘要的 TOOL_FINISHED 事件数据。 */
+    private static Map<String, Object> finishedData(
+            String planId, PlanStep step, int toolCount, String status,
+            int attempts, String summary, String failureType) {
+        Map<String, Object> data = toolEventData(planId, step);
+        data.put("toolCount", toolCount);
+        data.put("status", status);
+        data.put("success", StepStatus.COMPLETED.name().equals(status));
+        data.put("summary", summary == null ? "" : summary);
+        data.put("attempts", attempts);
+        if (failureType != null) {
+            data.put("failureType", failureType);
+        }
+        return data;
+    }
+
+    private static String summarizeResults(List<ToolResult> results) {
+        String joined = results.stream()
+                .map(ToolEventSupport::summarize)
+                .filter(summary -> !summary.isBlank())
+                .reduce((left, right) -> left + "；" + right)
+                .orElse("");
+        return joined.length() <= 300 ? joined : joined.substring(0, 300) + "…";
     }
 
     private static void logFailure(

@@ -25,6 +25,7 @@ import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.runtime.ToolEventSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -156,6 +157,11 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
                     Path.of(System.getProperty("user.dir")), document.fileName());
             String fileName = filePath.getFileName().toString();
 
+            Map<String, Object> writeArguments = Map.of(
+                    "path", filePath.toString(),
+                    "content", document.content(),
+                    "mode", "CREATE_NEW",
+                    "createParentDirectories", true);
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.TOOL_STARTED,
                     request.sessionId(),
@@ -165,13 +171,11 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
                             "planId", planId,
                             "stepId", writeStepId,
                             "toolName", "file_write",
+                            "arguments", ToolEventSupport.abbreviateArguments(writeArguments),
                             "position", 1,
                             "stepCount", 1)));
             ToolResult writeResult = callTool(fileWriteTool, "file_write",
-                    Map.of("path", filePath.toString(),
-                            "content", document.content(),
-                            "mode", "CREATE_NEW",
-                            "createParentDirectories", true),
+                    writeArguments,
                     request, context);
 
             eventSink.emit(AgentRunEvent.of(
@@ -183,7 +187,10 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
                             "planId", planId,
                             "stepId", writeStepId,
                             "toolName", "file_write",
+                            "arguments", ToolEventSupport.abbreviateArguments(writeArguments),
                             "status", writeResult.success() ? "COMPLETED" : "FAILED",
+                            "success", writeResult.success(),
+                            "summary", ToolEventSupport.summarize(writeResult),
                             "attempts", 1)));
             if (!writeResult.success()) {
                 String error = "文档写入失败: " + writeResult.error();

@@ -25,11 +25,13 @@ import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.runtime.ToolEventSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -46,8 +48,9 @@ import java.util.regex.Pattern;
 /**
  * 信息检索专家 Agent。
  *
- * <p>接收一个检索目标，通过 web_search 搜索候选来源，再用 web_fetch 获取详细内容。
- * 只有至少两个不同站点的正文通过质量校验后，才会交给 LLM 整理摘要；否则以失败结束，
+ * <p>接收一个检索目标，用注入的全部搜索工具（browser_search、web_search）执行查询，
+ * 把各工具返回的标题、链接与摘要按站点去重后合并为候选来源；
+ * 只有至少两个不同站点的结果时，才交给 LLM 整理摘要；否则以失败结束，
  * 不允许模型猜测 URL 或用自身知识伪装成检索结果。</p>
  *
  * <p>该 Agent 通过 {@link com.github.agentos.agent.workflow.AgentToolAdapter} 暴露为
@@ -61,49 +64,37 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
     private static final String SYSTEM_INSTRUCTION = """
             你是信息检索专家。根据用户目标：
             1. 生成一个简洁的搜索关键词
-            2. 搜索并获取多个独立来源的网页内容
-            3. 只根据提供的有效来源整理结构化摘要，并附来源链接
+            2. 用全部已注册的搜索工具查询，获得多个独立站点的结果
+            3. 只根据提供的有效搜索结果整理结构化摘要，并附来源链接
             不得猜测 URL，不得把模型自身知识描述成检索结果，只返回最终摘要。
             """;
     private static final int MIN_VALID_SOURCES = 2;
-    private static final int MAX_SOURCE_CANDIDATES = 5;
-    private static final int MIN_CONTENT_CHARS = 200;
-    private static final int MAX_CONTENT_CHARS_PER_SOURCE = 4_000;
+    private static final int MAX_SOURCES_PER_TOOL = 5;
+    private static final int MAX_CONTENT_CHARS_PER_SOURCE = 1_000;
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final long INITIAL_RETRY_DELAY_MILLIS = 100L;
-    private static final Pattern URL_PATTERN = Pattern.compile(
-            "https?://[^\\s\\\"'<>\\]）)]+", Pattern.CASE_INSENSITIVE);
-    private static final List<String> INVALID_CONTENT_MARKERS = List.of(
-            "加载中", "请稍候", "验证码", "访问验证", "安全验证", "人机验证",
-            "请启用 javascript", "enable javascript", "captcha", "access denied",
-            "just a moment", "robot check", "verify you are human");
+    private static final Pattern ENTRY_PATTERN = Pattern.compile("^\\d+\\.\\s*(.*)$");
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SearchAgent.class);
 
     private final ChatClient chatClient;
     private final LlmFlow llmFlow;
-    private final AgentTool webSearchTool;
-    private final AgentTool webFetchTool;
+    private final List<AgentTool> searchTools;
 
-    /** 创建信息检索 Agent。webSearchTool 可为 null，但运行检索时会明确报告配置缺失。 */
-    public SearchAgent(
-            ChatClient chatClient,
-            AgentTool webSearchTool,
-            AgentTool webFetchTool) {
-        this(chatClient, defaultFlow(), webSearchTool, webFetchTool);
+    /** 创建信息检索 Agent；searchTools 为按优先级排列的搜索工具，可为空但检索时会报告配置缺失。 */
+    public SearchAgent(ChatClient chatClient, List<AgentTool> searchTools) {
+        this(chatClient, defaultFlow(), searchTools);
     }
 
     /** 创建使用自定义请求构造链的检索 Agent。 */
     public SearchAgent(
             ChatClient chatClient,
             LlmFlow llmFlow,
-            AgentTool webSearchTool,
-            AgentTool webFetchTool) {
+            List<AgentTool> searchTools) {
         super(ID, "Search the web for information and summarize results", List.of());
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
         this.llmFlow = Objects.requireNonNull(llmFlow, "llmFlow must not be null");
-        this.webSearchTool = webSearchTool;
-        this.webFetchTool = webFetchTool;
+        this.searchTools = List.copyOf(Objects.requireNonNull(searchTools, "searchTools must not be null"));
     }
 
     private static LlmFlow defaultFlow() {
@@ -170,12 +161,12 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
         }
 
         String planId = "search-" + UUID.randomUUID();
-        int plannedToolSteps = 1 + MAX_SOURCE_CANDIDATES;
+        int plannedToolSteps = searchTools.size();
         try {
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.PLAN_CREATED,
                     request.sessionId(),
-                    "生成检索词、获取至少两个有效网络来源并整理回答",
+                    "生成检索词、用全部搜索工具查询并整理回答",
                     Map.of(
                             "agentId", ID,
                             "planId", planId,
@@ -199,44 +190,33 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
                 throw new SearchEvidenceException("SEARCH_QUERY_EMPTY", "模型未生成有效搜索关键词");
             }
 
-            ToolResult searchResult = callObservedTool(webSearchTool, "web_search",
-                    Map.of("query", searchQuery, "max_results", MAX_SOURCE_CANDIDATES),
-                    request, context, eventSink, planId, "search-web", 1,
-                    plannedToolSteps, "搜索网络资料：" + searchQuery);
-            if (!searchResult.success()) {
-                throw new SearchEvidenceException(
-                        "SEARCH_PROVIDER_FAILED", "网络搜索失败：" + searchResult.error());
-            }
-
-            List<String> candidateUrls = extractDistinctSourceUrls(searchResult.output());
-            if (candidateUrls.isEmpty()) {
-                throw new SearchEvidenceException(
-                        "INSUFFICIENT_SEARCH_EVIDENCE", "搜索结果中没有可抓取的有效 URL");
-            }
-
-            List<SearchSource> validSources = new ArrayList<>();
-            for (int index = 0;
-                 index < candidateUrls.size() && validSources.size() < MIN_VALID_SOURCES;
-                 index++) {
+            Map<String, SearchSource> sourcesByHost = new LinkedHashMap<>();
+            List<String> failedTools = new ArrayList<>();
+            for (int index = 0; index < searchTools.size(); index++) {
                 context.throwIfCancelled();
-                String url = candidateUrls.get(index);
-                String stepId = "fetch-result-" + (index + 1);
-                ToolResult fetchResult = callObservedTool(webFetchTool, "web_fetch",
-                        Map.of("url", url), request, context, eventSink, planId,
-                        stepId, index + 2, plannedToolSteps,
-                        "抓取候选来源 " + (index + 1));
-                if (!fetchResult.success()) {
+                AgentTool tool = searchTools.get(index);
+                String stepId = "search-" + (index + 1);
+                ToolResult searchResult = callObservedTool(tool,
+                        Map.of("query", searchQuery, "max_results", MAX_SOURCES_PER_TOOL),
+                        request, context, eventSink, planId, stepId, index + 1,
+                        plannedToolSteps, "搜索网络资料：" + searchQuery);
+                if (!searchResult.success()) {
+                    failedTools.add(tool.name() + "：" + searchResult.error());
                     continue;
                 }
-                ContentValidation validation = validateFetchedContent(fetchResult.output());
-                if (!validation.valid()) {
-                    emitRejectedContent(
-                            request, eventSink, planId, stepId, url, validation.reason());
-                    continue;
-                }
-                validSources.add(new SearchSource(url, validation.normalizedContent()));
+                collectSources(searchResult.output(), sourcesByHost);
             }
 
+            if (sourcesByHost.isEmpty()) {
+                if (failedTools.isEmpty()) {
+                    throw new SearchEvidenceException(
+                            "INSUFFICIENT_SEARCH_EVIDENCE", "搜索结果中没有有效条目");
+                }
+                throw new SearchEvidenceException(
+                        "SEARCH_PROVIDER_FAILED", "网络搜索失败：" + String.join("；", failedTools));
+            }
+
+            List<SearchSource> validSources = List.copyOf(sourcesByHost.values());
             if (validSources.size() < MIN_VALID_SOURCES) {
                 throw new SearchEvidenceException(
                         "INSUFFICIENT_SEARCH_EVIDENCE",
@@ -253,8 +233,8 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
                         .append("\n\n");
             }
 
-            String summarizePrompt = "只根据以下已经过质量校验的独立来源，整理一份关于目标的摘要。"
-                    + "包含关键发现，并保留每个来源的原始链接；不得补充来源之外的事实：\n"
+            String summarizePrompt = "只根据以下来自多个搜索工具的独立站点结果，整理一份关于目标的摘要。"
+                    + "包含关键发现，并保留每个来源的原始链接；不得补充结果之外的事实：\n"
                     + "目标：" + objective + "\n\n" + contextBuilder;
             LlmRequest summarizeRequest = new LlmRequest(SYSTEM_INSTRUCTION,
                     List.of(LlmMessage.user(summarizePrompt)));
@@ -337,21 +317,67 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
     }
 
     private void requireSearchTools() {
-        if (webSearchTool == null) {
+        if (searchTools.isEmpty()) {
             throw new SearchEvidenceException(
                     "SEARCH_UNAVAILABLE",
-                    "web_search 未配置，无法执行可靠的多来源检索；请配置搜索服务 API Key");
-        }
-        if (webFetchTool == null) {
-            throw new SearchEvidenceException(
-                    "SEARCH_UNAVAILABLE", "web_fetch 未配置，无法验证搜索结果正文");
+                    "搜索工具未配置（browser_search / web_search），无法执行多来源检索");
         }
     }
 
-    /** 调用工具；仅对短暂故障和超时进行最多三次指数退避重试。 */
+    /** 解析搜索工具输出中的结果条目，按站点去重后合并进 sourcesByHost。 */
+    private static void collectSources(String output, Map<String, SearchSource> sourcesByHost) {
+        if (output == null || output.isBlank()) {
+            return;
+        }
+        Set<String> seenUrls = new LinkedHashSet<>();
+        String[] lines = output.split("\n");
+        int index = 0;
+        while (index < lines.length) {
+            Matcher entryStart = ENTRY_PATTERN.matcher(lines[index].trim());
+            if (!entryStart.matches()) {
+                index++;
+                continue;
+            }
+            String title = entryStart.group(1).trim();
+            String url = "";
+            StringBuilder snippet = new StringBuilder();
+            index++;
+            while (index < lines.length && !ENTRY_PATTERN.matcher(lines[index].trim()).matches()) {
+                String line = lines[index].trim();
+                if (url.isEmpty() && line.matches("https?://.*")) {
+                    url = stripTrailingPunctuation(line);
+                } else if (!line.isEmpty()) {
+                    snippet.append(line).append(' ');
+                }
+                index++;
+            }
+            if (url.isEmpty()) {
+                continue;
+            }
+            String host = hostOf(url);
+            if (host == null || !seenUrls.add(url)) {
+                continue;
+            }
+            String content = (title + " " + snippet).replaceAll("\\s+", " ").trim();
+            SearchSource candidate = new SearchSource(url, content);
+            if (!sourcesByHost.containsKey(host)) {
+                sourcesByHost.put(host, candidate);
+            }
+        }
+    }
+
+    private static String hostOf(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host == null || host.isBlank() ? null : host.toLowerCase(Locale.ROOT);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    /** 调用工具；仅对短暂故障和超时进行最多三次指数退避重试。事件标签取自注入工具的实际名称。 */
     private ToolResult callObservedTool(
             AgentTool tool,
-            String toolName,
             Map<String, Object> arguments,
             AgentRequest request,
             InvocationContext context,
@@ -361,6 +387,7 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
             int position,
             int stepCount,
             String description) {
+        String toolName = tool.name();
         eventSink.emit(AgentRunEvent.of(
                 AgentRunEvent.Type.TOOL_STARTED,
                 request.sessionId(),
@@ -370,6 +397,7 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
                         "planId", planId,
                         "stepId", stepId,
                         "toolName", toolName,
+                        "arguments", ToolEventSupport.abbreviateArguments(arguments),
                         "position", position,
                         "stepCount", stepCount)));
         ToolResult result;
@@ -377,7 +405,7 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
         do {
             context.throwIfCancelled();
             attempts++;
-            result = callTool(tool, toolName, arguments, request, context);
+            result = callTool(tool, arguments, request, context);
             if (result.success() || !isRetryable(result.failureType())
                     || attempts >= MAX_RETRY_ATTEMPTS) {
                 break;
@@ -396,7 +424,10 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
                         "planId", planId,
                         "stepId", stepId,
                         "toolName", toolName,
+                        "arguments", ToolEventSupport.abbreviateArguments(arguments),
                         "status", result.success() ? "COMPLETED" : "FAILED",
+                        "success", result.success(),
+                        "summary", ToolEventSupport.summarize(result),
                         "attempts", attempts)));
         String observation = result.success()
                 ? toolName + " 执行成功，返回 " + result.output().length() + " 个字符"
@@ -417,16 +448,16 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
     }
 
     private ToolResult callTool(
-            AgentTool tool, String toolName,
+            AgentTool tool,
             Map<String, Object> arguments,
             AgentRequest request, InvocationContext context) {
         try {
             ToolContext toolContext = new ToolContext(
                     request, context, "", "",
                     AgentExecutionLimits.defaults(), Map.of(), tool);
-            return tool.execute(toolContext, new ToolCall(toolName, arguments));
+            return tool.execute(toolContext, new ToolCall(tool.name(), arguments));
         } catch (Exception exception) {
-            LOGGER.warn("[search-agent] tool {} failed: {}", toolName, safeMessage(exception));
+            LOGGER.warn("[search-agent] tool {} failed: {}", tool.name(), safeMessage(exception));
             return ToolResult.failure(ToolFailureType.TOOL_INTERNAL_ERROR, safeMessage(exception));
         }
     }
@@ -518,67 +549,6 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
         context.throwIfCancelled();
     }
 
-    private static void emitRejectedContent(
-            AgentRequest request,
-            AgentEventSink eventSink,
-            String planId,
-            String stepId,
-            String url,
-            String reason) {
-        eventSink.emit(AgentRunEvent.of(
-                AgentRunEvent.Type.OBSERVATION,
-                request.sessionId(),
-                "候选来源正文无效，继续尝试其他来源：" + reason,
-                Map.of(
-                        "agentId", ID,
-                        "planId", planId,
-                        "stepId", stepId,
-                        "toolName", "web_fetch",
-                        "status", "REJECTED",
-                        "failureType", ToolFailureType.INVALID_ARGUMENT.name(),
-                        "url", url,
-                        "reason", reason)));
-    }
-
-    private static ContentValidation validateFetchedContent(String content) {
-        String normalized = content == null ? "" : content.replaceAll("\\s+", " ").trim();
-        if (normalized.length() < MIN_CONTENT_CHARS) {
-            return ContentValidation.invalid(
-                    "正文仅 " + normalized.length() + " 个字符，少于 " + MIN_CONTENT_CHARS);
-        }
-        String lower = normalized.toLowerCase(Locale.ROOT);
-        for (String marker : INVALID_CONTENT_MARKERS) {
-            if (lower.contains(marker)) {
-                return ContentValidation.invalid("正文包含无效页面标记：" + marker);
-            }
-        }
-        return ContentValidation.valid(normalized);
-    }
-
-    /** 提取 URL，并按站点去重，确保后续来源相互独立。 */
-    private static List<String> extractDistinctSourceUrls(String text) {
-        if (text == null || text.isBlank()) {
-            return List.of();
-        }
-        List<String> urls = new ArrayList<>();
-        Set<String> hosts = new LinkedHashSet<>();
-        Matcher matcher = URL_PATTERN.matcher(text);
-        while (matcher.find() && urls.size() < MAX_SOURCE_CANDIDATES) {
-            String url = stripTrailingPunctuation(matcher.group());
-            try {
-                URI uri = URI.create(url);
-                String host = uri.getHost();
-                if (host != null && !host.isBlank()
-                        && hosts.add(host.toLowerCase(Locale.ROOT))) {
-                    urls.add(url);
-                }
-            } catch (IllegalArgumentException ignored) {
-                // 搜索服务可能返回格式损坏的链接，跳过并尝试下一个来源。
-            }
-        }
-        return List.copyOf(urls);
-    }
-
     private static String stripTrailingPunctuation(String url) {
         int end = url.length();
         while (end > 0 && ".,;:!?，。；：！？".indexOf(url.charAt(end - 1)) >= 0) {
@@ -608,16 +578,6 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
     }
 
     private record SearchSource(String url, String content) {
-    }
-
-    private record ContentValidation(boolean valid, String normalizedContent, String reason) {
-        private static ContentValidation valid(String content) {
-            return new ContentValidation(true, content, "");
-        }
-
-        private static ContentValidation invalid(String reason) {
-            return new ContentValidation(false, "", reason);
-        }
     }
 
     private static final class SearchEvidenceException extends RuntimeException {

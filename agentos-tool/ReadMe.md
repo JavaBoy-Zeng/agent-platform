@@ -47,6 +47,7 @@
 | `run_command` | 宿主机 Shell；严格模式默认不注册，因为工作目录不等于文件系统沙箱。 |
 | `web_fetch` | 抓取单个网页正文并截断，受超时限制。 |
 | `web_search` | Tavily 搜索；未配置 API Key 时不注册。 |
+| `browser_search` | 主要的网页浏览器搜索工具：自部署 SearXNG 元搜索引擎聚合 Google、Bing、DuckDuckGo 等结果；无需 API Key，但需先部署 `searxng/searxng:latest` 并启用 JSON 输出。 |
 | `web_map` | 通过 Firecrawl 发现站内 URL、标题与描述，不下载全部页面正文。 |
 | `web_crawl` | 通过 Firecrawl 创建并轮询网站遍历任务，返回有界的多页 Markdown 正文。 |
 | `git_commit` | 本地 Git 提交；仓库必须位于文件根目录内，且仅允许开启宿主机进程时注册。 |

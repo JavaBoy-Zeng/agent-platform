@@ -54,14 +54,15 @@ class OpenAiCompatibleChatClientTest {
         ChatClient client = new OpenAiCompatibleChatClient(
                 HttpClient.newHttpClient(), objectMapper, properties);
         LlmRequest request = LlmRequest.of("什么是 JVM")
-                .withSystemInstruction("你是直答助手");
+                .withSystemInstruction("你是直答助手")
+                .withModel("minimax-h3");
         String answer = client.chat("s1", request);
 
         assertThat(answer).isEqualTo("JVM 是 Java 虚拟机。");
         assertThat(authorization.get()).isEqualTo("Bearer test-key");
 
         JsonNode sent = objectMapper.readTree(requestBody.get());
-        assertThat(sent.path("model").stringValue()).isEqualTo("test-chat-model");
+        assertThat(sent.path("model").stringValue()).isEqualTo("minimax-h3");
         assertThat(sent.path("messages").path(0).path("role").stringValue()).isEqualTo("system");
         assertThat(sent.path("messages").path(0).path("content").stringValue())
                 .isEqualTo("你是直答助手");

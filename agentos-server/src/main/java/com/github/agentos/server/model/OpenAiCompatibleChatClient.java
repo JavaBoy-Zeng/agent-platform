@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -91,10 +92,11 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     public ChatResponse chatDetails(String sessionId, LlmRequest request) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         validateRequest(request);
+        String model = modelFor(request);
         HttpRequest httpRequest = createHttpRequest(sessionId, request, false);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-call] started sessionId={} model={} endpoint={}",
-                sessionId, properties.getEffectiveChatModel(), properties.getEndpoint());
+                sessionId, model, properties.getEndpoint());
         try {
             HttpResponse<String> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -105,10 +107,10 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             }
             JsonNode root = parseJson(response.body());
             String answer = extractAnswer(root);
-            ModelUsage usage = extractUsage(root);
+            ModelUsage usage = extractUsage(root, model);
             notifyUsage(sessionId, usage);
             LOGGER.info("[chat-call] finished sessionId={} model={} status={} answerChars={} usage={} durationMs={}",
-                    sessionId, properties.getEffectiveChatModel(), response.statusCode(),
+                    sessionId, model, response.statusCode(),
                     answer.length(), usage == null ? "n/a" : usage.totalTokens(),
                     elapsedMillis(requestStarted));
             return new ChatResponse(answer, usage);
@@ -127,10 +129,11 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         Objects.requireNonNull(onDelta, "onDelta must not be null");
         validateRequest(request);
+        String model = modelFor(request);
         HttpRequest httpRequest = createHttpRequest(sessionId, request, true);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-stream] started sessionId={} model={}",
-                sessionId, properties.getEffectiveChatModel());
+                sessionId, model);
         StringBuilder answer = new StringBuilder();
         ReasoningFilter filter = new ReasoningFilter(answer, onDelta);
         ModelUsage[] usage = {null};
@@ -138,12 +141,17 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             HttpResponse<Stream<String>> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofLines());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String errorBody;
+                try (Stream<String> errorLines = response.body()) {
+                    errorBody = errorLines.collect(Collectors.joining("\n"));
+                }
                 throw new ModelClientException(
-                        "Chat endpoint returned HTTP " + response.statusCode());
+                        "Chat endpoint returned HTTP " + response.statusCode()
+                                + errorDetail(errorBody));
             }
             try (Stream<String> lines = response.body()) {
                 lines.forEach(line -> consumeSseLine(
-                        sessionId, line, filter, usage));
+                        sessionId, line, filter, usage, model));
             }
             filter.finish();
             if (answer.isEmpty()) {
@@ -169,7 +177,8 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             String sessionId,
             String line,
             ReasoningFilter filter,
-            ModelUsage[] usage) {
+            ModelUsage[] usage,
+            String model) {
         if (line == null || !line.startsWith("data:")) {
             return;
         }
@@ -185,7 +194,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             return;
         }
         if (usage[0] == null) {
-            ModelUsage parsed = extractUsage(root);
+            ModelUsage parsed = extractUsage(root, model);
             if (parsed != null) {
                 usage[0] = parsed;
             }
@@ -309,7 +318,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     private HttpRequest createHttpRequest(
             String sessionId, LlmRequest request, boolean stream) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", properties.getEffectiveChatModel());
+        body.put("model", modelFor(request));
         body.put("messages", requestMessages(request));
         if (stream) {
             body.put("stream", true);
@@ -425,7 +434,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         return value;
     }
 
-    private ModelUsage extractUsage(JsonNode root) {
+    private ModelUsage extractUsage(JsonNode root, String model) {
         JsonNode usage = root.path("usage");
         if (usage.isMissingNode() || usage.isNull()) {
             return null;
@@ -435,7 +444,12 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         if (prompt <= 0 && completion <= 0) {
             return null;
         }
-        return new ModelUsage(properties.getEffectiveChatModel(), prompt, completion);
+        return new ModelUsage(model, prompt, completion);
+    }
+
+    private String modelFor(LlmRequest request) {
+        return request.model() == null || request.model().isBlank()
+                ? properties.getEffectiveChatModel() : request.model();
     }
 
     private String errorDetail(String responseBody) {
@@ -443,8 +457,11 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             return "";
         }
         try {
-            String message = textValue(
-                    objectMapper.readTree(responseBody).path("error").get("message"));
+            JsonNode root = objectMapper.readTree(responseBody);
+            String message = textValue(root.path("error").get("message"));
+            if (message == null) {
+                message = textValue(root.path("base_resp").get("status_msg"));
+            }
             return message == null ? "" : ": " + abbreviate(message);
         } catch (JacksonException ignored) {
             return "";

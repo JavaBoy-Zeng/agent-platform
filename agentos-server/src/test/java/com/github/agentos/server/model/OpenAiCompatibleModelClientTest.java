@@ -78,6 +78,7 @@ class OpenAiCompatibleModelClientTest {
         assertThat(authorization.get()).isEqualTo("Bearer test-key");
 
         JsonNode sent = objectMapper.readTree(requestBody.get());
+        assertThat(sent.path("model").stringValue()).isEqualTo("minimax-h3");
         assertThat(sent.path("messages").path(0).path("content").stringValue())
                 .contains(
                         "hasMore=true", "nextPage", "nextOffset",
@@ -263,7 +264,8 @@ class OpenAiCompatibleModelClientTest {
         assertThat(objectMapper.readTree(requestBody.get())
                 .path("messages").path(0).path("content").stringValue())
                 .contains("页面内容不会回到你的上下文")
-                .contains("web_fetch")
+                .contains("browser_search")
+                .contains("web_search")
                 .contains("禁止在没有取回内容的情况下声称已经检索")
                 .contains("不得声称“当前环境不支持联网检索”");
     }
@@ -326,7 +328,7 @@ class OpenAiCompatibleModelClientTest {
 
     private static PlanningRequest planningRequestWithRiskyTool(int maxSteps) {
         return new PlanningRequest(
-                AgentRequest.of("session-1", "hello"),
+                new AgentRequest("session-1", "hello", Map.of("model", "minimax-h3")),
                 InvocationContext.of("main-agent"),
                 MemoryContext.empty(false),
                 null,

@@ -22,6 +22,7 @@ import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
 import com.github.agentos.tool.api.ToolFailureType;
 import com.github.agentos.tool.api.ToolResult;
+import com.github.agentos.tool.runtime.ToolEventSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -363,6 +364,7 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
                         "planId", planId,
                         "stepId", stepId,
                         "toolName", toolName,
+                        "arguments", ToolEventSupport.abbreviateArguments(arguments),
                         "position", position,
                         "stepCount", stepCount)));
         ToolResult result = callTool(tool, toolName, arguments, request, context);
@@ -375,7 +377,10 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
                         "planId", planId,
                         "stepId", stepId,
                         "toolName", toolName,
+                        "arguments", ToolEventSupport.abbreviateArguments(arguments),
                         "status", result.success() ? "COMPLETED" : "FAILED",
+                        "success", result.success(),
+                        "summary", ToolEventSupport.summarize(result),
                         "attempts", 1)));
         eventSink.emit(AgentRunEvent.of(
                 AgentRunEvent.Type.OBSERVATION,

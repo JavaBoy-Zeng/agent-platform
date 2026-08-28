@@ -10,10 +10,12 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRunStatus;
+import com.github.agentos.kernel.ChatStreamEvent;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
+import com.github.agentos.server.run.ChatEventMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
@@ -30,7 +32,6 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Map;
-import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -158,7 +159,16 @@ public class AgentController {
 
     private static void sendEvent(
             SseEmitter emitter, AtomicBoolean connected, AgentRunEvent event) {
-        send(emitter, connected, event.type().name().toLowerCase(Locale.ROOT), event);
+        ChatStreamEvent chatEvent;
+        try {
+            chatEvent = ChatEventMapper.map(event);
+        } catch (RuntimeException exception) {
+            return;
+        }
+        if (chatEvent == null) {
+            return;
+        }
+        send(emitter, connected, ChatEventMapper.eventName(chatEvent), chatEvent);
     }
 
     private static void send(

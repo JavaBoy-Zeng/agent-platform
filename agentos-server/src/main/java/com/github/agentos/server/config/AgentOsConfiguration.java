@@ -48,8 +48,8 @@ import com.github.agentos.tool.builtin.file.FileSearchTool;
 import com.github.agentos.tool.builtin.file.FileWriteTool;
 import com.github.agentos.tool.builtin.git.GitCommitTool;
 import com.github.agentos.tool.builtin.shell.RunCommandTool;
+import com.github.agentos.tool.builtin.web.BrowserSearchTool;
 import com.github.agentos.tool.builtin.web.WebCrawlTool;
-import com.github.agentos.tool.builtin.web.WebFetchTool;
 import com.github.agentos.tool.builtin.web.WebMapTool;
 import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.annotation.Value;
@@ -174,16 +174,16 @@ public class AgentOsConfiguration {
     }
 
 
-    /** 创建网页抓取工具，限制响应大小并转为纯文本。 */
-    @Bean
-    WebFetchTool webFetchTool(
-            @Value("${agentos.tools.web-fetch.timeout-seconds:20}") long timeoutSeconds,
-            @Value("${agentos.tools.web-fetch.max-chars:12000}") int maxChars) {
-        return new WebFetchTool(
-                java.net.http.HttpClient.newBuilder().followRedirects(
-                        java.net.http.HttpClient.Redirect.NORMAL).build(),
-                java.time.Duration.ofSeconds(timeoutSeconds), maxChars);
-    }
+//    /** 创建网页抓取工具，限制响应大小并转为纯文本。 */
+//    @Bean
+//    WebFetchTool webFetchTool(
+//            @Value("${agentos.tools.web-fetch.timeout-seconds:20}") long timeoutSeconds,
+//            @Value("${agentos.tools.web-fetch.max-chars:12000}") int maxChars) {
+//        return new WebFetchTool(
+//                java.net.http.HttpClient.newBuilder().followRedirects(
+//                        java.net.http.HttpClient.Redirect.NORMAL).build(),
+//                java.time.Duration.ofSeconds(timeoutSeconds), maxChars);
+//    }
 
     /** 仅在配置了搜索 API Key 时注册 Tavily 网页搜索工具。 */
     @Bean
@@ -197,6 +197,23 @@ public class AgentOsConfiguration {
         return new WebSearchTool(
                 java.net.http.HttpClient.newHttpClient(), objectMapper, endpoint,
                 apiKey, java.time.Duration.ofSeconds(timeoutSeconds));
+    }
+
+    /**
+     * 注册 SearXNG 网页浏览器搜索工具，作为系统主要的网页搜索工具。
+     *
+     * <p>SearXNG 为自部署服务（镜像 {@code searxng/searxng:latest}），无需 API Key，
+     * 因此无条件注册；工具名 {@code browser_search} 与 Tavily 的
+     * {@code web_search} 互不冲突。</p>
+     */
+    @Bean
+    BrowserSearchTool browserSearchTool(
+            tools.jackson.databind.ObjectMapper objectMapper,
+            @Value("${agentos.tools.browser-search.endpoint:http://localhost:8888/search}") String endpoint,
+            @Value("${agentos.tools.browser-search.timeout-seconds:20}") long timeoutSeconds) {
+        return new BrowserSearchTool(
+                java.net.http.HttpClient.newHttpClient(), objectMapper, endpoint,
+                java.time.Duration.ofSeconds(timeoutSeconds));
     }
 
     /** 使用 Firecrawl 遍历网站并抓取多个页面正文。 */

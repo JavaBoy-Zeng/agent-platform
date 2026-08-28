@@ -26,7 +26,15 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
     /** 高风险调用未获批准时返回挂起动作，恢复后允许真实工具执行。 */
     @Override
     public ToolBeforeResult beforeExecute(ToolCall call, ToolContext context) {
-        if (!riskPolicy.requiresApproval(context.invocation(), context.tool(), call)) {
+        String approvalMode = String.valueOf(
+                context.request().attributes().getOrDefault("approvalMode", "RISK_BASED"));
+        boolean requiresApproval = switch (approvalMode.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "FULL_ACCESS" -> false;
+            case "REQUEST_APPROVAL" -> requiresExplicitApproval(context.tool().name())
+                    || riskPolicy.requiresApproval(context.invocation(), context.tool(), call);
+            default -> riskPolicy.requiresApproval(context.invocation(), context.tool(), call);
+        };
+        if (!requiresApproval) {
             return ToolBeforeResult.allow();
         }
         if (context.invocation().invocation() != null
@@ -44,5 +52,16 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
                         "arguments", call.arguments(),
                         "riskLevel", context.tool().riskLevel().name()));
         return ToolBeforeResult.shortCircuit(ToolResult.pending(action));
+    }
+
+    private static boolean requiresExplicitApproval(String toolName) {
+        String normalized = toolName == null
+                ? "" : toolName.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.equals("file_write")
+                || normalized.equals("run_command")
+                || normalized.contains("browser")
+                || normalized.contains("search")
+                || normalized.contains("http")
+                || normalized.contains("web");
     }
 }

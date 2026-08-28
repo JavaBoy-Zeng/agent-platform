@@ -147,12 +147,17 @@ public final class ToolDispatcher {
         if (context.invocation().invocation() == null) {
             return;
         }
-        Map<String, Object> data = result == null
-                ? Map.of("planId", context.planId(), "stepId", context.stepId(),
-                        "toolName", call.toolName())
-                : Map.of("planId", context.planId(), "stepId", context.stepId(),
-                        "toolName", call.toolName(), "success", result.success(),
-                        "failureType", result.failureType().name());
+        // 事件数据必须携带真实调用参数与结果摘要，供前端展示和会话历史重建执行记录。
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("planId", context.planId());
+        data.put("stepId", context.stepId());
+        data.put("toolName", call.toolName());
+        data.put("arguments", ToolEventSupport.abbreviateArguments(call));
+        if (result != null) {
+            data.put("success", result.success());
+            data.put("failureType", result.failureType().name());
+            data.put("summary", ToolEventSupport.summarize(result));
+        }
         AgentEvent event = DefaultAgentEvent.of(
                 context.invocation(), type, message, data, eventActions);
         try {

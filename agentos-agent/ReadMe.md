@@ -94,3 +94,6 @@ Agent，并把 COMPLETED 状态映射为工具成功、其余状态映射为结�
 
 生产环境需通过 `AGENTOS_WEB_SEARCH_API_KEY` 配置 Tavily Key；未配置时
 `web_search` 不会注册，检索任务会以 `SEARCH_UNAVAILABLE` 明确失败。
+
+检索默认优先使用 `browser_search`（自部署 SearXNG，`docker/searxng/` 一键启动），
+未注册该工具时才回退 `web_search`。

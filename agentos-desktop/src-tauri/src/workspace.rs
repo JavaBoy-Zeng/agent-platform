@@ -256,6 +256,14 @@ pub struct FileContent {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UploadedAttachment {
+    name: String,
+    relative_path: String,
+    size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitStatusEntry {
     path: String,
     old_path: Option<String>,
@@ -468,6 +476,61 @@ pub fn list_workspaces(
         .collect::<Vec<_>>();
     values.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
     Ok(values)
+}
+
+#[tauri::command]
+pub async fn upload_attachments(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+) -> Result<Vec<UploadedAttachment>, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    let Some(picked) = app.dialog().file().blocking_pick_files() else {
+        return Ok(Vec::new());
+    };
+    let mut uploaded = Vec::with_capacity(picked.len());
+    for selected in picked {
+        let source = selected
+            .into_path()
+            .map_err(|error| format!("无法读取所选附件：{error}"))?
+            .canonicalize()
+            .map_err(|error| format!("无法打开所选附件：{error}"))?;
+        if !source.is_file() {
+            return Err("附件必须是文件".to_string());
+        }
+        let file_name = source
+            .file_name()
+            .and_then(OsStr::to_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "附件名称无效".to_string())?;
+        let destination = if source.parent() == Some(workspace.root.as_path()) {
+            source.clone()
+        } else {
+            unique_attachment_path(&workspace.root, file_name)
+        };
+        if source != destination {
+            fs::copy(&source, &destination)
+                .map_err(|error| format!("无法上传附件 {file_name}：{error}"))?;
+        }
+        let size = destination
+            .metadata()
+            .map_err(|error| format!("无法读取附件信息：{error}"))?
+            .len();
+        let stored_name = destination
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or(file_name)
+            .to_string();
+        uploaded.push(UploadedAttachment {
+            name: stored_name.clone(),
+            relative_path: stored_name,
+            size,
+        });
+    }
+    Ok(uploaded)
 }
 
 #[tauri::command]
@@ -904,6 +967,29 @@ fn validate_relative(value: &str) -> Result<PathBuf, String> {
         return Err("路径必须位于工作区内".to_string());
     }
     Ok(path)
+}
+
+fn unique_attachment_path(root: &Path, file_name: &str) -> PathBuf {
+    let requested = root.join(file_name);
+    if !requested.exists() {
+        return requested;
+    }
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("attachment");
+    let extension = path.extension().and_then(OsStr::to_str);
+    for suffix in 1..10_000 {
+        let candidate = match extension {
+            Some(value) => root.join(format!("{stem} ({suffix}).{value}")),
+            None => root.join(format!("{stem} ({suffix})")),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    root.join(format!("{}-{}", Uuid::new_v4(), file_name))
 }
 
 fn file_entry(root: &Path, entry: fs::DirEntry) -> Result<FileEntry, String> {
