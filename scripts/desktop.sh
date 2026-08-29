@@ -18,6 +18,8 @@ BACKUP_APP=""
 INSTALL_STARTED=false
 BUILD_ONLY=false
 LAUNCH_AFTER_INSTALL=true
+DESKTOP_SOURCE_FINGERPRINT=""
+BUILT_APP_FINGERPRINT=""
 
 log() {
     printf '[desktop-deploy] %s\n' "$*"
@@ -28,10 +30,60 @@ fail() {
     exit 1
 }
 
+sha256_file() {
+    shasum -a 256 "$1" | awk '{print $1}'
+}
+
+fingerprint_files() {
+    local path
+    local file
+    {
+        for path in "$@"; do
+            if [[ -f "$path" ]]; then
+                printf '%s\n' "$path"
+            elif [[ -d "$path" ]]; then
+                find "$path" -type f \
+                    ! -path '*/target/*' \
+                    ! -path '*/node_modules/*' \
+                    ! -path '*/dist/*' \
+                    ! -name '.DS_Store' -print
+            fi
+        done
+    } | LC_ALL=C sort -u | while IFS= read -r file; do
+        printf '%s  %s\n' "$(sha256_file "$file")" "$file"
+    done | shasum -a 256 | awk '{print $1}'
+}
+
+desktop_source_fingerprint() {
+    fingerprint_files \
+        "$CONSOLE_MODULE/package.json" "$CONSOLE_MODULE/package-lock.json" \
+        "$CONSOLE_MODULE/index.html" "$CONSOLE_MODULE/vite.config.js" \
+        "$CONSOLE_MODULE/src" \
+        "$DESKTOP_MODULE/package.json" "$DESKTOP_MODULE/package-lock.json" \
+        "$DESKTOP_MODULE/src" "$TAURI_MODULE/Cargo.toml" \
+        "$TAURI_MODULE/Cargo.lock" "$TAURI_MODULE/build.rs" \
+        "$TAURI_MODULE/tauri.conf.json" "$TAURI_MODULE/src"
+}
+
+app_fingerprint() {
+    local app_path="$1"
+    local file
+    (
+        cd "$app_path"
+        find . -type f ! -name '.DS_Store' -print \
+            | LC_ALL=C sort \
+            | while IFS= read -r file; do
+                printf '%s  %s\n' "$(sha256_file "$file")" "$file"
+            done \
+            | shasum -a 256 \
+            | awk '{print $1}'
+    )
+}
+
 usage() {
     cat <<'EOF'
 用法：
-  ./scripts/deploy-desktop-mac.sh [--build-only] [--no-launch]
+  ./scripts/desktop.sh [--build-only] [--no-launch]
 
 选项：
   --build-only  只测试并构建 AgentOS.app，不安装到 /Applications。
@@ -94,7 +146,7 @@ preflight() {
     [[ -f "$DESKTOP_MODULE/package-lock.json" ]] || fail "缺少桌面端 package-lock.json"
     [[ -f "$TAURI_MODULE/Cargo.lock" ]] || fail "缺少 Cargo.lock"
 
-    for required_command in node npm cargo rustc curl ditto plutil codesign; do
+    for required_command in node npm cargo rustc curl ditto plutil codesign shasum; do
         command -v "$required_command" >/dev/null || fail "找不到 $required_command"
     done
 
@@ -113,6 +165,9 @@ preflight() {
 }
 
 run_tests_and_build() {
+    local source_before
+
+    source_before="$(desktop_source_fingerprint)"
     log "安装锁定的 Vue 依赖并运行测试"
     cd "$CONSOLE_MODULE"
     npm ci
@@ -130,7 +185,17 @@ run_tests_and_build() {
 
     log "构建绑定 $SERVER_URL 的 AgentOS.app"
     cd "$DESKTOP_MODULE"
+    # 每次先移除这个精确的 bundle，避免 Tauri 构建异常时误用上次的 .app。
+    [[ "$BUILT_APP" == "$TAURI_MODULE/target/release/bundle/macos/AgentOS.app" ]] \
+        || fail "桌面构建产物路径异常，拒绝清理：$BUILT_APP"
+    rm -rf "$BUILT_APP"
     AGENTOS_DESKTOP_SERVER_URL="$SERVER_URL" npm run build
+    [[ -d "$BUILT_APP" ]] || fail "本次构建没有生成 AgentOS.app"
+
+    DESKTOP_SOURCE_FINGERPRINT="$(desktop_source_fingerprint)"
+    [[ "$source_before" == "$DESKTOP_SOURCE_FINGERPRINT" ]] \
+        || fail "桌面端源码在构建期间发生变化，请重新部署"
+    BUILT_APP_FINGERPRINT="$(app_fingerprint "$BUILT_APP")"
 }
 
 validate_app() {
@@ -169,6 +234,12 @@ quit_running_app() {
 
 install_app() {
     local timestamp
+    local installed_fingerprint
+
+    [[ "$(desktop_source_fingerprint)" == "$DESKTOP_SOURCE_FINGERPRINT" ]] \
+        || fail "桌面端源码在构建后发生变化，拒绝安装旧产物"
+    [[ "$(app_fingerprint "$BUILT_APP")" == "$BUILT_APP_FINGERPRINT" ]] \
+        || fail "AgentOS.app 在构建后发生变化，拒绝安装"
 
     STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentos-desktop-stage.XXXXXX")"
     STAGED_APP="$STAGE_DIR/AgentOS.app"
@@ -191,6 +262,9 @@ install_app() {
     log "安装新版桌面端到 $INSTALLED_APP"
     mv "$STAGED_APP" "$INSTALLED_APP"
     validate_app "$INSTALLED_APP"
+    installed_fingerprint="$(app_fingerprint "$INSTALLED_APP")"
+    [[ "$installed_fingerprint" == "$BUILT_APP_FINGERPRINT" ]] \
+        || fail "安装后的 AgentOS.app 与本次构建产物不一致"
     INSTALL_STARTED=false
 
     if [[ "$LAUNCH_AFTER_INSTALL" == true ]]; then
@@ -213,6 +287,7 @@ main() {
 
     if [[ "$BUILD_ONLY" == true ]]; then
         log "桌面端构建成功"
+        log "应用指纹：$BUILT_APP_FINGERPRINT"
         log "产物：$BUILT_APP"
         return
     fi

@@ -81,6 +81,8 @@ public final class AgentInvocation {
     public PendingActionResolution resolution() { return resolution; }
     public void waitFor(PendingAction action) { pendingAction = action; }
     public void resolve(PendingActionResolution value) { resolution = value; }
+    /** 清空挂起动作——审批恢复后由 Agent 在执行工具前调用，避免拦截器二次拦截。 */
+    public void clearPendingAction() { pendingAction = null; }
     /** 仅消费一次与当前挂起动作和工具调用完全匹配的批准结果。 */
     public synchronized boolean consumeApproval(
             String toolName, java.util.Map<String, Object> arguments) {

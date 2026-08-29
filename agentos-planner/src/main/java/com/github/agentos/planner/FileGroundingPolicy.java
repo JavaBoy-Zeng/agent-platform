@@ -45,8 +45,11 @@ final class FileGroundingPolicy {
     private static final Set<String> FILE_OBJECTIVE_SIGNALS = Set.of(
             "文件", "简历", "文档", "附件", "文本");
     private static final Set<String> FILE_EVIDENCE_ACTIONS = Set.of(
-            "读取", "阅读", "查看", "检查", "核对", "验证", "搜索", "查找", "提取", "列出",
+            "读取", "阅读", "查看", "检查", "核对", "验证", "提取", "列出",
             "内容", "里面", "文中", "包含", "是否", "有吗", "有没有", "哪些", "哪几");
+    private static final Pattern FILE_SCOPED_SEARCH = Pattern.compile(
+            "(?:在|从)?(?:这个|该|上述|本地)?(?:文件|文档|附件|简历)(?:中|里|内)?(?:搜索|查找)"
+                    + "|(?:搜索|查找)(?:这个|该|上述|本地)?(?:文件|文档|附件|简历)(?:中|里|内)?");
     private static final Set<String> NEGATIVE_SIGNALS = Set.of(
             "没有", "不在", "未包含", "不包含", "无匹配", "未找到", "不存在", "并非");
     private static final Set<String> FILE_ACCESS_DENIAL_SIGNALS = Set.of(
@@ -70,15 +73,17 @@ final class FileGroundingPolicy {
         if (modelPlan.outcome() != PlanOutcome.COMPLETE) {
             return modelPlan;
         }
-        if (requiresFreshFileEvidence(request)
-                && !hasFreshFileEvidence(request.executionSnapshot())
+        boolean fileGrounded = requiresFreshFileEvidence(request);
+        if (fileGrounded && !hasFreshFileEvidence(request.executionSnapshot())
                 && !isFileAccessBoundaryAnswer(modelPlan)) {
             return initialReadPlan(request, toolRegistry).orElseThrow(() ->
                     new PlanValidationException(List.of(
                             "file-grounded completion requires a current file_read/file_search observation")));
         }
 
-        List<String> unsupported = unsupportedOrganizations(modelPlan, request);
+        List<String> unsupported = fileGrounded
+                ? unsupportedOrganizations(modelPlan, request)
+                : List.of();
         if (!unsupported.isEmpty()) {
             if (!hasCompletedFileRead(request.executionSnapshot())) {
                 Optional<ModelPlan> readPlan = initialReadPlan(request, toolRegistry);
@@ -116,7 +121,8 @@ final class FileGroundingPolicy {
         }
         String objective = request.agentRequest().objective().toLowerCase(Locale.ROOT);
         return (FILE_OBJECTIVE_SIGNALS.stream().anyMatch(objective::contains)
-                && FILE_EVIDENCE_ACTIONS.stream().anyMatch(objective::contains))
+                && (FILE_EVIDENCE_ACTIONS.stream().anyMatch(objective::contains)
+                        || FILE_SCOPED_SEARCH.matcher(objective).find()))
                 || findFilePath(objective).isPresent();
     }
 

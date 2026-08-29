@@ -33,7 +33,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(properties = "agentos.memory.mode=memory")
+@SpringBootTest(properties = {
+        "agentos.memory.mode=memory",
+        // 本测试断言 MainAgent 的计划-执行事件流，锁定 plan 模式，
+        // 与默认 loop 模式（agentos.agent.loop.mode）解耦。
+        "agentos.agent.loop.mode=plan"
+})
 @Import(AgentRunnerIntegrationTest.ScriptedModelConfiguration.class)
 class AgentRunnerIntegrationTest {
 

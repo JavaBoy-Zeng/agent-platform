@@ -25,6 +25,8 @@ import com.github.agentos.memory.RuleBasedMemoryModel;
 import com.github.agentos.memory.HashingMemoryEmbedding;
 import com.github.agentos.memory.OpenAiCompatibleMemoryModel;
 import com.github.agentos.memory.OpenAiCompatibleMemoryEmbedding;
+import com.github.agentos.server.persistence.mybatis.MemoryRecordMapper;
+import com.github.agentos.server.persistence.mybatis.MybatisMemoryStore;
 import com.github.agentos.planner.*;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.AgentRunCoordinator;
@@ -53,9 +55,11 @@ import com.github.agentos.tool.builtin.web.WebCrawlTool;
 import com.github.agentos.tool.builtin.web.WebMapTool;
 import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import tools.jackson.databind.ObjectMapper;
 
 import java.nio.file.Path;
 import java.net.URI;
@@ -94,6 +98,17 @@ public class AgentOsConfiguration {
     @Bean
     WeatherTool weatherTool() {
         return new WeatherTool();
+    }
+
+    /**
+     * 放宽 multipart 上传限制以支持会话附件接口（默认 1MB 过小）。
+     *
+     * @return multipart 上限配置
+     */
+    @Bean
+    jakarta.servlet.MultipartConfigElement multipartConfigElement() {
+        return new jakarta.servlet.MultipartConfigElement(
+                "", 25L * 1024 * 1024, 60L * 1024 * 1024, 0);
     }
 
     /** 创建返回当前日期（年月日+星期）的内置工具。 */
@@ -295,17 +310,14 @@ public class AgentOsConfiguration {
     /**
      * 创建统一记忆服务。
      *
-     * @param mode          存储模式：{@code memory}、{@code file} 或 {@code sqlite}
-     * @param dataDirectory 文件模式的数据目录
-     * @param databaseFile  SQLite 模式的数据库文件
+     * @param mode 存储模式：正式运行使用 {@code postgresql}，{@code memory} 仅用于测试
      * @return 记忆服务
      */
     @Bean(destroyMethod = "close")
     MemoryService memoryService(
-            FileAccessPolicy fileAccessPolicy,
-            @Value("${agentos.memory.mode:file}") String mode,
-            @Value("${agentos.memory.data-dir:.agentos/memory}") String dataDirectory,
-            @Value("${agentos.memory.database-file:.agentos/memory/memory.sqlite}") String databaseFile,
+            ObjectProvider<MemoryRecordMapper> memoryRecordMapper,
+            ObjectMapper objectMapper,
+            @Value("${agentos.memory.mode:${agentos.persistence.mode:postgresql}}") String mode,
             @Value("${agentos.memory.processor.mode:rule}") String processorMode,
             @Value("${agentos.memory.processor.endpoint:}") String processorEndpoint,
             @Value("${agentos.memory.processor.api-key:}") String processorApiKey,
@@ -318,13 +330,55 @@ public class AgentOsConfiguration {
             @Value("${agentos.memory.embedding.timeout:30s}") Duration embeddingTimeout) {
         MemoryStore store = switch (mode.trim().toLowerCase(java.util.Locale.ROOT)) {
             case "memory" -> new InMemoryMemoryStore();
-            case "file" -> new FileMemoryStore(
-                    fileAccessPolicy.authorizeRead(Path.of(dataDirectory)));
-            case "sqlite" -> new SqliteMemoryStore(
-                    fileAccessPolicy.authorizeWrite(Path.of(databaseFile)));
+            case "postgres", "postgresql" -> new MybatisMemoryStore(
+                    memoryRecordMapper.getObject(), objectMapper);
             default -> throw new IllegalArgumentException(
-                    "agentos.memory.mode must be one of: memory, file, sqlite");
+                    "agentos.memory.mode must be one of: postgresql, memory");
         };
+        return createMemoryService(
+                store, processorMode, processorEndpoint, processorApiKey, processorModel,
+                processorTimeout, embeddingMode, embeddingEndpoint, embeddingApiKey,
+                embeddingModel, embeddingTimeout);
+    }
+
+    /** 保留给配置单元测试的内存模式构造入口，不参与 Spring 生产装配。 */
+    MemoryService memoryService(
+            FileAccessPolicy fileAccessPolicy,
+            String mode,
+            String dataDirectory,
+            String databaseFile,
+            String processorMode,
+            String processorEndpoint,
+            String processorApiKey,
+            String processorModel,
+            Duration processorTimeout,
+            String embeddingMode,
+            String embeddingEndpoint,
+            String embeddingApiKey,
+            String embeddingModel,
+            Duration embeddingTimeout) {
+        if (!"memory".equalsIgnoreCase(mode)) {
+            throw new IllegalArgumentException(
+                    "test memoryService only supports agentos.memory.mode=memory");
+        }
+        return createMemoryService(
+                new InMemoryMemoryStore(), processorMode, processorEndpoint, processorApiKey,
+                processorModel, processorTimeout, embeddingMode, embeddingEndpoint,
+                embeddingApiKey, embeddingModel, embeddingTimeout);
+    }
+
+    private static MemoryService createMemoryService(
+            MemoryStore store,
+            String processorMode,
+            String processorEndpoint,
+            String processorApiKey,
+            String processorModel,
+            Duration processorTimeout,
+            String embeddingMode,
+            String embeddingEndpoint,
+            String embeddingApiKey,
+            String embeddingModel,
+            Duration embeddingTimeout) {
         MemoryModel model = switch (processorMode.trim().toLowerCase(java.util.Locale.ROOT)) {
             case "rule" -> new RuleBasedMemoryModel();
             case "openai" -> new OpenAiCompatibleMemoryModel(

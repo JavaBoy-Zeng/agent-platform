@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppMultiSelect from '../components/AppMultiSelect.vue'
 import AppSelect from '../components/AppSelect.vue'
+import ModelManagementPanel from '../components/ModelManagementPanel.vue'
 import { getPendingAction, resolvePendingAction } from '../services/agentApi.js'
 import { useLocale } from '../composables/useLocale.js'
 import {
@@ -586,10 +587,7 @@ onMounted(load)</script>
         <article v-for="approval in data.approvals" :key="approval.pendingAction?.pendingActionId"><span class="approval-mark">!</span><div><small>RISK GATE / {{ approval.sessionId }}</small><h2>{{ approval.pendingAction?.title || approval.pendingAction?.description || t('外部动作等待确认') }}</h2><p>{{ approval.pendingAction?.description || t('该动作需要人工确认后才能继续运行。') }}</p></div><footer><button type="button" @click="decide(approval, false)">REJECT</button><button class="approve" type="button" @click="decide(approval, true)">APPROVE</button></footer></article>
       </div>
 
-      <div v-else-if="section === 'models'" class="models-layout">
-        <article v-for="model in catalogItems" :key="model.role" class="model-card"><small>{{ model.workload }} ROUTE</small><h2>{{ model.model }}</h2><p>{{ model.provider }}</p><div class="model-wave"><i v-for="n in 18" :key="n" :style="{ height: `${18 + ((n * 13) % 31)}%` }"></i></div><footer><span class="status-pill success">CONNECTED</span><b>{{ model.role }}</b></footer></article>
-        <aside class="usage-card"><small>SESSION USAGE</small><strong>{{ formatNumber(data.usage?.totalTokens) }}</strong><span>TOTAL TOKENS</span><dl><div><dt>Prompt</dt><dd>{{ formatNumber(data.usage?.promptTokens) }}</dd></div><div><dt>Completion</dt><dd>{{ formatNumber(data.usage?.completionTokens) }}</dd></div><div><dt>Calls</dt><dd>{{ formatNumber(data.usage?.modelCalls) }}</dd></div></dl></aside>
-      </div>
+      <ModelManagementPanel v-else-if="section === 'models'" :usage="data.usage" />
 
       <div v-if="isEmpty" class="empty-state">
         <span>∅</span><h2>NO RECORDS IN SCOPE</h2><p>{{ t('当前范围没有可展示的数据。运行一个 Agent 任务后再刷新此面板。') }}</p>

@@ -17,6 +17,12 @@ function mountDeck(overrides = {}) {
         { id: 'workspace-1', name: 'agent-platform', root: '/local/agent-platform' },
         { id: 'workspace-2', name: 'assistant', root: '/local/assistant' }
       ],
+      currentWorkspace: { id: 'workspace-1', name: 'agent-platform', root: '/local/agent-platform' },
+      workspaceFiles: [
+        { name: 'ReadMe.md', relativePath: 'ReadMe.md', language: 'markdown' },
+        { name: 'AgentApplication.java', relativePath: 'src/main/java/AgentApplication.java', language: 'java' },
+        { name: 'AgentFactory.java', relativePath: 'src/main/java/agent/AgentFactory.java', language: 'java' }
+      ],
       ...overrides
     },
     global: { stubs: { Teleport: true } }
@@ -29,6 +35,17 @@ describe('CommandDeck composer controls', () => {
     expect(wrapper.get('.model-trigger').text()).toContain('minimax h3')
     await wrapper.get('.attach-button').trigger('click')
     expect(wrapper.emitted('upload')).toHaveLength(1)
+  })
+
+  it('offers an accessible remove action for each uploaded attachment', async () => {
+    const attachment = { name: 'brief.md', relativePath: 'attachments/session-1/brief.md' }
+    const wrapper = mountDeck({ attachments: [attachment] })
+
+    const remove = wrapper.get('.attachment-remove')
+    expect(remove.attributes('aria-label')).toContain('brief.md')
+    await remove.trigger('click')
+
+    expect(wrapper.emitted('remove-attachment')?.[0]).toEqual([attachment])
   })
 
   it('changes approval mode from the custom permission menu', async () => {
@@ -65,5 +82,34 @@ describe('CommandDeck composer controls', () => {
     await wrapper.get('.composer-workspace-menu footer button').trigger('click')
 
     expect(wrapper.emitted('pick-workspace')).toHaveLength(1)
+  })
+
+  it('renders and filters project files immediately after typing @', async () => {
+    const wrapper = mountDeck({ prompt: '' })
+    const input = wrapper.get('#promptInput')
+
+    await input.setValue('请解释 @')
+    expect(wrapper.get('.file-mention-menu').attributes('role')).toBe('listbox')
+    expect(wrapper.findAll('.file-mention-menu [role="option"]')).toHaveLength(3)
+
+    await input.setValue('请解释 @AgentF')
+    const options = wrapper.findAll('.file-mention-menu [role="option"]')
+    expect(options).toHaveLength(1)
+    expect(options[0].text()).toContain('AgentFactory.java')
+  })
+
+  it('selects an @ file with the keyboard without submitting the task', async () => {
+    const wrapper = mountDeck({ prompt: '' })
+    const input = wrapper.get('#promptInput')
+
+    await input.setValue('分析 @AgentApp')
+    await wrapper.setProps({ prompt: '分析 @AgentApp' })
+    await input.trigger('keydown', { key: 'Enter' })
+
+    expect(wrapper.emitted('run')).toBeUndefined()
+    expect(wrapper.emitted('update:prompt')?.at(-1)).toEqual([
+      '分析 @src/main/java/AgentApplication.java '
+    ])
+    expect(wrapper.find('.file-mention-menu').exists()).toBe(false)
   })
 })

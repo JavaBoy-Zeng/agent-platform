@@ -12,6 +12,8 @@ import com.github.agentos.agent.specialist.SupervisorAgent;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.OpenAiCompatibleChatClient;
+import com.github.agentos.server.model.ModelProviderService;
+import com.github.agentos.server.model.RoutingModelClients;
 import com.github.agentos.server.catalog.SystemCatalogAgent;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -19,7 +21,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.databind.ObjectMapper;
 
-import java.net.http.HttpClient;
 
 /**
  * 意图识别与 Agent 路由层装配。
@@ -42,7 +43,7 @@ public class RoutingConfiguration {
             @Value("${agentos.router.short-circuit.acknowledgement-message:好的。}") String acknowledgementMessage,
             @Value("${agentos.router.short-circuit.thanks-message:不客气！有需要随时告诉我。}") String thanksMessage,
             @Value("${agentos.router.short-circuit.farewell-message:晚安，祝你好梦。}") String farewellMessage,
-            @Value("${agentos.router.simple-qa.max-chars:64}") int simpleQaMaxChars) {
+            @Value("${agentos.router.simple-qa.max-chars:32}") int simpleQaMaxChars) {
         return new HeuristicIntentClassifier(
                 maxChars, simpleQaMaxChars, SimpleQaAgent.ID, SystemCatalogAgent.ID,
                 greetingMessage, acknowledgementMessage, thanksMessage, farewellMessage);
@@ -57,13 +58,11 @@ public class RoutingConfiguration {
     @ConditionalOnMissingBean(ChatClient.class)
     ChatClient chatClient(
             ModelClientProperties properties,
+            ModelProviderService providers,
             ObjectMapper objectMapper,
             com.github.agentos.planner.ModelUsageListener usageListener) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(properties.getConnectTimeout())
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-        return new OpenAiCompatibleChatClient(httpClient, objectMapper, properties, usageListener);
+        return new RoutingModelClients.Chat(
+                providers, objectMapper, usageListener, properties);
     }
 
     /**

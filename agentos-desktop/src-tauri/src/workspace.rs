@@ -1,7 +1,7 @@
 use base64::Engine;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -18,6 +18,13 @@ const FILE_LIMIT: u64 = 1024 * 1024;
 const DIFF_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const DIFF_LINE_LIMIT: usize = 20_000;
 const DIRECTORY_ENTRY_LIMIT: usize = 1_000;
+const CONTEXT_TREE_DEPTH_LIMIT: usize = 5;
+const CONTEXT_TREE_ENTRY_LIMIT: usize = 400;
+const WORKSPACE_FILE_INDEX_LIMIT: usize = 5_000;
+const WORKSPACE_FILE_INDEX_DEPTH_LIMIT: usize = 20;
+const CONTEXT_FILE_LIMIT: usize = 8;
+const CONTEXT_FILE_BYTE_LIMIT: usize = 12 * 1024;
+const CONTEXT_TOTAL_FILE_BYTES: usize = 28 * 1024;
 
 #[derive(Clone)]
 struct Grant {
@@ -214,6 +221,12 @@ struct MeResponse {
     roles: Vec<String>,
 }
 
+fn can_access_workspace(roles: &[String]) -> bool {
+    roles
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case("WORKSPACE") || role.eq_ignore_ascii_case("ADMIN"))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceGrant {
@@ -251,6 +264,32 @@ pub struct FileContent {
     binary: bool,
     truncated: bool,
     size: u64,
+    language: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceContextFile {
+    path: String,
+    content: String,
+    truncated: bool,
+    mentioned: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceContext {
+    name: String,
+    tree: Vec<String>,
+    files: Vec<WorkspaceContextFile>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileReference {
+    name: String,
+    relative_path: String,
     language: String,
 }
 
@@ -354,12 +393,8 @@ pub async fn authorize_workspace(
         .json::<MeResponse>()
         .await
         .map_err(|error| format!("工作区权限响应无效：{error}"))?;
-    if !me
-        .roles
-        .iter()
-        .any(|role| role.eq_ignore_ascii_case("WORKSPACE"))
-    {
-        return Err("当前账户缺少 WORKSPACE 角色".to_string());
+    if !can_access_workspace(&me.roles) {
+        return Err("当前账户缺少 WORKSPACE 或 ADMIN 角色".to_string());
     }
     let expires_at = Instant::now() + GRANT_TTL;
     let expires_at_epoch = now_millis() + GRANT_TTL.as_millis() as u64;
@@ -608,6 +643,36 @@ pub fn read_file(
     read_file_content(&path, relative_path)
 }
 
+/// 为远端 Agent 构造有界、只读的本地项目上下文。
+///
+/// 只收集非隐藏目录树、README、构建清单和常见入口文件；不返回绝对路径，
+/// 也不会读取 .env、隐藏目录、构建产物或任意二进制文件。
+#[tauri::command]
+pub fn workspace_context(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+    mentioned_paths: Option<Vec<String>>,
+) -> Result<WorkspaceContext, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    build_workspace_context(&workspace, mentioned_paths.as_deref().unwrap_or_default())
+}
+
+/// 返回可由输入框 `@` 菜单引用的项目文本文件索引。
+#[tauri::command]
+pub fn workspace_file_index(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+) -> Result<Vec<WorkspaceFileReference>, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    build_workspace_file_index(&workspace.root)
+}
+
 fn read_file_content(path: &Path, relative_path: String) -> Result<FileContent, String> {
     let size = path.metadata().map_err(|error| error.to_string())?.len();
     let mut bytes = Vec::new();
@@ -632,6 +697,302 @@ fn read_file_content(path: &Path, relative_path: String) -> Result<FileContent, 
         size,
         language: language_for(&path),
     })
+}
+
+fn build_workspace_context(
+    workspace: &WorkspaceEntry,
+    mentioned_paths: &[String],
+) -> Result<WorkspaceContext, String> {
+    let mut tree = Vec::new();
+    let mut candidates = Vec::new();
+    let mut truncated = false;
+    collect_workspace_context(
+        &workspace.root,
+        &workspace.root,
+        0,
+        &mut tree,
+        &mut candidates,
+        &mut truncated,
+    )?;
+
+    let mut prioritized = Vec::new();
+    for relative_path in mentioned_paths.iter().take(CONTEXT_FILE_LIMIT) {
+        let relative = validate_context_relative(relative_path)?;
+        let source_path = workspace.root.join(&relative);
+        let metadata = fs::symlink_metadata(&source_path)
+            .map_err(|error| format!("无法读取 @ 文件 {relative_path}：{error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("@ 引用不是可读取的项目文件：{relative_path}"));
+        }
+        let path = resolve_existing(&workspace.root, relative_path)?;
+        prioritized.push((0, path, true));
+    }
+    prioritized.extend(
+        candidates
+            .into_iter()
+            .map(|(priority, path)| (priority.saturating_add(10), path, false)),
+    );
+    prioritized.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.to_string_lossy().cmp(&right.1.to_string_lossy()))
+    });
+    let mut seen = HashSet::new();
+    prioritized.retain(|(_, path, _)| seen.insert(path.clone()));
+    if prioritized.len() > CONTEXT_FILE_LIMIT {
+        truncated = true;
+    }
+
+    let mut files = Vec::new();
+    let mut remaining = CONTEXT_TOTAL_FILE_BYTES;
+    for (_, path, mentioned) in prioritized.into_iter().take(CONTEXT_FILE_LIMIT) {
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let relative = path
+            .strip_prefix(&workspace.root)
+            .map_err(|_| "项目上下文文件越过工作区边界".to_string())?
+            .to_string_lossy()
+            .to_string();
+        let limit = remaining.min(CONTEXT_FILE_BYTE_LIMIT);
+        let mut bytes = Vec::new();
+        File::open(&path)
+            .map_err(|error| format!("无法读取项目上下文 {relative}：{error}"))?
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("无法读取项目上下文 {relative}：{error}"))?;
+        if bytes.contains(&0) {
+            continue;
+        }
+        let file_truncated = bytes.len() > limit;
+        bytes.truncate(limit);
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        remaining = remaining.saturating_sub(bytes.len());
+        truncated |= file_truncated;
+        files.push(WorkspaceContextFile {
+            path: relative,
+            content,
+            truncated: file_truncated,
+            mentioned,
+        });
+    }
+
+    Ok(WorkspaceContext {
+        name: workspace
+            .root
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("Workspace")
+            .to_string(),
+        tree,
+        files,
+        truncated,
+    })
+}
+
+fn build_workspace_file_index(root: &Path) -> Result<Vec<WorkspaceFileReference>, String> {
+    let mut files = Vec::new();
+    collect_workspace_file_index(root, root, 0, &mut files)?;
+    files.sort_by(|left, right| {
+        left.relative_path
+            .to_lowercase()
+            .cmp(&right.relative_path.to_lowercase())
+    });
+    Ok(files)
+}
+
+fn collect_workspace_file_index(
+    root: &Path,
+    directory: &Path,
+    depth: usize,
+    files: &mut Vec<WorkspaceFileReference>,
+) -> Result<(), String> {
+    if depth > WORKSPACE_FILE_INDEX_DEPTH_LIMIT || files.len() >= WORKSPACE_FILE_INDEX_LIMIT {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("无法扫描项目文件：{error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+    for entry in entries {
+        if files.len() >= WORKSPACE_FILE_INDEX_LIMIT {
+            break;
+        }
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') || excluded(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_workspace_file_index(root, &path, depth + 1, files)?;
+        } else if metadata.is_file() && is_probably_text_file(&path) {
+            let relative_path = path
+                .strip_prefix(root)
+                .map_err(|_| "项目文件越过工作区边界".to_string())?
+                .to_string_lossy()
+                .to_string();
+            files.push(WorkspaceFileReference {
+                name: name.to_string_lossy().to_string(),
+                relative_path,
+                language: language_for(&path),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_context_relative(value: &str) -> Result<PathBuf, String> {
+    let relative = validate_relative(value)?;
+    if relative.components().any(|component| match component {
+        Component::Normal(name) => name.to_string_lossy().starts_with('.') || excluded(name),
+        _ => false,
+    }) {
+        return Err("@ 文件不能引用隐藏文件或构建产物".to_string());
+    }
+    Ok(relative)
+}
+
+fn is_probably_text_file(path: &Path) -> bool {
+    !matches!(
+        path.extension()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "ico"
+            | "pdf"
+            | "doc"
+            | "docx"
+            | "xls"
+            | "xlsx"
+            | "ppt"
+            | "pptx"
+            | "zip"
+            | "gz"
+            | "tar"
+            | "jar"
+            | "class"
+            | "woff"
+            | "woff2"
+            | "ttf"
+            | "otf"
+            | "mp3"
+            | "mp4"
+            | "mov"
+            | "avi"
+            | "dmg"
+            | "exe"
+            | "dll"
+            | "so"
+            | "dylib"
+    )
+}
+
+fn collect_workspace_context(
+    root: &Path,
+    directory: &Path,
+    depth: usize,
+    tree: &mut Vec<String>,
+    candidates: &mut Vec<(u8, PathBuf)>,
+    truncated: &mut bool,
+) -> Result<(), String> {
+    if depth > CONTEXT_TREE_DEPTH_LIMIT || tree.len() >= CONTEXT_TREE_ENTRY_LIMIT {
+        *truncated = true;
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("无法扫描项目目录：{error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+
+    for entry in entries {
+        if tree.len() >= CONTEXT_TREE_ENTRY_LIMIT {
+            *truncated = true;
+            break;
+        }
+        let name = entry.file_name();
+        let name_text = name.to_string_lossy();
+        if name_text.starts_with('.') || excluded(&name) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| "项目目录越过工作区边界".to_string())?
+            .to_path_buf();
+        let relative_text = relative.to_string_lossy().to_string();
+        if metadata.is_dir() {
+            tree.push(format!("{relative_text}/"));
+            collect_workspace_context(root, &entry.path(), depth + 1, tree, candidates, truncated)?;
+        } else if metadata.is_file() {
+            tree.push(relative_text);
+            if let Some(priority) = context_file_priority(&relative) {
+                candidates.push((priority, entry.path()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn context_file_priority(relative: &Path) -> Option<u8> {
+    let file_name = relative.file_name()?.to_string_lossy().to_lowercase();
+    let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();
+    if file_name.starts_with("readme") {
+        return Some(if relative.components().count() == 1 {
+            0
+        } else {
+            1
+        });
+    }
+    if matches!(
+        file_name.as_ref(),
+        "pom.xml"
+            | "package.json"
+            | "pyproject.toml"
+            | "cargo.toml"
+            | "go.mod"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "settings.gradle"
+            | "settings.gradle.kts"
+            | "composer.json"
+    ) {
+        return Some(2);
+    }
+    if normalized.starts_with("docs/")
+        && file_name.ends_with(".md")
+        && (file_name.contains("overview")
+            || file_name.contains("architecture")
+            || file_name.contains("summary"))
+    {
+        return Some(3);
+    }
+    if file_name == "main.rs"
+        || file_name == "main.py"
+        || file_name == "app.py"
+        || file_name == "main.ts"
+        || file_name == "main.js"
+        || file_name.ends_with("application.java")
+    {
+        return Some(4);
+    }
+    None
 }
 
 #[tauri::command]
@@ -1232,6 +1593,13 @@ mod tests {
     }
 
     #[test]
+    fn workspace_access_accepts_workspace_or_admin_role() {
+        assert!(can_access_workspace(&["WORKSPACE".to_string()]));
+        assert!(can_access_workspace(&["admin".to_string()]));
+        assert!(!can_access_workspace(&["USER".to_string()]));
+    }
+
+    #[test]
     fn parses_porcelain_status() {
         let parsed = parse_status(b" M src/main.rs\0?? notes.txt\0R  new.txt\0old.txt\0");
         assert_eq!(parsed.len(), 3);
@@ -1388,6 +1756,64 @@ mod tests {
         let large_preview = read_file_content(&large, "large.txt".to_string()).unwrap();
         assert!(large_preview.truncated);
         assert_eq!(large_preview.content.unwrap().len(), FILE_LIMIT as usize);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_context_includes_project_evidence_and_excludes_secrets() {
+        let root = temporary_directory("project-context");
+        fs::create_dir_all(root.join("src/main/java")).unwrap();
+        fs::create_dir_all(root.join("target/classes")).unwrap();
+        fs::write(root.join("ReadMe.md"), "# Demo\nA local agent project.").unwrap();
+        fs::write(root.join("pom.xml"), "<artifactId>demo-agent</artifactId>").unwrap();
+        fs::write(root.join(".env"), "API_KEY=secret").unwrap();
+        fs::write(root.join("target/classes/secret.txt"), "secret").unwrap();
+        fs::write(
+            root.join("src/main/java/DemoApplication.java"),
+            "class DemoApplication {}",
+        )
+        .unwrap();
+        let workspace = WorkspaceEntry {
+            id: "workspace-context".to_string(),
+            root: root.canonicalize().unwrap(),
+            last_opened_at: 0,
+        };
+
+        let context = build_workspace_context(
+            &workspace,
+            &["src/main/java/DemoApplication.java".to_string()],
+        )
+        .unwrap();
+
+        let paths = context
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(context.name, root.file_name().unwrap().to_string_lossy());
+        assert!(paths.contains(&"ReadMe.md"));
+        assert!(paths.contains(&"pom.xml"));
+        assert!(paths.contains(&"src/main/java/DemoApplication.java"));
+        assert!(context
+            .files
+            .iter()
+            .any(|file| { file.path == "src/main/java/DemoApplication.java" && file.mentioned }));
+        assert!(context.tree.iter().all(|path| !path.contains(".env")));
+        assert!(context.tree.iter().all(|path| !path.starts_with("target")));
+        assert!(context
+            .files
+            .iter()
+            .all(|file| !file.content.contains("API_KEY")));
+        let index = build_workspace_file_index(&root).unwrap();
+        let indexed_paths = index
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(indexed_paths.contains(&"ReadMe.md"));
+        assert!(indexed_paths.contains(&"src/main/java/DemoApplication.java"));
+        assert!(!indexed_paths.iter().any(|path| path.contains(".env")));
+        assert!(!indexed_paths.iter().any(|path| path.starts_with("target")));
+        assert!(build_workspace_context(&workspace, &[".env".to_string()]).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

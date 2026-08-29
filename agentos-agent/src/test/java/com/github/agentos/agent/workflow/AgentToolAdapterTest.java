@@ -3,6 +3,7 @@ package com.github.agentos.agent.workflow;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.tool.api.ToolCall;
@@ -109,6 +110,70 @@ class AgentToolAdapterTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.failureType()).isEqualTo(ToolFailureType.PERMISSION_DENIED);
+    }
+
+    @Test
+    void subAgentRunsInIsolatedInvocationWithContextForwarding() {
+        // 场景：父 invocation 已有 modelCalls=2/toolCalls=1，子 Agent 执行后
+        // 父的计数器不变（真隔离）；子 Agent 发出的 AgentRunEvent 经转发 sink
+        // 发到父的事件流，带 subagentId/subInvocationId 标签。
+        com.github.agentos.kernel.AgentInvocation parentInvocation =
+                new com.github.agentos.kernel.AgentInvocation(
+                        "parent-inv-1", "session-iso", "main-agent", "", java.time.Instant.now());
+        parentInvocation.start();
+        parentInvocation.incrementModelCalls();
+        parentInvocation.incrementModelCalls();
+        parentInvocation.incrementToolCalls();
+        int parentModelBefore = parentInvocation.modelCalls();
+        int parentToolBefore = parentInvocation.toolCalls();
+
+        java.util.List<com.github.agentos.kernel.AgentEvent> forwardedEvents =
+                new java.util.ArrayList<>();
+        com.github.agentos.kernel.AgentEventPublisher publisher =
+                event -> forwardedEvents.add(event);
+
+        InvocationContext parentContext = InvocationContext.of("main-agent")
+                .withRuntime(parentInvocation, publisher);
+
+        BaseAgent childAgent = new BaseAgent("child-agent", "isolated child", List.of()) {
+            @Override
+            public AgentState run(
+                    AgentRequest request, InvocationContext context,
+                    AgentState runningState, AgentEventSink eventSink) {
+                // 子 Agent 发出 TOOL_STARTED + TOOL_FINISHED 事件。
+                eventSink.emit(AgentRunEvent.of(
+                        AgentRunEvent.Type.TOOL_STARTED,
+                        request.sessionId(), "子工具开始", Map.of()));
+                eventSink.emit(AgentRunEvent.of(
+                        AgentRunEvent.Type.TOOL_FINISHED,
+                        request.sessionId(), "子工具完成", Map.of()));
+                return runningState.complete("子 Agent 结论");
+            }
+        };
+        AgentToolAdapter adapter = new AgentToolAdapter(childAgent);
+
+        ToolResult result = adapter.execute(
+                new ToolContext(
+                        new AgentRequest("session-iso", "test", Map.of()),
+                        parentContext, "", "", AgentExecutionLimits.defaults(),
+                        Map.of(), adapter),
+                new ToolCall("child-agent", Map.of(
+                        AgentToolAdapter.OBJECTIVE_PARAMETER, "隔离测试")));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).isEqualTo("子 Agent 结论");
+        // 父的计数器未被污染（真隔离）。
+        assertThat(parentInvocation.modelCalls()).isEqualTo(parentModelBefore);
+        assertThat(parentInvocation.toolCalls()).isEqualTo(parentToolBefore);
+        // 子 Agent 事件经转发 sink 发到父的事件流。
+        assertThat(forwardedEvents).isNotEmpty();
+        // 转发的事件 data 中携带 subagentId/subInvocationId 标签。
+        com.github.agentos.kernel.AgentEvent firstForwarded = forwardedEvents.getFirst();
+        assertThat(firstForwarded.data()).containsKey("subagentId");
+        assertThat(firstForwarded.data().containsKey("subagentId")).isTrue();
+        assertThat(firstForwarded.data().get("subagentId")).isEqualTo("child-agent");
+        assertThat(firstForwarded.data()).containsKey("subInvocationId");
+        assertThat(firstForwarded.agentId()).isEqualTo("child-agent");
     }
 
     private static ToolContext context(AgentToolAdapter adapter) {

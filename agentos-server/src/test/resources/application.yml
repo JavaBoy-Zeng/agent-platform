@@ -1,0 +1,17 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration
+  sql:
+    init:
+      mode: never
+
+agentos:
+  persistence:
+    mode: memory
+  memory:
+    mode: memory
+  tools:
+    code-executor:
+      enabled: false

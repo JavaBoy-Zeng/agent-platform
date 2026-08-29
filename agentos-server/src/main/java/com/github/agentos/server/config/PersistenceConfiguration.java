@@ -7,61 +7,36 @@ import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.kernel.InMemoryCheckpointStore;
 import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.kernel.SessionService;
-import com.github.agentos.server.persistence.SqliteAgentEventStore;
-import com.github.agentos.server.persistence.SqliteCheckpointStore;
-import com.github.agentos.server.persistence.SqliteContinuationStore;
-import com.github.agentos.server.persistence.SqliteSessionService;
-import com.github.agentos.server.persistence.SqliteUsageStore;
+import com.github.agentos.server.persistence.mybatis.AgentEventMapper;
+import com.github.agentos.server.persistence.mybatis.CheckpointMapper;
+import com.github.agentos.server.persistence.mybatis.ContinuationMapper;
+import com.github.agentos.server.persistence.mybatis.MybatisRuntimeStores;
+import com.github.agentos.server.persistence.mybatis.SessionMapper;
+import com.github.agentos.server.persistence.mybatis.UsageMapper;
+import com.github.agentos.server.persistence.mybatis.UserMapper;
 import com.github.agentos.server.usage.UsageStore;
-import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.databind.ObjectMapper;
 
-import javax.sql.DataSource;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Locale;
 
 /**
  * 运行态持久化装配。
  *
- * <p>{@code agentos.persistence.mode=memory}（默认）时全部状态留在进程内，
- * 零依赖启动；{@code sqlite} 时领域事件、审批 Checkpoint、断点续跑状态与
- * 用量账本写入同一 SQLite 文件，重启后审批恢复与账本查询仍可用。</p>
+ * <p>{@code postgresql} 是正式运行模式，全部状态通过 MyBatis-Plus 写入
+ * PostgreSQL；{@code memory} 仅用于测试和无数据库演示。</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class PersistenceConfiguration {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(PersistenceConfiguration.class);
-
-    /** sqlite 模式下才创建 DataSource；父目录不存在时自动创建。 */
-    @Bean
-    @ConditionalOnProperty(name = "agentos.persistence.mode", havingValue = "sqlite")
-    DataSource sqliteDataSource(
-            FileAccessPolicy fileAccessPolicy,
-            @Value("${agentos.persistence.sqlite-file:.agentos/runtime/runtime.sqlite}") String file)
-            throws java.io.IOException {
-        Path databaseFile = fileAccessPolicy.authorizeWrite(Path.of(file));
-        if (databaseFile.getParent() != null) {
-            Files.createDirectories(databaseFile.getParent());
-        }
-        org.sqlite.SQLiteDataSource dataSource = new org.sqlite.SQLiteDataSource();
-        dataSource.setUrl("jdbc:sqlite:" + databaseFile);
-        LOGGER.info("[persistence] sqlite mode enabled file={}", databaseFile);
-        return dataSource;
-    }
-
-    /** 事件存储：sqlite 落库，memory 留在进程内。 */
+    /** 事件存储：正式环境写 PostgreSQL，测试环境留在进程内。 */
     @Bean
     AgentEventStore agentEventStore(
-            @Value("${agentos.persistence.mode:memory}") String mode,
-            ObjectProvider<DataSource> dataSource,
+            @Value("${agentos.persistence.mode:postgresql}") String mode,
+            ObjectProvider<AgentEventMapper> mapper,
             ObjectMapper objectMapper,
             @Value("${agentos.runtime.retention.max-invocations:10000}") int maxInvocations,
             @Value("${agentos.runtime.retention.max-sessions:5000}") int maxSessions,
@@ -69,74 +44,88 @@ public class PersistenceConfiguration {
             int maxEventsPerInvocation,
             @Value("${agentos.runtime.retention.max-events-per-session:2000}")
             int maxEventsPerSession) {
-        if (isSqlite(mode)) {
-            return new SqliteAgentEventStore(dataSource.getObject(), objectMapper);
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.EventStore(mapper.getObject(), objectMapper);
         }
+        requireMemory(mode);
         return new InMemoryAgentEventStore(
                 maxInvocations, maxSessions,
                 maxEventsPerInvocation, maxEventsPerSession);
     }
 
-    /** 审批恢复 Checkpoint 存储：sqlite 落库，memory 留在进程内。 */
+    /** 审批恢复 Checkpoint 存储。 */
     @Bean
     CheckpointStore checkpointStore(
             @Value("${agentos.persistence.mode:memory}") String mode,
-            ObjectProvider<DataSource> dataSource,
+            ObjectProvider<CheckpointMapper> mapper,
             ObjectMapper objectMapper) {
-        if (isSqlite(mode)) {
-            return new SqliteCheckpointStore(dataSource.getObject(), objectMapper);
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.Checkpoints(mapper.getObject(), objectMapper);
         }
+        requireMemory(mode);
         return new InMemoryCheckpointStore();
     }
 
-    /** 主 Agent 断点续跑状态存储：sqlite 落库，memory 退化为空实现。 */
+    /** 主 Agent 断点续跑状态存储。 */
     @Bean
     ContinuationStore continuationStore(
             @Value("${agentos.persistence.mode:memory}") String mode,
-            ObjectProvider<DataSource> dataSource,
+            ObjectProvider<ContinuationMapper> mapper,
             ObjectMapper objectMapper) {
-        if (isSqlite(mode)) {
-            return new SqliteContinuationStore(dataSource.getObject(), objectMapper);
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.Continuations(mapper.getObject(), objectMapper);
         }
+        requireMemory(mode);
         return ContinuationStore.NOOP;
     }
 
-    /** 用量账本存储：sqlite 落库，memory 留在进程内。 */
+    /** 用量账本存储。 */
     @Bean
     UsageStore usageStore(
             @Value("${agentos.persistence.mode:memory}") String mode,
-            ObjectProvider<DataSource> dataSource) {
-        if (isSqlite(mode)) {
-            return new SqliteUsageStore(dataSource.getObject());
+            ObjectProvider<UsageMapper> mapper) {
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.Usages(mapper.getObject());
         }
+        requireMemory(mode);
         return new UsageStore.InMemoryUsageStore();
     }
 
-    /** 会话服务：sqlite 落库，memory 留在进程内。 */
+    /** 会话服务。 */
     @Bean
     SessionService sessionService(
             @Value("${agentos.persistence.mode:memory}") String mode,
-            ObjectProvider<DataSource> dataSource,
+            ObjectProvider<SessionMapper> mapper,
             ObjectMapper objectMapper) {
-        if (isSqlite(mode)) {
-            return new SqliteSessionService(dataSource.getObject(), objectMapper);
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.Sessions(mapper.getObject(), objectMapper);
         }
+        requireMemory(mode);
         return new InMemorySessionService();
     }
 
-    /** 登录用户存储：sqlite 落库（重启保留），memory 留在进程内（重启后重新引导）。 */
+    /** 登录用户存储。 */
     @Bean
     com.github.agentos.server.security.UserStore userStore(
             @Value("${agentos.persistence.mode:memory}") String mode,
-            ObjectProvider<DataSource> dataSource) {
-        if (isSqlite(mode)) {
-            return new com.github.agentos.server.persistence.SqliteUserStore(
-                    dataSource.getObject());
+            ObjectProvider<UserMapper> mapper) {
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.Users(mapper.getObject());
         }
+        requireMemory(mode);
         return new com.github.agentos.server.security.InMemoryUserStore();
     }
 
-    private static boolean isSqlite(String mode) {
-        return mode != null && "sqlite".equals(mode.trim().toLowerCase(Locale.ROOT));
+    private static boolean isPostgresql(String mode) {
+        if (mode == null) return false;
+        String normalized = mode.trim().toLowerCase(Locale.ROOT);
+        return "postgresql".equals(normalized) || "postgres".equals(normalized);
+    }
+
+    private static void requireMemory(String mode) {
+        if (mode == null || !"memory".equals(mode.trim().toLowerCase(Locale.ROOT))) {
+            throw new IllegalStateException(
+                    "agentos.persistence.mode must be one of: postgresql, memory");
+        }
     }
 }

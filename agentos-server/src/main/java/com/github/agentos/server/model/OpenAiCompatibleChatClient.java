@@ -5,6 +5,8 @@ import com.github.agentos.planner.ChatClient;
 import com.github.agentos.planner.ModelUsageListener;
 import com.github.agentos.planner.flow.LlmMessage;
 import com.github.agentos.planner.flow.LlmRequest;
+import com.github.agentos.planner.flow.LlmToolDefinition;
+import com.github.agentos.tool.api.ToolCall;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -173,6 +175,206 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         }
     }
 
+    @Override
+    public ToolCallResponse chatWithTools(
+            String sessionId, LlmRequest request, Consumer<String> onDelta) {
+        Objects.requireNonNull(sessionId, "sessionId must not be null");
+        Objects.requireNonNull(onDelta, "onDelta must not be null");
+        validateRequest(request);
+        if (request.tools().isEmpty()) {
+            throw new IllegalArgumentException("chatWithTools requires a non-empty tools list");
+        }
+        String model = modelFor(request);
+        HttpRequest httpRequest = createHttpRequest(sessionId, request, true);
+        long requestStarted = System.nanoTime();
+        LOGGER.info("[chat-tools] started sessionId={} model={} toolCount={}",
+                sessionId, model, request.tools().size());
+        StringBuilder answer = new StringBuilder();
+        ReasoningFilter filter = new ReasoningFilter(answer, onDelta);
+        ToolCallAccumulator toolCalls = new ToolCallAccumulator();
+        ModelUsage[] usage = {null};
+        try {
+            HttpResponse<Stream<String>> response = httpClient.send(
+                    httpRequest, HttpResponse.BodyHandlers.ofLines());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String errorBody;
+                try (Stream<String> errorLines = response.body()) {
+                    errorBody = errorLines.collect(Collectors.joining("\n"));
+                }
+                throw new ModelClientException(
+                        "Chat endpoint returned HTTP " + response.statusCode()
+                                + errorDetail(errorBody));
+            }
+            try (Stream<String> lines = response.body()) {
+                lines.forEach(line -> consumeToolCallSseLine(
+                        sessionId, line, model, filter, toolCalls, usage));
+            }
+            filter.finish();
+            notifyUsage(sessionId, usage[0]);
+            if (!toolCalls.isEmpty()) {
+                ToolCallAccumulator.Completed first = toolCalls.firstCompleted();
+                LOGGER.info(
+                        "[chat-tools] finished sessionId={} toolCall={} argsChars={} usage={} durationMs={}",
+                        sessionId, first.name(), first.argumentsJson().length(),
+                        usage[0] == null ? "n/a" : usage[0].totalTokens(),
+                        elapsedMillis(requestStarted));
+                return ToolCallResponse.call(
+                        new ToolCall(first.name(),
+                                parseToolCallArguments(first.name(), first.argumentsJson())),
+                        first.id(),
+                        usage[0]);
+            }
+            if (answer.isEmpty()) {
+                throw new ModelClientException(
+                        "Chat stream produced neither tool calls nor content");
+            }
+            LOGGER.info("[chat-tools] finished sessionId={} answerChars={} usage={} durationMs={}",
+                    sessionId, answer.length(),
+                    usage[0] == null ? "n/a" : usage[0].totalTokens(),
+                    elapsedMillis(requestStarted));
+            return ToolCallResponse.answer(answer.toString(), usage[0]);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new ModelClientException("Chat tool stream was interrupted", exception);
+        } catch (IOException exception) {
+            throw new ModelClientException(
+                    "Chat tool stream request failed: " + exception.getMessage(), exception);
+        }
+    }
+
+    /** 解析厂商 arguments JSON 文本为工具调用参数映射；空文本视为无参数。 */
+    private Map<String, Object> parseToolCallArguments(String toolName, String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            JsonNode node = objectMapper.readTree(argumentsJson);
+            if (!node.isObject()) {
+                throw new ModelClientException(
+                        "Tool call arguments for " + toolName + " were not a JSON object");
+            }
+            Map<String, Object> arguments = new LinkedHashMap<>();
+            node.properties().forEach(entry ->
+                    arguments.put(entry.getKey(), scalarValue(entry.getValue())));
+            return arguments;
+        } catch (JacksonException exception) {
+            throw new ModelClientException(
+                    "Tool call arguments for " + toolName + " were invalid JSON", exception);
+        }
+    }
+
+    /** 标量取原生值，嵌套结构回退为 JSON 文本，与工具层参数绑定约定一致。 */
+    private static Object scalarValue(JsonNode node) {
+        if (node.isString()) {
+            return node.stringValue();
+        }
+        if (node.isIntegralNumber()) {
+            return node.asLong();
+        }
+        if (node.isNumber()) {
+            return node.decimalValue();
+        }
+        if (node.isBoolean()) {
+            return node.asBoolean();
+        }
+        return node.toString();
+    }
+
+    private void consumeToolCallSseLine(
+            String sessionId,
+            String line,
+            String model,
+            ReasoningFilter filter,
+            ToolCallAccumulator toolCalls,
+            ModelUsage[] usage) {
+        if (line == null || !line.startsWith("data:")) {
+            return;
+        }
+        String payload = line.substring("data:".length()).trim();
+        if (payload.isEmpty() || "[DONE]".equals(payload)) {
+            return;
+        }
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(payload);
+        } catch (JacksonException exception) {
+            LOGGER.debug("[chat-tools] skip non-JSON SSE line sessionId={}", sessionId);
+            return;
+        }
+        if (usage[0] == null) {
+            ModelUsage parsed = extractUsage(root, model);
+            if (parsed != null) {
+                usage[0] = parsed;
+            }
+        }
+        JsonNode delta = root.path("choices").path(0).path("delta");
+        JsonNode content = delta.path("content");
+        if (content.isString() && !content.stringValue().isEmpty()) {
+            filter.accept(content.stringValue());
+        }
+        JsonNode calls = delta.get("tool_calls");
+        if (calls != null && calls.isArray()) {
+            for (JsonNode call : calls) {
+                toolCalls.accept(call);
+            }
+        }
+    }
+
+    /**
+     * 聚合流式 {@code delta.tool_calls[]} 片段。
+     *
+     * <p>厂商按 index 分片下发：首个片段携带 {@code id} 与 {@code function.name}，
+     * 后续片段只携带 {@code function.arguments} 增量。按 index 累积，流结束后
+     * 输出完整调用。</p>
+     */
+    private static final class ToolCallAccumulator {
+
+        private final Map<Integer, Chunk> chunks = new LinkedHashMap<>();
+
+        record Completed(String id, String name, String argumentsJson) {
+        }
+
+        void accept(JsonNode call) {
+            int index = call.path("index").asInt(0);
+            Chunk chunk = chunks.computeIfAbsent(index, key -> new Chunk());
+            String id = textValue(call.get("id"));
+            if (id != null) {
+                chunk.id = id;
+            }
+            JsonNode function = call.path("function");
+            String name = textValue(function.get("name"));
+            if (name != null) {
+                chunk.name = chunk.name == null ? name : chunk.name + name;
+            }
+            JsonNode arguments = function.get("arguments");
+            if (arguments != null && arguments.isString()) {
+                chunk.arguments.append(arguments.stringValue());
+            }
+        }
+
+        boolean isEmpty() {
+            return chunks.isEmpty();
+        }
+
+        Completed firstCompleted() {
+            return chunks.values().stream()
+                    .filter(chunk -> chunk.name != null)
+                    .findFirst()
+                    .map(chunk -> new Completed(
+                            chunk.id == null ? "call-0" : chunk.id,
+                            chunk.name,
+                            chunk.arguments.toString()))
+                    .orElseThrow(() -> new ModelClientException(
+                            "Tool call delta carried no function name"));
+        }
+
+        private static final class Chunk {
+            private String id;
+            private String name;
+            private final StringBuilder arguments = new StringBuilder();
+        }
+    }
+
     private void consumeSseLine(
             String sessionId,
             String line,
@@ -325,6 +527,12 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             // 请求厂商在最后一个 SSE 块返回 usage；不支持的厂商会忽略该选项。
             body.put("stream_options", Map.of("include_usage", true));
         }
+        if (!request.tools().isEmpty()) {
+            body.put("tools", request.tools().stream()
+                    .map(OpenAiCompatibleChatClient::toolDefinition)
+                    .collect(Collectors.toList()));
+            body.put("tool_choice", "auto");
+        }
         if (properties.isReasoningSplit()) {
             body.put("reasoning_split", true);
         }
@@ -346,17 +554,58 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         return builder.build();
     }
 
-    /** 把 LlmRequest 展开为厂商消息数组：可选 system 指令 + user/assistant 序列。 */
+    /** 把 LlmRequest 展开为厂商消息数组：可选 system 指令 + user/assistant/tool 序列。 */
     private static List<Map<String, Object>> requestMessages(LlmRequest request) {
         List<Map<String, Object>> messages = new ArrayList<>();
         request.instruction().ifPresent(instruction -> messages.add(
                 message("system", instruction)));
         for (LlmMessage message : request.messages()) {
+            if (message.role() == LlmMessage.Role.TOOL) {
+                Map<String, Object> toolMessage = new LinkedHashMap<>();
+                toolMessage.put("role", "tool");
+                toolMessage.put("tool_call_id", message.toolCallId());
+                toolMessage.put("content", message.content());
+                messages.add(toolMessage);
+                continue;
+            }
+            if (message.role() == LlmMessage.Role.ASSISTANT && !message.toolCalls().isEmpty()) {
+                Map<String, Object> assistantMessage = new LinkedHashMap<>();
+                assistantMessage.put("role", "assistant");
+                assistantMessage.put("content", message.content());
+                assistantMessage.put("tool_calls", message.toolCalls().stream()
+                        .map(call -> {
+                            Map<String, Object> function = new LinkedHashMap<>();
+                            function.put("name", call.name());
+                            function.put("arguments", call.argumentsJson());
+                            Map<String, Object> payload = new LinkedHashMap<>();
+                            payload.put("id", call.id());
+                            payload.put("type", "function");
+                            payload.put("function", function);
+                            return payload;
+                        })
+                        .collect(Collectors.toList()));
+                messages.add(assistantMessage);
+                continue;
+            }
             messages.add(message(
                     message.role().name().toLowerCase(java.util.Locale.ROOT),
                     message.content()));
         }
         return messages;
+    }
+
+    /** 把统一工具定义映射为 OpenAI {@code tools[]} 元素。 */
+    private static Map<String, Object> toolDefinition(LlmToolDefinition definition) {
+        Map<String, Object> function = new LinkedHashMap<>();
+        function.put("name", definition.name());
+        function.put("description", definition.description());
+        function.put("parameters", definition.parametersSchema() == null
+                ? Map.of("type", "object", "properties", Map.of())
+                : definition.parametersSchema());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "function");
+        payload.put("function", function);
+        return payload;
     }
 
     /** 构造键序固定的消息体（role 在前、content 在后）；Map.of 的迭代顺序不稳定。 */

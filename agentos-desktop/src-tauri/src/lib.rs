@@ -38,6 +38,8 @@ pub fn run() {
             workspace::forget_workspace,
             workspace::list_directory,
             workspace::read_file,
+            workspace::workspace_context,
+            workspace::workspace_file_index,
             workspace::git_status,
             workspace::git_diff,
             workspace::terminal_create,

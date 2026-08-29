@@ -44,7 +44,8 @@ public final class AuthBootstrap implements ApplicationRunner {
             userStore.create(new UserAccount(
                     adminUsername,
                     passwordHasher.hash(adminPassword),
-                    Set.of(UserAccount.ROLE_ADMIN, "MEMORY_ADMIN", UserAccount.ROLE_USER),
+                    Set.of(UserAccount.ROLE_ADMIN, "MEMORY_ADMIN",
+                            UserAccount.ROLE_WORKSPACE, UserAccount.ROLE_USER),
                     null));
             LOGGER.info("[auth] bootstrapped admin user '{}'", adminUsername);
             return;

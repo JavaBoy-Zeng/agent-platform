@@ -359,6 +359,74 @@ class LlmAgentPlannerTest {
     }
 
     @Test
+    void allowsCompletionAfterWebResearchIsWrittenToMarkdown() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
+        PlanStep currentStep = new PlanStep(
+                "write-news", "write researched news", false,
+                new ToolCall("file_write", Map.of(
+                        "path", "/tmp/daily-news.md",
+                        "mode", "CREATE_NEW")));
+        AgentPlan previousPlan = new AgentPlan(
+                "plan-news", PlanType.EXECUTION, PlanOrigin.REPLANNED,
+                PlanOutcome.CONTINUE, "搜索当日新闻写成文档md格式",
+                List.of(currentStep), "");
+        List<StepResult> results = List.of(
+                new StepResult(
+                        previousPlan.id(), "search-news", "web_search",
+                        StepStatus.COMPLETED, "今日新闻搜索结果", "",
+                        ToolFailureType.NONE, 1),
+                new StepResult(
+                        previousPlan.id(), currentStep.id(), "file_write",
+                        StepStatus.COMPLETED, "已写入 /tmp/daily-news.md", "",
+                        ToolFailureType.NONE, 1));
+        PlanExecutionSnapshot snapshot = new PlanExecutionSnapshot(
+                results,
+                new DefaultObservationSummarizer().summarize(results),
+                currentStep,
+                results.getLast(),
+                ReplanReason.EXECUTION_COMPLETED);
+
+        try (MemoryService memoryService = MemoryService.inMemory()) {
+            ModelClient modelClient = request -> new ModelPlan(
+                    PlanType.EXECUTION, PlanOutcome.COMPLETE,
+                    "完成新闻文档", null,
+                    "1. **示例科技有限公司**：新闻已整理。\n\n文档已保存。");
+            LlmAgentPlanner planner = planner(modelClient, toolRegistry, memoryService);
+
+            AgentPlan plan = planner.replan(
+                    AgentRequest.of("session-1", "搜索当日新闻写成文档md格式"),
+                    InvocationContext.of("main-agent"), previousPlan, snapshot);
+
+            assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
+            assertThat(plan.finalAnswer()).contains("文档已保存");
+        }
+    }
+
+    @Test
+    void stillRequiresFreshEvidenceWhenSearchingInsideAFile() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
+        try (MemoryService memoryService = MemoryService.inMemory()) {
+            ModelClient modelClient = request -> new ModelPlan(
+                    PlanType.EXECUTION, PlanOutcome.COMPLETE,
+                    "搜索文件", null, "文件中存在目标内容");
+            LlmAgentPlanner planner = planner(modelClient, toolRegistry, memoryService);
+
+            AgentPlan plan = planner.createPlan(
+                    new AgentRequest("session-1", "在文档中搜索预算", Map.of(
+                            HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
+                            "用户：需要处理 /tmp/report.md\n助手：好的")),
+                    InvocationContext.of("main-agent"));
+
+            assertThat(plan.outcome()).isEqualTo(PlanOutcome.CONTINUE);
+            assertThat(plan.steps()).singleElement().satisfies(step ->
+                    assertThat(step.toolCall()).satisfies(call -> {
+                        assertThat(call.toolName()).isEqualTo("file_read");
+                        assertThat(call.arguments()).containsEntry("path", "/tmp/report.md");
+                    }));
+        }
+    }
+
+    @Test
     void rejectsOrganizationsMissingFromCurrentFileEvidence() {
         ToolRegistry toolRegistry = new ToolRegistry(List.of(fileReadTool()));
         PlanStep currentStep = new PlanStep(

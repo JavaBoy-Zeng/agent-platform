@@ -59,6 +59,7 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
                 ? "" : toolName.trim().toLowerCase(java.util.Locale.ROOT);
         return normalized.equals("file_write")
                 || normalized.equals("run_command")
+                || normalized.equals("weather")
                 || normalized.contains("browser")
                 || normalized.contains("search")
                 || normalized.contains("http")

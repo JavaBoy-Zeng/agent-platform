@@ -131,7 +131,7 @@ public final class WeatherTool implements AgentTool {
             if (coords == null) {
                 return ToolResult.failure(ToolFailureType.NOT_FOUND, "city not found: " + city);
             }
-            String result = queryForecast(city, coords[0], coords[1], startDate, endDate);
+            String result = queryForecast(city, coords[0], coords[1], today, startDate, endDate);
             return ToolResult.success(result);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -177,10 +177,14 @@ public final class WeatherTool implements AgentTool {
         return new double[]{latNode.asDouble(), lonNode.asDouble()};
     }
 
-    /** 查询预报并把 [start, end] 区间内的逐日数据展开为列表。 */
+    /**
+     * 查询预报并把 [start, end] 区间内的逐日数据展开为列表。
+     * forecast_days 以今天为基准计算（Open-Meteo 语义），再用区间过滤出目标日期。
+     */
     private String queryForecast(String city, double lat, double lon,
-                                 LocalDate start, LocalDate end) throws Exception {
-        int forecastDays = (int) java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1;
+                                 LocalDate today, LocalDate start, LocalDate end) throws Exception {
+        // Open-Meteo 的 forecast_days 从今天起往后数，必须覆盖到 end 而非 start
+        int forecastDays = (int) java.time.temporal.ChronoUnit.DAYS.between(today, end) + 1;
         if (forecastDays < 1) forecastDays = 1;
 
         String url = forecastEndpoint + "?latitude=" + lat + "&longitude=" + lon

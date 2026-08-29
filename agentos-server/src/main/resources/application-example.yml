@@ -5,7 +5,27 @@
 server:
   port: 8080
 
+spring:
+  datasource:
+    url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/agentos}"
+    username: "${SPRING_DATASOURCE_USERNAME:agentos}"
+    password: "${SPRING_DATASOURCE_PASSWORD:agentos}"
+    driver-class-name: org.postgresql.Driver
+  sql:
+    init:
+      mode: "${SPRING_SQL_INIT_MODE:always}"
+      schema-locations: classpath:db/schema-postgresql.sql
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
 agentos:
+  persistence:
+    # 正式运行使用 PostgreSQL；memory 仅用于测试。
+    mode: "${AGENTOS_PERSISTENCE_MODE:postgresql}"
   cors:
     # 桌面壳（Tauri）等跨域客户端的来源白名单，逗号分隔；"*" 放行全部。
     # 默认已放行 tauri://localhost 与 http://tauri.localhost，无需额外配置。
@@ -67,6 +87,8 @@ agentos:
       max-chars: 64
 
   model:
+    # Provider API Key 的 AES-256-GCM 主密钥（openssl rand -base64 32），生产环境必配。
+    secret-key: "${AGENTOS_MODEL_SECRET_KEY:}"
     # MiniMax 中国区 OpenAI-compatible 配置。
     model: "MiniMax-M3"
     api-key: "${AGENTOS_MODEL_API_KEY:}"
@@ -84,12 +106,8 @@ agentos:
     max-prompt-chars: 60000
 
   memory:
-    # 可选值：sqlite、file、memory。单实例持久化部署建议使用 sqlite。
-    mode: "sqlite"
-    # file 模式使用的版本化二进制状态目录。
-    data-dir: ".agentos/memory"
-    # sqlite 模式使用的数据库文件，首次启动自动执行内置迁移。
-    database-file: ".agentos/memory/memory.sqlite"
+    # 正式数据与运行态共用 PostgreSQL；memory 仅用于测试。
+    mode: "${AGENTOS_MEMORY_MODE:postgresql}"
     processor:
       # rule 为零配置规则抽取；生产环境使用 openai 并配置独立记忆加工模型。
       mode: "rule"

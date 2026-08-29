@@ -120,10 +120,14 @@ public final class RunCommandTool implements AgentTool {
             exitCode = process.exitValue();
             output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         } catch (InterruptedException exception) {
+            // cancel() 同时 interrupt 执行线程，这里被唤醒；
+            // destroyForcibly 确保子进程被杀，不留僵尸进程。
             process.destroyForcibly();
             Thread.currentThread().interrupt();
-            return ToolResult.failure(
-                    ToolFailureType.TIMEOUT, "command execution was interrupted");
+            // 优先用 token 的取消原因；token 未取消（纯线程 interrupt）时回退到默认描述。
+            String reason = context.invocation().cancellation().reason()
+                    .orElse("command execution was interrupted");
+            return ToolResult.failure(ToolFailureType.CANCELLED, reason);
         } catch (IOException exception) {
             process.destroyForcibly();
             return ToolResult.failure(

@@ -93,6 +93,19 @@ class ApprovalToolInterceptorTest {
         assertThat(result.proceed()).isFalse();
     }
 
+    @Test
+    void requestApprovalGuardsWeatherTool() {
+        AgentTool tool = tool("weather", AgentTool.RiskLevel.LOW);
+
+        ToolBeforeResult result = interceptor(AgentTool.RiskLevel.HIGH).beforeExecute(
+                new ToolCall("weather", Map.of("city", "北京")),
+                context(tool, Map.of("approvalMode", "REQUEST_APPROVAL")));
+
+        assertThat(result.proceed()).isFalse();
+        assertThat(result.result().actions().pendingAction().payload())
+                .containsEntry("toolName", "weather");
+    }
+
     private static ApprovalToolInterceptor interceptor(AgentTool.RiskLevel threshold) {
         return new ApprovalToolInterceptor(
                 new RiskPolicy(threshold), new ApprovalService(request -> false));

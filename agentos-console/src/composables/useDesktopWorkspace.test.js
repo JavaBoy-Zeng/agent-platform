@@ -11,7 +11,7 @@ vi.mock('../services/desktopApi.js', () => ({
 }))
 
 describe('desktop workspace state', () => {
-  it('authorizes WORKSPACE users and stores task associations locally', async () => {
+  it('authorizes ADMIN users and stores task associations locally', async () => {
     desktop.invoke.mockImplementation(async command => {
       if (command === 'authorize_workspace') {
         return { grantId: 'grant-1', user: 'alice', expiresAt: Date.now() + 60_000 }
@@ -22,10 +22,21 @@ describe('desktop workspace state', () => {
       if (command === 'upload_attachments') {
         return [{ name: 'brief.pdf', relativePath: 'brief.pdf', size: 42 }]
       }
+      if (command === 'workspace_context') {
+        return {
+          name: 'repo',
+          tree: ['ReadMe.md', 'pom.xml', 'src/'],
+          files: [{ path: 'ReadMe.md', content: '# Repo', truncated: false }],
+          truncated: false
+        }
+      }
+      if (command === 'workspace_file_index') {
+        return [{ name: 'ReadMe.md', relativePath: 'ReadMe.md', language: 'markdown' }]
+      }
       return null
     })
     setAuthToken('test-token')
-    setAuthUser({ username: 'alice', roles: ['USER', 'WORKSPACE'] })
+    setAuthUser({ username: 'alice', roles: ['USER', 'ADMIN'] })
     const agentConsole = { currentSessionId: ref('task-1') }
     let workspace
     const Harness = defineComponent({
@@ -51,6 +62,11 @@ describe('desktop workspace state', () => {
     expect(desktop.invoke).toHaveBeenCalledWith('upload_attachments', expect.objectContaining({
       grantId: 'grant-1', workspaceId: 'workspace-1'
     }))
+    await expect(workspace.buildRunContext(['src/Main.java'])).resolves.toEqual(expect.objectContaining({ name: 'repo' }))
+    expect(desktop.invoke).toHaveBeenCalledWith('workspace_context', expect.objectContaining({
+      grantId: 'grant-1', workspaceId: 'workspace-1', mentionedPaths: ['src/Main.java']
+    }))
+    expect(workspace.contextLoading.value).toBe(false)
     wrapper.unmount()
     await flushPromises()
   })
@@ -86,6 +102,41 @@ describe('desktop workspace state', () => {
     expect(desktop.invoke).toHaveBeenCalledWith('pick_workspace', { grantId: 'grant-2' })
     expect(workspace.currentWorkspace.value?.root).toBe('/local/agent-platform')
     expect(workspace.picking.value).toBe(false)
+    wrapper.unmount()
+    await flushPromises()
+  })
+
+  it('can pick a folder for a future task without changing the active task', async () => {
+    desktop.invoke.mockImplementation(async command => {
+      if (command === 'authorize_workspace') {
+        return { grantId: 'grant-3', user: 'alice', expiresAt: Date.now() + 60_000 }
+      }
+      if (command === 'list_workspaces') {
+        return [{ id: 'workspace-3', name: 'future-task', root: '/local/future-task', gitRepository: false }]
+      }
+      if (command === 'pick_workspace') {
+        return { id: 'workspace-3', name: 'future-task', root: '/local/future-task', gitRepository: false }
+      }
+      return null
+    })
+    setAuthToken('test-token')
+    setAuthUser({ username: 'alice', roles: ['USER', 'WORKSPACE'] })
+    const agentConsole = { currentSessionId: ref('existing-task') }
+    let workspace
+    const Harness = defineComponent({
+      setup() {
+        workspace = useDesktopWorkspace(agentConsole)
+        return () => h('div')
+      }
+    })
+    const wrapper = mount(Harness)
+    await flushPromises()
+
+    const picked = await workspace.pickWorkspace({ bind: false })
+
+    expect(picked?.id).toBe('workspace-3')
+    expect(workspace.currentWorkspace.value).toBeNull()
+    expect(localStorage.getItem('agentos.session-workspaces.v1')).toBeNull()
     wrapper.unmount()
     await flushPromises()
   })

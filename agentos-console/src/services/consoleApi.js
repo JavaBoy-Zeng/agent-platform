@@ -42,6 +42,30 @@ export const getArtifacts = (sessionId) => request(`/api/artifacts?sessionId=${e
 export const deleteArtifact = (artifactId) => request(`/api/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' })
 export const getAgentRuns = () => request('/api/agent-runs')
 
+export const getModelManagement = () => request('/api/model-management')
+export const createModelProvider = (provider) =>
+  request('/api/model-management/providers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(provider)
+  })
+export const updateModelProvider = (providerId, provider) =>
+  request(`/api/model-management/providers/${encodeURIComponent(providerId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(provider)
+  })
+export const deleteModelProvider = (providerId) =>
+  request(`/api/model-management/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' })
+export const testModelProvider = (providerId) =>
+  request(`/api/model-management/providers/${encodeURIComponent(providerId)}/test`, { method: 'POST' })
+export const assignModelRoute = (routeKey, route) =>
+  request(`/api/model-management/routes/${encodeURIComponent(routeKey)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(route)
+  })
+
 /** 按会话读取领域事件轨迹，按 Invocation 分组。 */
 export const getSessionEvents = (sessionId, type = '') => {
   const query = new URLSearchParams({ sessionId })

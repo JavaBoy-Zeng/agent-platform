@@ -21,6 +21,8 @@ const props = defineProps({
   workspaceAvailable: { type: Boolean, default: false },
   workspaces: { type: Array, default: () => [] },
   currentWorkspace: { type: Object, default: null },
+  workspaceFiles: { type: Array, default: () => [] },
+  workspaceFilesLoading: { type: Boolean, default: false },
   workspaceBusy: { type: Boolean, default: false },
   workspaceError: { type: String, default: '' }
 })
@@ -28,7 +30,7 @@ const props = defineProps({
 const emit = defineEmits([
   'update:agentId', 'update:sessionId', 'update:prompt', 'update:selectedModelId',
   'update:approvalMode', 'add-model', 'upload', 'select-workspace', 'pick-workspace',
-  'clear-workspace', 'run', 'stop'
+  'clear-workspace', 'remove-attachment', 'run', 'stop'
 ])
 
 const promptInput = ref(null)
@@ -37,12 +39,31 @@ const modelApiIdInput = ref(null)
 const openMenu = ref('')
 const addingModel = ref(false)
 const modelApiId = ref('')
+const mentionState = ref(null)
+const mentionActiveIndex = ref(0)
 
 const selectedModel = computed(() =>
   props.models.find(model => model.id === props.selectedModelId)
   || props.models[0]
   || { id: 'minimax-h3', name: t('Server 默认模型'), modelId: '' })
 const selectedModelLabel = computed(() => selectedModel.value.modelId || selectedModel.value.name)
+const mentionCandidates = computed(() => {
+  const query = mentionState.value?.query?.toLowerCase() || ''
+  return props.workspaceFiles
+    .filter(file => !query
+      || file.relativePath.toLowerCase().includes(query)
+      || file.name.toLowerCase().includes(query))
+    .sort((left, right) => {
+      const leftPath = left.relativePath.toLowerCase()
+      const rightPath = right.relativePath.toLowerCase()
+      const leftName = left.name.toLowerCase()
+      const rightName = right.name.toLowerCase()
+      const leftRank = leftName.startsWith(query) ? 0 : leftPath.startsWith(query) ? 1 : 2
+      const rightRank = rightName.startsWith(query) ? 0 : rightPath.startsWith(query) ? 1 : 2
+      return leftRank - rightRank || leftPath.localeCompare(rightPath)
+    })
+    .slice(0, 10)
+})
 
 const permissionOptions = computed(() => [
   { id: 'REQUEST_APPROVAL', label: t('请求批准'), description: t('编辑外部文件和使用互联网时始终询问') },
@@ -60,13 +81,82 @@ function scrollToTop() {
 
 function onInput(event) {
   emit('update:prompt', event.target.value)
+  updateMentionState(event.target.value, event.target.selectionStart)
   nextTick(scrollToTop)
 }
 
 function onKeydown(event) {
+  if (mentionState.value) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const count = mentionCandidates.value.length
+      if (count) {
+        mentionActiveIndex.value = event.key === 'ArrowDown'
+          ? (mentionActiveIndex.value + 1) % count
+          : (mentionActiveIndex.value - 1 + count) % count
+      }
+      return
+    }
+    if ((event.key === 'Enter' || event.key === 'Tab') && mentionCandidates.value.length) {
+      event.preventDefault()
+      selectMention(mentionCandidates.value[mentionActiveIndex.value] || mentionCandidates.value[0])
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeMention()
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      return
+    }
+  }
   if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || event.shiftKey) return
   event.preventDefault()
   if (!props.busy && props.prompt.trim()) emit('run')
+}
+
+function updateMentionState(value, cursor) {
+  const beforeCursor = String(value || '').slice(0, cursor ?? 0)
+  const match = beforeCursor.match(/(?:^|[\s([{，。！？,])@([^@\s]*)$/)
+  if (!match) {
+    closeMention()
+    return
+  }
+  mentionState.value = {
+    query: match[1] || '',
+    start: beforeCursor.length - (match[1]?.length || 0) - 1,
+    cursor: cursor ?? beforeCursor.length
+  }
+  mentionActiveIndex.value = 0
+}
+
+function syncMentionFromCursor() {
+  const input = promptInput.value
+  if (input) updateMentionState(input.value, input.selectionStart)
+}
+
+function closeMention() {
+  mentionState.value = null
+  mentionActiveIndex.value = 0
+}
+
+function selectMention(file) {
+  const input = promptInput.value
+  const state = mentionState.value
+  if (!input || !state || !file) return
+  const cursor = input.selectionStart ?? state.cursor
+  const reference = `@${file.relativePath}`
+  const separator = ' '
+  const nextValue = input.value.slice(0, state.start) + reference + separator + input.value.slice(cursor)
+  const nextCursor = state.start + reference.length + separator.length
+  emit('update:prompt', nextValue)
+  closeMention()
+  nextTick(() => {
+    promptInput.value?.focus()
+    promptInput.value?.setSelectionRange(nextCursor, nextCursor)
+  })
 }
 
 function toggleMenu(name) {
@@ -108,6 +198,7 @@ function closeMenus(event) {
 
 function onEscape(event) {
   if (event.key !== 'Escape') return
+  if (mentionState.value) closeMention()
   if (addingModel.value) closeAddModel()
   else openMenu.value = ''
 }
@@ -131,15 +222,46 @@ onUnmounted(() => {
     </div>
 
     <div class="prompt-frame">
+      <div v-if="mentionState" id="projectFileMentions" class="file-mention-menu" role="listbox" :aria-label="t('引用项目文件')">
+        <header>
+          <span class="mention-at" aria-hidden="true">@</span>
+          <span><strong>{{ t('引用项目文件') }}</strong><small>{{ currentWorkspace?.name || t('未选择项目目录') }}</small></span>
+          <kbd>↑↓</kbd><kbd>↵</kbd>
+        </header>
+        <div v-if="workspaceFilesLoading" class="mention-menu-state" role="status">
+          <span class="mini-loader" aria-hidden="true"></span>{{ t('正在读取项目文件…') }}
+        </div>
+        <template v-else-if="currentWorkspace && mentionCandidates.length">
+          <button v-for="(file, index) in mentionCandidates" :id="`projectFileMention-${index}`" :key="file.relativePath"
+                  type="button" role="option" :aria-selected="index === mentionActiveIndex"
+                  :class="{ active: index === mentionActiveIndex }"
+                  @pointerdown.prevent @mouseenter="mentionActiveIndex = index" @click="selectMention(file)">
+            <span class="mention-file-glyph" aria-hidden="true">{{ file.name.includes('.') ? file.name.split('.').pop().slice(0, 3) : 'TXT' }}</span>
+            <span><strong>{{ file.name }}</strong><small>{{ file.relativePath }}</small></span>
+            <span class="mention-file-language">{{ file.language }}</span>
+          </button>
+        </template>
+        <div v-else class="mention-menu-state">
+          {{ currentWorkspace ? t('没有匹配的项目文件') : t('请先选择项目目录') }}
+        </div>
+      </div>
       <label for="promptInput">{{ t('任务指令') }}</label>
       <textarea id="promptInput" ref="promptInput" :value="prompt" rows="3" maxlength="2000"
                 :placeholder="t('描述目标、限制条件和期望结果……')" required
-                @input="onInput" @keydown="onKeydown"></textarea>
+                :aria-expanded="Boolean(mentionState)" aria-controls="projectFileMentions"
+                :aria-activedescendant="mentionState && mentionCandidates.length ? `projectFileMention-${mentionActiveIndex}` : undefined"
+                @input="onInput" @click="syncMentionFromCursor" @keydown="onKeydown"></textarea>
     </div>
 
     <div v-if="attachments.length || uploadError" class="attachment-strip" aria-live="polite">
       <span v-for="attachment in attachments" :key="attachment.relativePath" class="attachment-chip">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5l5.9-5.9a3 3 0 014.2 4.2l-7.3 7.3a5 5 0 01-7.1-7.1l7-7" /></svg>{{ attachment.name }}
+        <svg class="attachment-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5l5.9-5.9a3 3 0 014.2 4.2l-7.3 7.3a5 5 0 01-7.1-7.1l7-7" /></svg>
+        <span class="attachment-name" :title="attachment.name">{{ attachment.name }}</span>
+        <button class="attachment-remove" type="button"
+                :aria-label="t('移除附件：{filename}', { filename: attachment.name })"
+                :title="t('移除附件')" @click="$emit('remove-attachment', attachment)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" /></svg>
+        </button>
       </span>
       <span v-if="uploadError" class="attachment-error">{{ uploadError }}</span>
     </div>
@@ -147,7 +269,7 @@ onUnmounted(() => {
     <div class="deck-actions">
       <div class="deck-left-actions">
         <button class="deck-icon-button attach-button" type="button" :disabled="uploading || !uploadAvailable"
-                :aria-label="t('上传附件到共奏目录')" :title="uploadAvailable ? t('上传附件到共奏目录') : t('附件上传仅在桌面端可用')"
+                :aria-label="t('上传附件')" :title="uploadAvailable ? t('上传附件') : t('附件上传仅在桌面端可用')"
                 @click="$emit('upload')">
           <span v-if="uploading" class="mini-loader" aria-hidden="true"></span>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16" /></svg>

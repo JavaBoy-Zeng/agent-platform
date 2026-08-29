@@ -7,7 +7,8 @@ import com.github.agentos.planner.LlmAgentPlanner;
 import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.PlanValidator;
 import com.github.agentos.server.model.ModelClientProperties;
-import com.github.agentos.server.model.OpenAiCompatibleModelClient;
+import com.github.agentos.server.model.ModelProviderService;
+import com.github.agentos.server.model.RoutingModelClients;
 import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -16,7 +17,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.databind.ObjectMapper;
 
-import java.net.http.HttpClient;
 
 /**
  * 非演示环境的大语言模型规划器装配。
@@ -35,14 +35,14 @@ public class LlmPlannerConfiguration {
     }
 
     /**
-     * 创建默认的 OpenAI-compatible 模型客户端。
+     * 创建默认的、支持 Provider 路由的模型客户端。
      *
      * <p>业务应用可以自行声明 {@link ModelClient} Bean 覆盖该默认适配器：
      * {@code @ConditionalOnMissingBean} 保证仅在容器中没有任何 {@link ModelClient}
      * 实现时才装配本兜底实现。</p>
      *
-     * <p>构造函数内部会执行 {@link ModelClientProperties#validate()}，
-     * 端点、模型名等关键配置缺失时应用启动即失败（快速失败）。</p>
+     * <p>每次规划调用都会解析 {@code planner} 路由，并由
+     * {@link RoutingModelClients.Planner} 校验最终的端点、模型名等关键配置。</p>
      *
      * @param properties      模型端点配置（绑定 {@code agentos.model.*}）
      * @param objectMapper    应用 JSON 映射器
@@ -54,19 +54,15 @@ public class LlmPlannerConfiguration {
     @ConditionalOnMissingBean(ModelClient.class)
     ModelClient openAiCompatibleModelClient(
             ModelClientProperties properties,
+            ModelProviderService providers,
             ObjectMapper objectMapper,
             com.github.agentos.planner.ModelUsageListener usageListener,
             FileAccessPolicy fileAccessPolicy) {
-        // 独立构建 HttpClient：连接超时取自 agentos.model.connect-timeout（仅约束 TCP 建连阶段，
-        // 完整请求超时由 request-timeout 在每次构造请求时控制）；跟随重定向以兼容网关地址跳转
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(properties.getConnectTimeout())
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-        // allowedRoot() 限定模型生成文件读写路径的根目录，防止越权访问；
-        // 没有单一根目录时传 null（不做路径约束）
-        return new OpenAiCompatibleModelClient(
-                httpClient, objectMapper, properties, usageListener,
+        // Provider 与模型由 planner 路由在每次调用时解析；连接超时、请求超时等网络参数
+        // 继续继承 agentos.model.* 的默认配置。
+        // allowedRoot() 限定模型生成文件读写路径的根目录；没有单一根目录时传 null。
+        return new RoutingModelClients.Planner(
+                providers, objectMapper, usageListener, properties,
                 fileAccessPolicy.allowedRoot().orElse(null));
     }
 

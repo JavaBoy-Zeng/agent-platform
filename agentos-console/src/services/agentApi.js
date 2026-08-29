@@ -139,6 +139,26 @@ export async function getAgentRun(runId) {
   return body
 }
 
+/**
+ * 上传会话附件到 Server 文件访问根目录，返回 {name, relativePath, size} 列表。
+ * 注意不能手动设置 Content-Type，需由浏览器自动携带 multipart boundary。
+ */
+export async function uploadSessionAttachments(sessionId, files) {
+  const form = new FormData()
+  form.append('sessionId', sessionId)
+  for (const file of files) form.append('files', file)
+  const response = await apiFetch(apiUrl('/api/attachments'), {
+    method: 'POST',
+    headers: authHeaders(),
+    body: form
+  })
+  const body = await readBody(response)
+  if (!response.ok) {
+    throw new AgentApiError(body?.detail || '附件上传失败', response.status)
+  }
+  return body
+}
+
 /** 从指定序号之后补播事件，并继续订阅实时事件。 */
 export async function streamAgentRun(runId, afterSequence = 0, onEvent = () => {}) {
   const query = new URLSearchParams({ after: String(Math.max(0, afterSequence || 0)) })

@@ -1,6 +1,8 @@
 package com.github.agentos.server.handler;
 
 import com.github.agentos.kernel.AgentRunRejectedException;
+import com.github.agentos.server.model.ModelProviderService.ProviderInUseException;
+import com.github.agentos.server.model.ModelProviderService.ProviderNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -50,6 +52,22 @@ public class AgentExceptionHandler {
     ProblemDetail handleIllegalArgument(IllegalArgumentException exception) {
         ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         detail.setTitle("Invalid agent request");
+        detail.setDetail(exception.getMessage());
+        return detail;
+    }
+
+    @ExceptionHandler(ProviderNotFoundException.class)
+    ProblemDetail handleProviderNotFound(ProviderNotFoundException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        detail.setTitle("Model Provider not found");
+        detail.setDetail(exception.getMessage());
+        return detail;
+    }
+
+    @ExceptionHandler(ProviderInUseException.class)
+    ProblemDetail handleProviderInUse(ProviderInUseException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        detail.setTitle("Model Provider is in use");
         detail.setDetail(exception.getMessage());
         return detail;
     }

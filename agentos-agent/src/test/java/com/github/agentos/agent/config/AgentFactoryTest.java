@@ -133,6 +133,75 @@ class AgentFactoryTest {
     }
 
     @Test
+    void buildParallel_referencesBuiltSpecialists() {
+        AgentDefinition specialist1 = new AgentDefinition(
+                "search-a", "specialist", "search agent a", "search instruction",
+                List.of("echo"), false, List.of(), true);
+        AgentDefinition specialist2 = new AgentDefinition(
+                "search-b", "specialist", "search agent b", "search instruction",
+                List.of("echo"), false, List.of(), true);
+        AgentDefinition parallel = new AgentDefinition(
+                "parallel-search", "parallel", "parallel search", "",
+                List.of(), false, List.of("search-a", "search-b"), true);
+
+        AgentFactory factory = new AgentFactory(context);
+        List<Agent> agents = factory.buildAll(List.of(specialist1, specialist2, parallel));
+
+        assertThat(agents).hasSize(3);
+        Agent parallelAgent = agents.get(2);
+        assertThat(parallelAgent.id()).isEqualTo("parallel-search");
+
+        // 并行执行两个子 Agent，状态应为 COMPLETED。
+        AgentRequest request = AgentRequest.of("s1", "test parallel");
+        var result = parallelAgent.run(request, InvocationContext.of("parallel-search"));
+        assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
+    }
+
+    @Test
+    void buildLoop_referencesBuiltSpecialists() {
+        AgentDefinition specialist = new AgentDefinition(
+                "worker", "specialist", "worker agent", "worker instruction",
+                List.of(), false, List.of(), true);
+        AgentDefinition loop = new AgentDefinition(
+                "loop-pipeline", "loop", "loop worker", "",
+                List.of(), false, List.of("worker"), true);
+
+        AgentFactory factory = new AgentFactory(context);
+        List<Agent> agents = factory.buildAll(List.of(specialist, loop));
+
+        assertThat(agents).hasSize(2);
+        Agent loopAgent = agents.get(1);
+        assertThat(loopAgent.id()).isEqualTo("loop-pipeline");
+
+        AgentRequest request = AgentRequest.of("s1", "test loop");
+        var result = loopAgent.run(request, InvocationContext.of("loop-pipeline"));
+        // loop 会执行 worker 直到终态或 maxIterations（默认 3）；COMPLETED 即可。
+        assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
+    }
+
+    @Test
+    void buildParallel_missingSubAgentThrows() {
+        AgentDefinition parallel = new AgentDefinition(
+                "parallel-bad", "parallel", "desc", "",
+                List.of(), false, List.of("nonexistent"), true);
+        AgentFactory factory = new AgentFactory(context);
+
+        assertThatThrownBy(() -> factory.buildAll(List.of(parallel)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("subAgent not found");
+    }
+
+    @Test
+    void unsupportedKindThrows() {
+        // AgentDefinition 的构造器校验 kind，应在构造期就抛 IllegalArgumentException。
+        assertThatThrownBy(() -> new AgentDefinition(
+                "bad", "unknown_kind", "desc", "instruction",
+                List.of(), false, List.of(), true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unsupported kind");
+    }
+
+    @Test
     void buildMultipleAgents_allRegisteredCorrectly() {
         AgentDefinition def1 = new AgentDefinition(
                 "a1", "specialist", "d1", "instruction1", List.of(), false, List.of(), true);

@@ -18,6 +18,13 @@ const draftTitle = ref('')
 const renameInput = ref(null)
 const deleteTarget = ref(null)
 const deleteButton = ref(null)
+const selectionMode = ref(false)
+const selectedSessionIds = ref(new Set())
+const bulkDeleteIds = ref([])
+const bulkDeleteButton = ref(null)
+const newTaskOpen = ref(false)
+const newTaskWorkspaceId = ref('')
+const newTaskDefaultOption = ref(null)
 const user = ref(getAuthUser())
 const drawerOpen = ref(false)
 let dialogReturnFocus = null
@@ -68,17 +75,105 @@ const groupedSessions = computed(() => {
   return labels.map(label => ({ label, sessions: groups.get(label) })).filter(group => group.sessions.length)
 })
 
+function sessionBusy(session) {
+  return Boolean(session.activeRunId || session.submitting)
+}
+const selectableSessions = computed(() => filteredSessions.value.filter(session => !sessionBusy(session)))
+const allSelectableSelected = computed(() =>
+  selectableSessions.value.length > 0 && selectableSessions.value.every(session => selectedSessionIds.value.has(session.id)))
+const recentWorkspaces = computed(() => desktopWorkspace.workspaces.value.slice(0, 6))
+
+function enterSelectionMode() {
+  openSessionId.value = ''; editingSessionId.value = ''
+  selectionMode.value = true
+}
+function exitSelectionMode() {
+  selectionMode.value = false
+  selectedSessionIds.value = new Set()
+}
+function toggleSessionSelection(session) {
+  if (sessionBusy(session)) return
+  const next = new Set(selectedSessionIds.value)
+  if (next.has(session.id)) next.delete(session.id)
+  else next.add(session.id)
+  selectedSessionIds.value = next
+}
+function toggleSelectAll() {
+  selectedSessionIds.value = allSelectableSelected.value
+    ? new Set()
+    : new Set(selectableSessions.value.map(session => session.id))
+}
+async function requestBulkDelete() {
+  const ids = [...selectedSessionIds.value]
+  if (!ids.length) return
+  dialogReturnFocus = document.activeElement
+  bulkDeleteIds.value = ids
+  await nextTick(); bulkDeleteButton.value?.focus()
+}
+async function closeBulkDeleteDialog() {
+  bulkDeleteIds.value = []
+  await nextTick(); dialogReturnFocus?.focus?.(); dialogReturnFocus = null
+}
+function confirmBulkDelete() {
+  if (!bulkDeleteIds.value.length) return
+  consoleState.deleteSessions([...bulkDeleteIds.value])
+  closeBulkDeleteDialog()
+  exitSelectionMode()
+}
+function trapBulkDialogFocus(event) {
+  if (!bulkDeleteIds.value.length) return
+  if (event.key === 'Escape') { event.preventDefault(); closeBulkDeleteDialog(); return }
+  if (event.key !== 'Tab') return
+  const dialog = event.currentTarget
+  const items = [...dialog.querySelectorAll('button:not(:disabled)')]
+  if (!items.length) return
+  const first = items[0]; const last = items[items.length - 1]
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
 function localized(value) { return isEnglish.value ? value.en : value.zh }
 function timeLabel(value) {
   if (!value) return ''
   return new Intl.DateTimeFormat(localeTag.value, { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 }
-function newTask() {
-  const inheritedWorkspace = desktopWorkspace.currentWorkspace.value?.id
+function createNewTask() {
   consoleState.createSession()
-  if (inheritedWorkspace) desktopWorkspace.bindWorkspace(inheritedWorkspace)
+  if (newTaskWorkspaceId.value) desktopWorkspace.bindWorkspace(newTaskWorkspaceId.value)
+  newTaskOpen.value = false
   drawerOpen.value = false
   router.push('/chat')
+}
+async function newTask() {
+  if (!desktopWorkspace.available.value) {
+    createNewTask()
+    return
+  }
+  dialogReturnFocus = document.activeElement
+  newTaskWorkspaceId.value = ''
+  newTaskOpen.value = true
+  await nextTick()
+  newTaskDefaultOption.value?.focus()
+}
+async function closeNewTaskDialog() {
+  newTaskOpen.value = false
+  newTaskWorkspaceId.value = ''
+  await nextTick()
+  dialogReturnFocus?.focus?.()
+  dialogReturnFocus = null
+}
+async function pickNewTaskWorkspace() {
+  const workspace = await desktopWorkspace.pickWorkspace({ bind: false })
+  if (workspace) newTaskWorkspaceId.value = workspace.id
+}
+function trapNewTaskDialogFocus(event) {
+  if (!newTaskOpen.value) return
+  if (event.key === 'Escape') { event.preventDefault(); closeNewTaskDialog(); return }
+  if (event.key !== 'Tab') return
+  const items = [...event.currentTarget.querySelectorAll('button:not(:disabled)')]
+  if (!items.length) return
+  const first = items[0]; const last = items[items.length - 1]
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
 function selectTask(id) { openSessionId.value = ''; drawerOpen.value = false; consoleState.selectSession(id); router.push('/chat') }
 async function beginRename(session) {
@@ -140,7 +235,10 @@ function onDocumentClick() { openSessionId.value = '' }
 function onKeydown(event) {
   if (event.key !== 'Escape') return
   openSessionId.value = ''; editingSessionId.value = ''
-  if (deleteTarget.value) closeDeleteDialog()
+  if (newTaskOpen.value) { closeNewTaskDialog(); return }
+  if (bulkDeleteIds.value.length) { closeBulkDeleteDialog(); return }
+  if (deleteTarget.value) { closeDeleteDialog(); return }
+  if (selectionMode.value) exitSelectionMode()
 }
 function onAuthChanged(event) { user.value = event.detail || getAuthUser() }
 
@@ -176,16 +274,55 @@ onUnmounted(() => {
     </div>
     <div class="sidebar-scroll codex-sidebar-scroll">
       <section class="task-groups" aria-label="Tasks">
+        <div class="task-groups-header">
+          <button
+            class="rail-select-toggle"
+            type="button"
+            :aria-label="t(selectionMode ? '退出多选' : '选择')"
+            @click="selectionMode ? exitSelectionMode() : enterSelectionMode()"
+          >
+            {{ t(selectionMode ? '取消' : '选择') }}
+          </button>
+          <span v-if="selectionMode" class="task-bulk-count">{{ t('已选 {count} 个', { count: selectedSessionIds.size }) }}</span>
+        </div>
+        <div v-if="selectionMode" class="session-bulk-bar" role="toolbar" :aria-label="t('删除所选')">
+          <button
+            class="bulk-select-all"
+            type="button"
+            role="checkbox"
+            :aria-checked="allSelectableSelected"
+            @click="toggleSelectAll"
+          >
+            <span class="session-check" :class="{ checked: allSelectableSelected }" aria-hidden="true"></span>
+            {{ t(allSelectableSelected ? '取消全选' : '全选') }}
+          </button>
+          <button
+            class="bulk-delete-button"
+            type="button"
+            :disabled="!selectedSessionIds.size"
+            @click="requestBulkDelete"
+          >
+            {{ t('删除所选') }}<span v-if="selectedSessionIds.size">{{ selectedSessionIds.size }}</span>
+          </button>
+        </div>
         <div v-for="group in groupedSessions" :key="group.label" class="task-group">
           <p>{{ group.label }}</p>
           <div v-for="session in group.sessions" :key="session.id" class="task-row"
                :class="{ active: route.path === '/chat' && session.id === consoleState.currentSessionId.value }">
-            <button v-if="editingSessionId !== session.id" class="task-select" type="button" @click="selectTask(session.id)">
+            <button v-if="editingSessionId !== session.id" class="task-select" type="button"
+                    :class="{ 'selection-control': selectionMode }"
+                    :role="selectionMode ? 'checkbox' : undefined"
+                    :aria-checked="selectionMode ? selectedSessionIds.has(session.id) : undefined"
+                    :aria-label="selectionMode ? t('选择会话：{title}', { title: t(session.title) }) : undefined"
+                    :disabled="selectionMode && sessionBusy(session)"
+                    :title="selectionMode && sessionBusy(session) ? t('运行中的会话不可选择') : ''"
+                    @click="selectionMode ? toggleSessionSelection(session) : selectTask(session.id)">
+              <span v-if="selectionMode" class="session-check" :class="{ checked: selectedSessionIds.has(session.id) }" aria-hidden="true"></span>
               <span>{{ t(session.title) }}</span><small>{{ timeLabel(session.updatedAt) }}</small>
             </button>
             <input v-else ref="renameInput" v-model="draftTitle" class="task-rename" maxlength="60"
                    @click.stop @keydown.enter.prevent="commitRename(session)" @blur="commitRename(session)">
-            <button class="task-more" type="button" aria-haspopup="menu" :aria-expanded="openSessionId === session.id" :aria-label="t('更多操作')"
+            <button v-if="!selectionMode" class="task-more" type="button" aria-haspopup="menu" :aria-expanded="openSessionId === session.id" :aria-label="t('更多操作')"
                     @click.stop="toggleTaskMenu(session, $event)" @keydown.down.stop="toggleTaskMenu(session, $event)"
                     @keydown.enter.stop="toggleTaskMenu(session, $event)" @keydown.space.stop="toggleTaskMenu(session, $event)">•••</button>
             <div v-if="openSessionId === session.id" class="task-menu" role="menu" @click.stop @keydown="navigateTaskMenu">
@@ -220,6 +357,55 @@ onUnmounted(() => {
   </aside>
 
   <Teleport to="body"><Transition name="dialog-fade">
+    <div v-if="newTaskOpen" class="dialog-backdrop" @click.self="closeNewTaskDialog">
+      <section class="new-task-dialog" role="dialog" aria-modal="true" aria-labelledby="newTaskTitle"
+               aria-describedby="newTaskDescription" @keydown="trapNewTaskDialogFocus">
+        <header class="new-task-dialog-head">
+          <span class="new-task-dialog-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3zM12 12v4M10 14h4" /></svg>
+          </span>
+          <div><small>LOCAL WORKSPACE</small><h2 id="newTaskTitle">{{ t('新建任务') }}</h2></div>
+          <button type="button" :aria-label="t('关闭')" @click="closeNewTaskDialog">×</button>
+        </header>
+        <p id="newTaskDescription" class="new-task-dialog-description">{{ t('选择宿主机目录作为这个任务的工作目录，也可以稍后再选择。') }}</p>
+
+        <div class="new-task-workspaces" role="radiogroup" :aria-label="t('任务目录')">
+          <button ref="newTaskDefaultOption" type="button" role="radio"
+                  :aria-checked="newTaskWorkspaceId === ''" :class="{ selected: newTaskWorkspaceId === '' }"
+                  @click="newTaskWorkspaceId = ''">
+            <span class="workspace-choice-icon" aria-hidden="true">—</span>
+            <span><strong>{{ t('不使用文件夹') }}</strong><small>{{ t('创建普通对话任务') }}</small></span>
+            <span class="workspace-choice-mark" aria-hidden="true"></span>
+          </button>
+          <button v-for="workspace in recentWorkspaces" :key="workspace.id" type="button" role="radio"
+                  :aria-checked="newTaskWorkspaceId === workspace.id"
+                  :class="{ selected: newTaskWorkspaceId === workspace.id }"
+                  @click="newTaskWorkspaceId = workspace.id">
+            <span class="workspace-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" /></svg>
+            </span>
+            <span><strong>{{ workspace.name }}</strong><small>{{ workspace.root }}</small></span>
+            <span class="workspace-choice-mark" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <button class="new-task-browse" type="button" :disabled="desktopWorkspace.picking.value"
+                @click="pickNewTaskWorkspace">
+          <span v-if="desktopWorkspace.picking.value" class="mini-loader" aria-hidden="true"></span>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM12 5v4M10 7h4" /></svg>
+          <span><strong>{{ t('选择其他文件夹') }}</strong><small>{{ t('打开宿主机目录选择器') }}</small></span>
+        </button>
+        <p v-if="desktopWorkspace.error.value" class="new-task-dialog-error" role="status">{{ desktopWorkspace.error.value }}</p>
+
+        <footer class="new-task-dialog-actions">
+          <button type="button" class="dialog-cancel" @click="closeNewTaskDialog">{{ t('取消') }}</button>
+          <button type="button" class="new-task-create" @click="createNewTask">{{ t('创建任务') }}</button>
+        </footer>
+      </section>
+    </div>
+  </Transition></Teleport>
+
+  <Teleport to="body"><Transition name="dialog-fade">
     <div v-if="deleteTarget" class="dialog-backdrop" @click.self="closeDeleteDialog">
       <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="deleteTaskTitle" @keydown="trapDialogFocus">
         <div class="confirm-dialog-icon" aria-hidden="true">⌫</div>
@@ -227,6 +413,18 @@ onUnmounted(() => {
           <p>{{ t('“{title}”将从服务端会话列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { title: t(deleteTarget.title) }) }}</p></div>
         <div class="confirm-dialog-actions"><button type="button" class="dialog-cancel" @click="closeDeleteDialog">{{ t('取消') }}</button>
           <button ref="deleteButton" type="button" class="dialog-confirm" @click="confirmDelete">{{ t('删除') }}</button></div>
+      </section>
+    </div>
+  </Transition></Teleport>
+
+  <Teleport to="body"><Transition name="dialog-fade">
+    <div v-if="bulkDeleteIds.length" class="dialog-backdrop" @click.self="closeBulkDeleteDialog">
+      <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="bulkDeleteTaskTitle" @keydown="trapBulkDialogFocus">
+        <div class="confirm-dialog-icon" aria-hidden="true">⌫</div>
+        <div class="confirm-dialog-copy"><h2 id="bulkDeleteTaskTitle">{{ t('批量删除会话？') }}</h2>
+          <p>{{ t('选中的 {count} 个会话将从服务端会话列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { count: bulkDeleteIds.length }) }}</p></div>
+        <div class="confirm-dialog-actions"><button type="button" class="dialog-cancel" @click="closeBulkDeleteDialog">{{ t('取消') }}</button>
+          <button ref="bulkDeleteButton" type="button" class="dialog-confirm" @click="confirmBulkDelete">{{ t('删除 {count} 个会话', { count: bulkDeleteIds.length }) }}</button></div>
       </section>
     </div>
   </Transition></Teleport>

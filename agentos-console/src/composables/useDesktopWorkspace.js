@@ -15,13 +15,20 @@ export function useDesktopWorkspace(agentConsole) {
   const associations = ref(readAssociations())
   const authorizing = ref(false)
   const picking = ref(false)
+  const contextLoading = ref(false)
+  const fileIndexLoading = ref(false)
+  const workspaceFiles = ref([])
   const error = ref('')
   const inspectorMode = ref('')
   const terminalOpen = ref(false)
   let refreshTimer
+  let fileIndexRequest = 0
 
   const authUser = ref(getAuthUser())
-  const hasRole = computed(() => authUser.value?.roles?.includes('WORKSPACE'))
+  // ADMIN 是系统超级管理员；桌面端本机能力不应因旧管理员账户缺少后来新增的
+  // WORKSPACE 角色而被整块隐藏。普通用户仍必须显式授予 WORKSPACE。
+  const hasRole = computed(() => authUser.value?.roles?.some(
+    role => role === 'WORKSPACE' || role === 'ADMIN'))
   const currentSessionId = computed(() => agentConsole.currentSessionId.value)
   const currentWorkspaceId = computed(() => associations.value[currentSessionId.value] || '')
   const currentWorkspace = computed(() =>
@@ -81,7 +88,7 @@ export function useDesktopWorkspace(agentConsole) {
     try { localStorage.setItem(SESSION_WORKSPACE_KEY, JSON.stringify(next)) } catch { /* local only */ }
   }
 
-  async function pickWorkspace() {
+  async function pickWorkspace({ bind = true } = {}) {
     if (picking.value) return null
     picking.value = true
     error.value = ''
@@ -90,7 +97,7 @@ export function useDesktopWorkspace(agentConsole) {
       const workspace = await invokeDesktop('pick_workspace', { grantId })
       if (workspace) {
         await refreshWorkspaces()
-        bindWorkspace(workspace.id)
+        if (bind) bindWorkspace(workspace.id)
       }
       return workspace
     } catch (cause) {
@@ -107,6 +114,46 @@ export function useDesktopWorkspace(agentConsole) {
       if (!picked) return []
     }
     return call('upload_attachments')
+  }
+
+  async function refreshFileIndex() {
+    const request = ++fileIndexRequest
+    const workspace = currentWorkspace.value
+    workspaceFiles.value = []
+    if (!workspace) {
+      fileIndexLoading.value = false
+      return
+    }
+    fileIndexLoading.value = true
+    try {
+      const grantId = await ensureGrant()
+      const files = await invokeDesktop('workspace_file_index', {
+        grantId,
+        workspaceId: workspace.id
+      })
+      if (request === fileIndexRequest) workspaceFiles.value = files
+    } catch (cause) {
+      if (request === fileIndexRequest) {
+        error.value = String(cause).replace(/^Error:\s*/, '') || '无法读取项目文件列表'
+      }
+    } finally {
+      if (request === fileIndexRequest) fileIndexLoading.value = false
+    }
+  }
+
+  async function buildRunContext(mentionedPaths = []) {
+    if (!currentWorkspace.value) return null
+    if (contextLoading.value) throw new Error('正在读取本地项目上下文')
+    contextLoading.value = true
+    error.value = ''
+    try {
+      return await call('workspace_context', { mentionedPaths })
+    } catch (cause) {
+      error.value = String(cause).replace(/^Error:\s*/, '') || '无法读取本地项目上下文'
+      throw cause
+    } finally {
+      contextLoading.value = false
+    }
   }
 
   async function forgetWorkspace(workspaceId) {
@@ -161,6 +208,7 @@ export function useDesktopWorkspace(agentConsole) {
     inspectorMode.value = ''
     terminalOpen.value = false
   })
+  watch(currentWorkspace, () => refreshFileIndex())
   onUnmounted(() => {
     window.removeEventListener('agentos:auth-changed', syncAuthorization)
     dispose()
@@ -173,9 +221,12 @@ export function useDesktopWorkspace(agentConsole) {
     grant,
     authorizing,
     picking,
+    contextLoading,
+    fileIndexLoading,
     error,
     workspaces,
     currentWorkspace,
+    workspaceFiles,
     inspectorMode,
     terminalOpen,
     authorize,
@@ -183,6 +234,8 @@ export function useDesktopWorkspace(agentConsole) {
     clearWorkspace,
     pickWorkspace,
     uploadAttachments,
+    buildRunContext,
+    refreshFileIndex,
     forgetWorkspace,
     refreshWorkspaces,
     call,

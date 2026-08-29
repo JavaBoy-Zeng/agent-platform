@@ -1,7 +1,7 @@
 package com.github.agentos.server;
 
 import com.github.agentos.planner.ModelClient;
-import com.github.agentos.server.model.OpenAiCompatibleModelClient;
+import com.github.agentos.server.model.RoutingModelClients;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -22,6 +22,6 @@ class ModelClientConfigurationIntegrationTest {
 
     @Test
     void registersDefaultModelClientOutsideDemoProfile() {
-        assertThat(modelClient).isInstanceOf(OpenAiCompatibleModelClient.class);
+        assertThat(modelClient).isInstanceOf(RoutingModelClients.Planner.class);
     }
 }

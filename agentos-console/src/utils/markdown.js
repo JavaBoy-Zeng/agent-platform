@@ -14,8 +14,9 @@ const IDENTIFIER_RE = new RegExp(
   + [
     // 完整路径整体成块（/绝对路径、~/、./、../），优先于片段规则，
     // 防止路径内部的 snake_case 等片段被单独抠出、把路径拆碎；
-    // 前瞻要求出现字母，避免 24/7 这类纯数字斜杠组合被误标
-    '(?:~|\\.{1,2})?\\/(?=[\\w@./-]*[A-Za-z])(?:[\\w@.-]+\\/)*[\\w@.-]+',
+    // 前瞻要求出现字母，避免 24/7 这类纯数字斜杠组合被误标；
+    // 后行断言要求裸 / 处于词边界，避免 yes/no、and/or 这类斜杠短语被误标
+    '(?<![\\w@.-])(?:~|\\.{1,2})?\\/(?=[\\w@./-]*[A-Za-z])(?:[\\w@.-]+\\/)*[\\w@.-]+',
     // 多级相对路径（src/main/java），同样要求含字母
     '\\b(?=[\\w@./-]*[A-Za-z])[\\w@.-]+(?:\\/[\\w@.-]+){2,}',
     '\\b[\\w.-]+\\.(?:java|kt|scala|md|markdown|txt|json|xml|yml|yaml|properties|gradle|sql|csv|ts|tsx|js|jsx|py|html|css|scss|vue|docx|pdf|log|sh|bat|toml|conf|ini)\\b',

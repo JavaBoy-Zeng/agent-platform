@@ -54,6 +54,8 @@ public final class SupervisorAgent implements Agent, AgentLoop {
     private final ChatClient chatClient;
     private final Map<String, Agent> specialists;
     private final AgentLoop fallback;
+    /** fallback 的展示标识：fallback 实现 {@link Agent} 时取其 id，否则按 main-agent 记账。 */
+    private final String fallbackId;
     private final ObjectMapper objectMapper;
     private final double minConfidence;
     private final HistoryProcessor historyProcessor = new HistoryProcessor();
@@ -73,6 +75,7 @@ public final class SupervisorAgent implements Agent, AgentLoop {
         this.specialists = Map.copyOf(Objects.requireNonNull(
                 specialists, "specialists must not be null"));
         this.fallback = Objects.requireNonNull(fallback, "fallback must not be null");
+        this.fallbackId = fallback instanceof Agent agent ? agent.id() : "main-agent";
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         if (!Double.isFinite(minConfidence) || minConfidence < 0.0 || minConfidence > 1.0) {
             throw new IllegalArgumentException("minConfidence must be within [0.0, 1.0]");
@@ -217,7 +220,7 @@ public final class SupervisorAgent implements Agent, AgentLoop {
         Map<String, Object> data = new java.util.LinkedHashMap<>();
         data.put("rejectionCode", rejectionCode);
         data.put("reason", reason == null ? "" : reason);
-        data.put("fallbackAgent", "main-agent");
+        data.put("fallbackAgent", fallbackId);
         data.put("router", "supervisor");
         if (decision != null) {
             data.put("scope", decision.scope().name());
@@ -237,7 +240,7 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             InvocationContext context,
             AgentState runningState,
             AgentEventSink eventSink) {
-        return fallback.run(request, context.withAgentId("main-agent"), runningState, eventSink);
+        return fallback.run(request, context.withAgentId(fallbackId), runningState, eventSink);
     }
 
     private static AgentState clarify(

@@ -231,6 +231,25 @@ class WeatherToolTest {
     }
 
     @Test
+    void futureOnlyQueryReturnsThatDay() {
+        // 只查明天：forecast_days 必须从今天起覆盖到明天，再过滤出明天的数据
+        LocalDate tomorrow = LocalDate.now().plusDays(1);
+        ToolResult result = tool.execute(ToolContexts.testContext(tool),
+                new ToolCall("weather", Map.of(
+                        "city", "重庆",
+                        "start_date", tomorrow.toString(),
+                        "end_date", tomorrow.toString())));
+
+        assertThat(result.success()).isTrue();
+        String output = result.output();
+        // mock 数据中明天对应 index=1：weathercode=61, tempMax=30.0
+        assertThat(output)
+                .contains("date=" + tomorrow)
+                .contains("weatherCode=61")
+                .contains("tempMax=30.0");
+    }
+
+    @Test
     void parsesFiveDayRange() {
         // 一次查询未来 5 天
         ToolResult result = tool.execute(ToolContexts.testContext(tool),

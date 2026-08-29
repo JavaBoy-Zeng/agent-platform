@@ -60,4 +60,45 @@ public interface ChatClient {
     /** 一次直答回答及其用量。 */
     record ChatResponse(String answer, ModelUsage usage) {
     }
+
+    /**
+     * 原生 function calling 调用：工具定义经协议层随请求下发，
+     * 模型在协议层返回结构化工具调用，正文与工具调用天然分离。
+     *
+     * <p>请求须携带 {@link LlmRequest#tools()}；消息序列中的 assistant
+     * {@code toolCalls} 与 TOOL 结果消息按 {@code toolCallId} 配对回传。
+     * 返回值二选一：{@code toolCall} 非空表示模型请求调用工具（正文为
+     * 模型附带说明，可能为空），否则 {@code answer} 为最终回答。
+     * 支持该协议的客户端应覆盖本方法；默认实现不支持工具调用。</p>
+     *
+     * @param sessionId 会话标识
+     * @param request   携带工具定义与消息序列的请求
+     * @param onDelta   最终回答正文的增量回调；工具调用轮不会产生正文增量
+     * @return 结构化工具调用或最终回答
+     */
+    default ToolCallResponse chatWithTools(
+            String sessionId, LlmRequest request, java.util.function.Consumer<String> onDelta) {
+        Objects.requireNonNull(onDelta, "onDelta must not be null");
+        throw new UnsupportedOperationException(
+                "This ChatClient does not support native function calling");
+    }
+
+    /** 一次 function calling 调用的结果：结构化工具调用或最终回答。 */
+    record ToolCallResponse(
+            String answer,
+            com.github.agentos.tool.api.ToolCall toolCall,
+            String toolCallId,
+            ModelUsage usage) {
+
+        /** 创建最终回答结果。 */
+        public static ToolCallResponse answer(String answer, ModelUsage usage) {
+            return new ToolCallResponse(answer, null, null, usage);
+        }
+
+        /** 创建工具调用结果。 */
+        public static ToolCallResponse call(
+                com.github.agentos.tool.api.ToolCall call, String toolCallId, ModelUsage usage) {
+            return new ToolCallResponse("", call, toolCallId, usage);
+        }
+    }
 }

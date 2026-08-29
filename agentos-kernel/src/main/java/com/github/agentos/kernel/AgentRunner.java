@@ -49,6 +49,8 @@ public final class AgentRunner {
     private final ConcurrentMap<String, String> latestInvocationIds = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CancellationToken> activeCancellations =
             new ConcurrentHashMap<>();
+    /** 每个会话当前执行线程的引用，cancel 时 interrupt 让阻塞 I/O（shell/HTTP）立即响应取消。 */
+    private final ConcurrentMap<String, Thread> activeThreads = new ConcurrentHashMap<>();
 
     /**
      * 创建 Agent Runner。
@@ -304,6 +306,7 @@ public final class AgentRunner {
                 .withCancellation(token);
         plugins.beforeRun(request, invocationContext);
         activeCancellations.put(request.sessionId(), token);
+        activeThreads.put(request.sessionId(), Thread.currentThread());
         AgentState result;
         try {
             result = states.compute(request.sessionId(), (sessionId, previous) -> {
@@ -340,7 +343,11 @@ public final class AgentRunner {
                     if (token.isCancelled()
                             || Thread.currentThread().isInterrupted()
                             || exception instanceof java.util.concurrent.CancellationException) {
-                        AgentState cancelled = running.cancel(message);
+                        // cancel() 现在同时设置 token 与 interrupt 线程；
+                        // token 已取消时优先用 token 的 reason，让取消原因来自
+                        // 用户调用 cancel() 时传入的文本，而非 InterruptedException 的 message。
+                        String cancelReason = token.reason().orElse(message);
+                        AgentState cancelled = running.cancel(cancelReason);
                         invocation.finish(cancelled);
                         publishTerminal(invocationContext, cancelled, terminalDelta(
                                 request, context.userId(), cancelled.status()));
@@ -356,6 +363,7 @@ public final class AgentRunner {
             });
         } finally {
             activeCancellations.remove(request.sessionId(), token);
+            activeThreads.remove(request.sessionId(), Thread.currentThread());
         }
         plugins.afterRun(request, invocationContext, result);
         retainTerminalInvocation(invocation, result);
@@ -466,6 +474,7 @@ public final class AgentRunner {
             return rejected;
         }
         activeCancellations.put(checkpoint.sessionId(), token);
+        activeThreads.put(checkpoint.sessionId(), Thread.currentThread());
         AgentState result;
         try {
             result = states.compute(checkpoint.sessionId(), (sessionId, previous) -> {
@@ -492,6 +501,7 @@ public final class AgentRunner {
             throw exception;
         } finally {
             activeCancellations.remove(checkpoint.sessionId(), token);
+            activeThreads.remove(checkpoint.sessionId(), Thread.currentThread());
         }
         plugins.afterRun(request, context, result);
         retainTerminalInvocation(invocation, result);
@@ -503,7 +513,8 @@ public final class AgentRunner {
      *
      * <p>设置协作式取消令牌后立即返回，不等待执行链退出；执行链在下一个协作点
      * （计划步骤边界、工具调用边界、直答调用边界）感知并收敛为 CANCELLED 终态。
-     * 阻塞在 I/O 上的执行仍需调用方配合线程中断。</p>
+     * 同时中断执行线程，让阻塞 I/O（shell waitFor、HTTP 流式读）立即响应取消，
+     * 不必等到下一个协作点。</p>
      *
      * @param sessionId 会话标识
      * @param cancelReason 取消原因
@@ -516,6 +527,11 @@ public final class AgentRunner {
             return false;
         }
         token.cancel(cancelReason);
+        // 中断执行线程，让阻塞 I/O 立即响应取消。
+        Thread thread = activeThreads.get(sessionId);
+        if (thread != null && thread.isAlive()) {
+            thread.interrupt();
+        }
         return true;
     }
 

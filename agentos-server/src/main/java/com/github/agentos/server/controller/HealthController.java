@@ -1,5 +1,7 @@
 package com.github.agentos.server.controller;
 
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -16,8 +18,22 @@ import java.util.Map;
 @RequestMapping("/api")
 public class HealthController {
 
+    private final BuildProperties build;
+
+    public HealthController(ObjectProvider<BuildProperties> build) {
+        this.build = build.getIfAvailable();
+    }
+
     @GetMapping("/health")
     Map<String, String> health() {
-        return Map.of("status", "UP");
+        if (build == null) {
+            return Map.of("status", "UP", "buildId", "development");
+        }
+        String deployId = build.get("deployId");
+        return Map.of(
+                "status", "UP",
+                "version", build.getVersion(),
+                "buildId", deployId == null || deployId.isBlank() ? "development" : deployId,
+                "buildTime", build.getTime().toString());
     }
 }

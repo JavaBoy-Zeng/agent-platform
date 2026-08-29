@@ -2,6 +2,7 @@ package com.github.agentos.server.config;
 
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.loop.MainAgent;
+import com.github.agentos.agent.loop.ReactAgent;
 import com.github.agentos.agent.specialist.CodeAgent;
 import com.github.agentos.agent.specialist.ReportAgent;
 import com.github.agentos.agent.specialist.SearchAgent;
@@ -106,7 +107,9 @@ public class SpecialistConfiguration {
      * 创建监督 Agent，作为 RoutingAgentLoop 的 fallback。
      *
      * <p>使用单次 LLM 调用完成任务分类；FULL_ACCESS 可直接派发专业 Agent，
-     * 其余权限模式与复杂任务回退到 MainAgent 的统一工具审批/续跑链路。</p>
+     * 其余权限模式与复杂任务回退到 MainAgent 的统一工具审批/续跑链路。
+     * 当 {@code agentos.agent.loop.mode=react} 时，fallback 切换为
+     * {@link ReactAgent}（无显式计划、每轮即时决策的 Tool-Calling 循环）。</p>
      */
     @Bean
     SupervisorAgent supervisorAgent(
@@ -115,12 +118,16 @@ public class SpecialistConfiguration {
             ObjectProvider<CodeAgent> codeAgentProvider,
             ReportAgent reportAgent,
             MainAgent mainAgent,
+            ObjectProvider<ReactAgent> reactAgentProvider,
             @Value("${agentos.router.supervisor.min-confidence:0.75}") double minConfidence) {
         Map<String, Agent> specialists = new LinkedHashMap<>();
         specialists.put(SearchAgent.ID, searchAgent);
         specialists.put(ReportAgent.ID, reportAgent);
         codeAgentProvider.ifAvailable(codeAgent -> specialists.put(CodeAgent.ID, codeAgent));
+        ReactAgent reactAgent = reactAgentProvider.getIfAvailable();
+        com.github.agentos.kernel.AgentLoop fallback =
+                reactAgent != null ? reactAgent : mainAgent;
         return new SupervisorAgent(
-                chatClient, specialists, mainAgent, new ObjectMapper(), minConfidence);
+                chatClient, specialists, fallback, new ObjectMapper(), minConfidence);
     }
 }

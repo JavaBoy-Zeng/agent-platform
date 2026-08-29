@@ -8,6 +8,7 @@ import {
   resolvePendingAction,
   streamAgentRun
 } from '../services/agentApi.js'
+import { buildRunInput } from '../utils/runInput.js'
 import {
   deleteSessionRecord,
   getConsoleCatalog,
@@ -843,7 +844,7 @@ export function useAgentConsole() {
     })
   }
 
-  async function execute() {
+  async function execute(attachments = [], workspaceContext = null) {
     const task = prompt.value.trim()
     if (!task || busy.value) return
 
@@ -884,10 +885,14 @@ export function useAgentConsole() {
         approvalMode: approvalMode.value
       }
       if (selectedModel?.modelId) attributes.model = selectedModel.modelId
+      if (workspaceContext?.name) {
+        attributes.workspaceName = workspaceContext.name
+        attributes.workspaceContextFiles = workspaceContext.files?.length || 0
+      }
       const run = await createAgentRun({
         agentId: normalizedAgentId,
         sessionId: normalizedSessionId,
-        input: task,
+        input: buildRunInput(task, attachments, workspaceContext),
         attributes
       })
       connection.value = 'online'
