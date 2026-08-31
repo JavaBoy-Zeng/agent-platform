@@ -1,0 +1,151 @@
+name: Build Desktop Installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Desktop platform to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+      api_base_url:
+        description: API base URL embedded in the desktop application
+        required: false
+        default: https://agent.touch-ai.tech
+        type: string
+  push:
+    tags:
+      - desktop-v*
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  VITE_API_BASE_URL: ${{ inputs.api_base_url || 'https://agent.touch-ai.tech' }}
+  AGENTOS_DESKTOP_SERVER_URL: ${{ inputs.api_base_url || 'https://agent.touch-ai.tech' }}
+
+jobs:
+  build-windows:
+    name: Build Windows x64 installer
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            agentos-console/package-lock.json
+            agentos-desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agentos-desktop/src-tauri
+
+      - name: Install console dependencies
+        working-directory: agentos-console
+        run: npm ci
+
+      - name: Install desktop dependencies
+        working-directory: agentos-desktop
+        run: npm ci
+
+      - name: Build NSIS installer
+        working-directory: agentos-desktop
+        run: npm run build -- --bundles nsis --target x86_64-pc-windows-msvc
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentOS-windows-x64
+          path: agentos-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  build-macos:
+    name: Build macOS universal installer
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
+    runs-on: macos-latest
+    env:
+      APPLE_SIGNING_IDENTITY: '-'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            agentos-console/package-lock.json
+            agentos-desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agentos-desktop/src-tauri
+
+      - name: Install console dependencies
+        working-directory: agentos-console
+        run: npm ci
+
+      - name: Install desktop dependencies
+        working-directory: agentos-desktop
+        run: npm ci
+
+      - name: Build universal DMG installer
+        working-directory: agentos-desktop
+        run: npm run build -- --bundles dmg --target universal-apple-darwin
+
+      - name: Upload macOS installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentOS-macos-universal
+          path: agentos-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release:
+    name: Attach installers to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: AgentOS-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Attach installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
