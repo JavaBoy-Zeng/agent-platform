@@ -26,7 +26,7 @@ PostgreSQL 字段注释。
 - `agent_events`、`agent_sessions`、`agent_checkpoints`、`agent_continuations`：运行状态。
 - `session_usage`、`users`：用量和账户。
 - `memory_records`：L0-L3 记忆、向量快照和记忆加工任务。
-- `model_providers`、`model_routes`：加密模型连接和 planner/chat 路由。
+- `model_providers`：加密保存内置与自定义模型连接；任务通过平台模型 ID 显式选择模型。
 
 生产环境应通过 Secret Manager 或部署平台注入数据库密码和模型主密钥。数据库需启用
 备份、TLS 和最小权限账户；不要复用示例 Compose 的默认密码。

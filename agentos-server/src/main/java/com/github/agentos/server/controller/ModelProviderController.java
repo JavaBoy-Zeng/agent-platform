@@ -1,7 +1,6 @@
 package com.github.agentos.server.controller;
 
 import com.github.agentos.server.model.ModelProviderService;
-import com.github.agentos.server.model.ModelProviderService.AssignRouteRequest;
 import com.github.agentos.server.model.ModelProviderService.ConnectionTestResult;
 import com.github.agentos.server.model.ModelProviderService.ManagementSnapshot;
 import com.github.agentos.server.model.ModelProviderService.ProviderView;
@@ -23,7 +22,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
-/** 管理页面使用的模型 Provider 与用途路由 API。 */
+/** 管理页面使用的模型配置 API。 */
 @RestController
 @RequestMapping("/api/model-management")
 public class ModelProviderController {
@@ -43,9 +42,9 @@ public class ModelProviderController {
     }
 
     @GetMapping("/validate")
-    List<ModelProviderService.RouteValidation> validate(HttpServletRequest request) {
+    List<ModelProviderService.ModelValidation> validate(HttpServletRequest request) {
         requireAdmin(request);
-        return service.validateRoutes();
+        return service.validateModels();
     }
 
     @PostMapping("/providers")
@@ -74,15 +73,6 @@ public class ModelProviderController {
     ConnectionTestResult test(@PathVariable String providerId, HttpServletRequest request) {
         requireAdmin(request);
         return service.test(providerId);
-    }
-
-    @PutMapping("/routes/{routeKey}")
-    ModelProviderService.RouteView route(
-            @PathVariable String routeKey,
-            @RequestBody AssignRouteRequest body,
-            HttpServletRequest request) {
-        requireAdmin(request);
-        return service.assignRoute(routeKey, body);
     }
 
     private void requireAdmin(HttpServletRequest request) {

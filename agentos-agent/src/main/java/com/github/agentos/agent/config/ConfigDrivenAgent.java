@@ -174,7 +174,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                         + contextBuilder;
             }
             LlmRequest answerRequest = new LlmRequest(definition.instruction(),
-                    List.of(LlmMessage.user(answerPrompt)));
+                    List.of(LlmMessage.user(answerPrompt))).withRouting(request);
             java.util.concurrent.atomic.AtomicInteger deltaSequence =
                     new java.util.concurrent.atomic.AtomicInteger();
             String answer = chatClient.chatStream(

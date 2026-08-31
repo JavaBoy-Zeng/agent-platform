@@ -1,3 +1,4 @@
+mod automation;
 mod workspace;
 
 use tauri::Manager;
@@ -18,6 +19,9 @@ pub fn run() {
             std::fs::create_dir_all(&config_dir)?;
             app.manage(workspace::WorkspaceState::new(
                 config_dir.join("workspaces.json"),
+            ));
+            app.manage(automation::AutomationRuntimeState::new(
+                config_dir.join("automation-preferences.json"),
             ));
             workspace::start_grant_reaper(app.handle().clone());
             Ok(())
@@ -41,11 +45,15 @@ pub fn run() {
             workspace::workspace_context,
             workspace::workspace_file_index,
             workspace::git_status,
+            workspace::git_branches,
+            workspace::git_switch_branch,
             workspace::git_diff,
             workspace::terminal_create,
             workspace::terminal_write,
             workspace::terminal_resize,
             workspace::terminal_close,
+            automation::automation_runtime_info,
+            automation::set_automation_keep_awake,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

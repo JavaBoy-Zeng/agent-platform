@@ -35,7 +35,7 @@ public interface ChatClient {
      * @return 回答与用量
      */
     default ChatResponse chatDetails(String sessionId, LlmRequest request) {
-        return new ChatResponse(chat(sessionId, request), null);
+        return new ChatResponse(chat(sessionId, request), null, null);
     }
 
     /**
@@ -57,8 +57,24 @@ public interface ChatClient {
         return response;
     }
 
-    /** 一次直答回答及其用量。 */
-    record ChatResponse(String answer, ModelUsage usage) {
+    /** 一次直答回答、推理内容与用量。 */
+    record ChatResponse(String answer, String reasoningContent, ModelUsage usage) {
+
+        /** 兼容只关心 answer 的旧调用点。 */
+        public ChatResponse(String answer, ModelUsage usage) {
+            this(answer, null, usage);
+        }
+
+        /** 创建只含 answer 与用量的响应。 */
+        public static ChatResponse of(String answer, ModelUsage usage) {
+            return new ChatResponse(answer, null, usage);
+        }
+
+        /** 创建携带 reasoning_content 的响应。 */
+        public static ChatResponse withReasoning(
+                String answer, String reasoningContent, ModelUsage usage) {
+            return new ChatResponse(answer, reasoningContent, usage);
+        }
     }
 
     /**
@@ -86,19 +102,35 @@ public interface ChatClient {
     /** 一次 function calling 调用的结果：结构化工具调用或最终回答。 */
     record ToolCallResponse(
             String answer,
+            String reasoningContent,
             com.github.agentos.tool.api.ToolCall toolCall,
             String toolCallId,
             ModelUsage usage) {
 
         /** 创建最终回答结果。 */
         public static ToolCallResponse answer(String answer, ModelUsage usage) {
-            return new ToolCallResponse(answer, null, null, usage);
+            return new ToolCallResponse(answer, null, null, null, usage);
+        }
+
+        /** 创建携带 reasoning_content 的最终回答结果。 */
+        public static ToolCallResponse answerWithReasoning(
+                String answer, String reasoningContent, ModelUsage usage) {
+            return new ToolCallResponse(answer, reasoningContent, null, null, usage);
         }
 
         /** 创建工具调用结果。 */
         public static ToolCallResponse call(
                 com.github.agentos.tool.api.ToolCall call, String toolCallId, ModelUsage usage) {
-            return new ToolCallResponse("", call, toolCallId, usage);
+            return new ToolCallResponse("", null, call, toolCallId, usage);
+        }
+
+        /** 创建携带 reasoning_content 的工具调用结果。 */
+        public static ToolCallResponse callWithReasoning(
+                com.github.agentos.tool.api.ToolCall call,
+                String toolCallId,
+                String reasoningContent,
+                ModelUsage usage) {
+            return new ToolCallResponse("", reasoningContent, call, toolCallId, usage);
         }
     }
 }

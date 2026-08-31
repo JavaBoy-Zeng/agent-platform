@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -20,14 +21,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ModelStreamingAgentFinalizerTest {
 
     @Test
-    void buildsFinalRequestAndPreservesProviderDeltaBoundaries() {
+    void buildsFinalRequestAndPreservesTaskModelAndDeltaBoundaries() {
         AtomicReference<LlmRequest> captured = new AtomicReference<>();
         ChatClient client = streamingClient(captured, List.of("第一段", "第二段"));
         ModelStreamingAgentFinalizer finalizer = new ModelStreamingAgentFinalizer(client);
         List<String> deltas = new ArrayList<>();
 
         String answer = finalizer.finishStreaming(
-                AgentRequest.of("s1", "分析测试结果"),
+                new AgentRequest("s1", "分析测试结果", Map.of(
+                        "modelId", "model-deepseek")),
                 InvocationContext.of("main-agent"),
                 completePlan("测试通过 20 项"),
                 deltas::add);
@@ -38,6 +40,7 @@ class ModelStreamingAgentFinalizerTest {
                 assertThat(instruction).contains("最终回答生成器", "禁止猜测"));
         assertThat(captured.get().messages().getFirst().content())
                 .contains("分析测试结果", "测试通过 20 项");
+        assertThat(captured.get().model()).isEqualTo("model-deepseek");
         assertThat(finalizer.requiresModelCall()).isTrue();
     }
 

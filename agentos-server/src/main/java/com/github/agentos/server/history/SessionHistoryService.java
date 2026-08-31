@@ -134,11 +134,16 @@ public final class SessionHistoryService {
                 .toList();
         Map<String, String> userInputs = new LinkedHashMap<>();
         Map<String, String> assistantOutputs = new LinkedHashMap<>();
+        Map<String, String> assistantReasonings = new LinkedHashMap<>();
         for (AgentEvent event : ordered) {
             if (event.type() == AgentEventType.AGENT_STARTED) {
                 userInputs.putIfAbsent(event.invocationId(), event.message());
             } else if (event.type() == AgentEventType.AGENT_COMPLETED) {
                 assistantOutputs.putIfAbsent(event.invocationId(), event.message());
+                Object reasoning = event.data().get("reasoningContent");
+                if (reasoning instanceof String text && !text.isBlank()) {
+                    assistantReasonings.putIfAbsent(event.invocationId(), text);
+                }
             }
         }
         List<String> allTurns = new ArrayList<>();
@@ -149,10 +154,27 @@ public final class SessionHistoryService {
                 continue;
             }
             allTurns.add("用户：" + truncate(entry.getValue()));
-            allTurns.add("助手：" + truncate(answer));
+            allTurns.add("助手：" + assistantLine(
+                    assistantReasonings.get(entry.getKey()), answer));
         }
         int fromIndex = Math.max(0, allTurns.size() - maxTurns * 2);
         return allTurns.subList(fromIndex, allTurns.size());
+    }
+
+    /**
+     * 拼接助手历史行：reasoning 以 {@code [reasoning=base64]} 标注前置，
+     * 供 HistoryProcessor 解析后回传 reasoning_content（多轮 thinking 模式协议要求）。
+     */
+    private String assistantLine(String reasoning, String answer) {
+        String truncated = truncate(answer);
+        if (reasoning == null || reasoning.isBlank()) {
+            return truncated;
+        }
+        String capped = reasoning.length() <= maxMessageChars
+                ? reasoning : reasoning.substring(0, maxMessageChars);
+        String encoded = java.util.Base64.getEncoder().encodeToString(
+                capped.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return "[reasoning=" + encoded + "]" + truncated;
     }
 
     private String truncate(String message) {

@@ -118,7 +118,7 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
         try {
             emitPlan(eventSink, request, currentPlanId, "INITIAL", 0);
             String objective = request.objective();
-            String code = generateCode(objective, request.sessionId());
+            String code = generateCode(request);
             String extension = detectExtension(code);
             String fileName = "snippet_" + System.currentTimeMillis() + extension;
             Path filePath = Path.of(System.getProperty("java.io.tmpdir"), fileName);
@@ -206,7 +206,7 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
                                     "maxReplanCount", MAX_FIX_ATTEMPTS - 1)));
                     currentPlanId = nextPlanId;
                     emitPlan(eventSink, request, currentPlanId, "REPLANNED", attempt + 1);
-                    code = fixCode(objective, code, error, request.sessionId());
+                    code = fixCode(request, code, error);
                 } else {
                     String failure = "代码执行失败（尝试 " + MAX_FIX_ATTEMPTS + " 次）：\n"
                             + "错误：" + error + "\n\n最终代码：\n" + code;
@@ -247,15 +247,16 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
     }
 
     /** 让 LLM 生成代码。 */
-    private String generateCode(String objective, String sessionId) {
+    private String generateCode(AgentRequest agentRequest) {
         LlmRequest request = new LlmRequest(SYSTEM_INSTRUCTION,
                 List.of(LlmMessage.user(
-                        "为以下目标生成可执行代码：\n" + objective)));
-        return chatClient.chat(sessionId, request).trim();
+                        "为以下目标生成可执行代码：\n" + agentRequest.objective())))
+                .withRouting(agentRequest);
+        return chatClient.chat(agentRequest.sessionId(), request).trim();
     }
 
     /** 让 LLM 根据错误修复代码。 */
-    private String fixCode(String objective, String code, String error, String sessionId) {
+    private String fixCode(AgentRequest agentRequest, String code, String error) {
         String prompt = """
                 编程目标：%s
 
@@ -266,10 +267,10 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
                 %s
 
                 请修复代码并返回修复后的完整代码（不要用 markdown 代码块包裹）：
-                """.formatted(objective, code, error);
+                """.formatted(agentRequest.objective(), code, error);
         LlmRequest request = new LlmRequest(SYSTEM_INSTRUCTION,
-                List.of(LlmMessage.user(prompt)));
-        return chatClient.chat(sessionId, request).trim();
+                List.of(LlmMessage.user(prompt))).withRouting(agentRequest);
+        return chatClient.chat(agentRequest.sessionId(), request).trim();
     }
 
     /** 根据代码首行注释检测语言并返回文件扩展名。 */

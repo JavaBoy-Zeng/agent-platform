@@ -1,5 +1,6 @@
 <script setup>
-import { computed, defineAsyncComponent, inject, ref } from 'vue'
+import { computed, defineAsyncComponent, inject, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import CommandDeck from '../components/CommandDeck.vue'
 import TaskHeader from '../components/TaskHeader.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
@@ -7,6 +8,7 @@ import WorkspacePanel from '../components/WorkspacePanel.vue'
 import { uploadSessionAttachments } from '../services/agentApi.js'
 
 const TerminalPanel = defineAsyncComponent(() => import('../components/TerminalPanel.vue'))
+const router = useRouter()
 const desktopWorkspace = inject('desktopWorkspace')
 const inspectorMode = desktopWorkspace.inspectorMode
 const terminalOpen = desktopWorkspace.terminalOpen
@@ -20,14 +22,15 @@ const {
   sessionId,
   prompt,
   models,
-  selectedModelId,
+  selectedModelKey,
+  currentModel,
   approvalMode,
   busy,
   currentPhase,
   messages,
   canStop,
-  selectModel,
-  addModel,
+  selectTaskModel,
+  refreshServerModel,
   setApprovalMode,
   execute,
   retryMessage,
@@ -53,6 +56,12 @@ function removeAttachment(target) {
     [sessionId.value]: attachments.value.filter(attachment => attachment !== target)
   }
 }
+
+function openModelManagement() {
+  router.push('/models')
+}
+
+onMounted(() => void refreshServerModel())
 
 /** 桌面端走原生选择器并复制到工作区；网页端走浏览器文件选择 + Server 上传。 */
 async function uploadAttachments() {
@@ -125,7 +134,8 @@ async function runTask() {
           :session-id="sessionId"
           :prompt="prompt"
           :models="models"
-          :selected-model-id="selectedModelId"
+          :selected-model-key="selectedModelKey"
+          :current-model="currentModel"
           :approval-mode="approvalMode"
           :attachments="attachments"
           :uploading="uploading"
@@ -138,19 +148,23 @@ async function runTask() {
           :workspace-files-loading="desktopWorkspace.fileIndexLoading.value"
           :workspace-busy="desktopWorkspace.authorizing.value || desktopWorkspace.picking.value || desktopWorkspace.contextLoading.value"
           :workspace-error="desktopWorkspace.error.value"
+          :git-branches="desktopWorkspace.gitBranches.value"
+          :git-branch-loading="desktopWorkspace.gitBranchLoading.value"
+          :git-branch-error="desktopWorkspace.gitBranchError.value"
           :busy="busy || desktopWorkspace.contextLoading.value"
           :can-stop="canStop"
           @update:agent-id="agentId = $event"
           @update:session-id="sessionId = $event"
           @update:prompt="prompt = $event"
-          @update:selected-model-id="selectModel"
+          @update:selected-model-key="selectTaskModel"
           @update:approval-mode="setApprovalMode"
-          @add-model="addModel"
+          @manage-models="openModelManagement"
           @upload="uploadAttachments"
           @remove-attachment="removeAttachment"
           @select-workspace="desktopWorkspace.bindWorkspace"
           @pick-workspace="desktopWorkspace.pickWorkspace"
-          @clear-workspace="desktopWorkspace.clearWorkspace"
+          @refresh-branches="desktopWorkspace.refreshGitBranches"
+          @select-branch="desktopWorkspace.switchGitBranch"
           @run="runTask"
           @stop="cancelCurrentRun"
         />

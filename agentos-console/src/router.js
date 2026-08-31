@@ -4,6 +4,7 @@ import ChatView from './views/ChatView.vue'
 import LoginView from './views/LoginView.vue'
 import ManagementView from './views/ManagementView.vue'
 import SettingsView from './views/SettingsView.vue'
+import AutomationView from './views/AutomationView.vue'
 import { getAuthToken } from './services/apiConfig.js'
 
 const routes = [
@@ -11,6 +12,7 @@ const routes = [
   { path: '/chat', component: ChatView, name: 'Chat' },
   { path: '/login', component: LoginView, name: 'Login' },
   { path: '/settings', component: SettingsView, name: 'Settings' },
+  { path: '/automations', component: AutomationView, name: 'Automations' },
   ...['agents', 'runs', 'sessions', 'tools', 'mcp', 'skills', 'memory', 'plans',
     'traces', 'artifacts', 'approvals', 'models', 'evals'].map(section => ({
     path: `/${section}`,

@@ -323,6 +323,13 @@ pub struct GitStatus {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitBranch {
+    name: String,
+    current: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitDiff {
     scope: String,
     path: Option<String>,
@@ -1005,13 +1012,56 @@ pub fn git_status(
     state.require_grant(&grant_id, window.label())?;
     let workspace = state.workspace(&workspace_id)?;
     ensure_repository_root(&workspace.root)?;
-    let branch = git_text(
-        &workspace.root,
-        &["symbolic-ref", "--quiet", "--short", "HEAD"],
-    )
-    .unwrap_or_else(|_| "HEAD".to_string());
+    git_status_for_root(&workspace.root)
+}
+
+#[tauri::command]
+pub fn git_branches(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+) -> Result<Vec<GitBranch>, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    ensure_repository_root(&workspace.root)?;
+    local_git_branches(&workspace.root)
+}
+
+#[tauri::command]
+pub fn git_switch_branch(
+    window: WebviewWindow,
+    state: State<'_, WorkspaceState>,
+    grant_id: String,
+    workspace_id: String,
+    branch: String,
+) -> Result<GitStatus, String> {
+    state.require_grant(&grant_id, window.label())?;
+    let workspace = state.workspace(&workspace_id)?;
+    ensure_repository_root(&workspace.root)?;
+    switch_git_branch(&workspace.root, &branch)
+}
+
+fn switch_git_branch(root: &Path, branch: &str) -> Result<GitStatus, String> {
+    let branch = branch.trim();
+    if branch.is_empty() || branch.len() > 255 || branch.chars().any(char::is_control) {
+        return Err("分支名称无效".to_string());
+    }
+    if !local_git_branches(root)?
+        .iter()
+        .any(|candidate| candidate.name == branch)
+    {
+        return Err("只能切换到当前仓库已有的本地分支".to_string());
+    }
+    git_text(root, &["switch", branch])?;
+    git_status_for_root(root)
+}
+
+fn git_status_for_root(root: &Path) -> Result<GitStatus, String> {
+    let branch = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .unwrap_or_else(|_| "HEAD".to_string());
     let upstream = git_text(
-        &workspace.root,
+        root,
         &[
             "rev-parse",
             "--abbrev-ref",
@@ -1022,7 +1072,7 @@ pub fn git_status(
     .ok();
     let (ahead, behind) = if upstream.is_some() {
         git_text(
-            &workspace.root,
+            root,
             &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
         )
         .ok()
@@ -1035,18 +1085,43 @@ pub fn git_status(
         (0, 0)
     };
     let output = git_bytes(
-        &workspace.root,
+        root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         DIFF_BYTE_LIMIT,
     )?;
     Ok(GitStatus {
-        repository: workspace.root.to_string_lossy().to_string(),
+        repository: root.to_string_lossy().to_string(),
         branch,
         upstream,
         ahead,
         behind,
         entries: parse_status(&output),
     })
+}
+
+fn local_git_branches(root: &Path) -> Result<Vec<GitBranch>, String> {
+    let current = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .unwrap_or_else(|_| "HEAD".to_string());
+    let names = git_text(
+        root,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?;
+    let mut branches = names
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| GitBranch {
+            name: name.to_string(),
+            current: name == current,
+        })
+        .collect::<Vec<_>>();
+    branches.sort_by(|left, right| {
+        right
+            .current
+            .cmp(&left.current)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    Ok(branches)
 }
 
 #[tauri::command]
@@ -1700,6 +1775,40 @@ mod tests {
         let staged =
             git_bytes(&root, &["diff", "--cached", "--no-color"], DIFF_BYTE_LIMIT).unwrap();
         assert!(String::from_utf8_lossy(&staged).contains("Binary files"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lists_and_switches_existing_local_branches_only() {
+        let root = temporary_directory("git-branches");
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "agentos@example.invalid"]);
+        run(&["config", "user.name", "AgentOS Test"]);
+        fs::write(root.join("tracked.txt"), "one\n").unwrap();
+        run(&["add", "tracked.txt"]);
+        run(&["commit", "-qm", "initial"]);
+        run(&["branch", "feature/editor"]);
+
+        let branches = local_git_branches(&root).unwrap();
+        assert_eq!(branches.len(), 2);
+        assert!(branches[0].current);
+        let switched = switch_git_branch(&root, "feature/editor").unwrap();
+        assert_eq!(switched.branch, "feature/editor");
+        assert!(switch_git_branch(&root, "missing").is_err());
+        assert!(switch_git_branch(&root, "\ninvalid").is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

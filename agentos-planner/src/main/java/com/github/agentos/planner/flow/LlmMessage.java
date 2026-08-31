@@ -7,6 +7,7 @@ import java.util.Objects;
 public record LlmMessage(
         Role role,
         String content,
+        String reasoningContent,
         List<ToolCallPart> toolCalls,
         String toolCallId) {
 
@@ -33,18 +34,27 @@ public record LlmMessage(
     public record ToolCallPart(String id, String name, String argumentsJson) {
     }
 
-    /** 兼容纯文本消息的构造器。 */
+    /** 兼容纯文本消息的构造器（无 reasoning、无 toolCalls）。 */
     public LlmMessage(Role role, String content) {
-        this(role, content, List.of(), null);
+        this(role, content, null, List.of(), null);
     }
 
-    /** 创建消息并校验内容非空、工具调用结构完整。 */
+    /** 兼容带 toolCalls 的旧调用点；reasoning 默认为空。 */
+    public LlmMessage(
+            Role role, String content, List<ToolCallPart> toolCalls, String toolCallId) {
+        this(role, content, null, toolCalls, toolCallId);
+    }
+
+    /** 创建消息并校验内容非空、工具调用结构完整；reasoning 可为 null。 */
     public LlmMessage {
         Objects.requireNonNull(role, "role must not be null");
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("content must not be blank");
         }
         content = content.strip();
+        reasoningContent = reasoningContent == null
+                ? null
+                : (reasoningContent.isBlank() ? null : reasoningContent.strip());
         toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
         if (role == Role.TOOL && (toolCallId == null || toolCallId.isBlank())) {
             throw new IllegalArgumentException("TOOL message requires toolCallId");
@@ -61,6 +71,11 @@ public record LlmMessage(
         return new LlmMessage(Role.ASSISTANT, content);
     }
 
+    /** 创建携带 reasoning_content 的助手消息（多轮 thinking 模式回传使用）。 */
+    public static LlmMessage assistantWithReasoning(String content, String reasoningContent) {
+        return new LlmMessage(Role.ASSISTANT, content, reasoningContent, List.of(), null);
+    }
+
     /** 创建系统消息。 */
     public static LlmMessage system(String content) {
         return new LlmMessage(Role.SYSTEM, content);
@@ -69,7 +84,15 @@ public record LlmMessage(
     /** 创建携带原生工具调用的助手消息（content 为模型附带说明，可为占位文本）。 */
     public static LlmMessage assistantToolCall(String content, ToolCallPart call) {
         Objects.requireNonNull(call, "call must not be null");
-        return new LlmMessage(Role.ASSISTANT, content, List.of(call), null);
+        return new LlmMessage(Role.ASSISTANT, content, null, List.of(call), null);
+    }
+
+    /** 创建同时携带 reasoning_content 和工具调用的助手消息。 */
+    public static LlmMessage assistantToolCallWithReasoning(
+            String content, String reasoningContent, ToolCallPart call) {
+        Objects.requireNonNull(call, "call must not be null");
+        return new LlmMessage(
+                Role.ASSISTANT, content, reasoningContent, List.of(call), null);
     }
 
     /** 创建工具执行结果消息，与 assistant 工具调用按 {@code toolCallId} 配对。 */

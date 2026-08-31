@@ -108,14 +108,17 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                                 + errorDetail(response.body()));
             }
             JsonNode root = parseJson(response.body());
-            String answer = extractAnswer(root);
+            AnswerPayload payload = extractAnswer(root);
             ModelUsage usage = extractUsage(root, model);
             notifyUsage(sessionId, usage);
-            LOGGER.info("[chat-call] finished sessionId={} model={} status={} answerChars={} usage={} durationMs={}",
+            LOGGER.info("[chat-call] finished sessionId={} model={} status={} answerChars={} reasoningChars={} usage={} durationMs={}",
                     sessionId, model, response.statusCode(),
-                    answer.length(), usage == null ? "n/a" : usage.totalTokens(),
+                    payload.answer().length(),
+                    payload.reasoningContent() == null ? 0 : payload.reasoningContent().length(),
+                    usage == null ? "n/a" : usage.totalTokens(),
                     elapsedMillis(requestStarted));
-            return new ChatResponse(answer, usage);
+            return ChatResponse.withReasoning(
+                    payload.answer(), payload.reasoningContent(), usage);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new ModelClientException("Chat request was interrupted", exception);
@@ -137,6 +140,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         LOGGER.info("[chat-stream] started sessionId={} model={}",
                 sessionId, model);
         StringBuilder answer = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
         ReasoningFilter filter = new ReasoningFilter(answer, onDelta);
         ModelUsage[] usage = {null};
         try {
@@ -153,7 +157,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             }
             try (Stream<String> lines = response.body()) {
                 lines.forEach(line -> consumeSseLine(
-                        sessionId, line, filter, usage, model));
+                        sessionId, line, filter, reasoning, usage, model));
             }
             filter.finish();
             if (answer.isEmpty()) {
@@ -161,11 +165,13 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                         "Chat stream produced no content; falling back is unavailable");
             }
             notifyUsage(sessionId, usage[0]);
-            LOGGER.info("[chat-stream] finished sessionId={} answerChars={} usage={} durationMs={}",
+            String reasoningText = reasoning.length() == 0 ? null : reasoning.toString();
+            LOGGER.info("[chat-stream] finished sessionId={} answerChars={} reasoningChars={} usage={} durationMs={}",
                     sessionId, answer.length(),
+                    reasoningText == null ? 0 : reasoningText.length(),
                     usage[0] == null ? "n/a" : usage[0].totalTokens(),
                     elapsedMillis(requestStarted));
-            return new ChatResponse(answer.toString(), usage[0]);
+            return ChatResponse.withReasoning(answer.toString(), reasoningText, usage[0]);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new ModelClientException("Chat stream was interrupted", exception);
@@ -190,6 +196,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         LOGGER.info("[chat-tools] started sessionId={} model={} toolCount={}",
                 sessionId, model, request.tools().size());
         StringBuilder answer = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
         ReasoningFilter filter = new ReasoningFilter(answer, onDelta);
         ToolCallAccumulator toolCalls = new ToolCallAccumulator();
         ModelUsage[] usage = {null};
@@ -207,32 +214,37 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             }
             try (Stream<String> lines = response.body()) {
                 lines.forEach(line -> consumeToolCallSseLine(
-                        sessionId, line, model, filter, toolCalls, usage));
+                        sessionId, line, model, filter, reasoning, toolCalls, usage));
             }
             filter.finish();
             notifyUsage(sessionId, usage[0]);
+            String reasoningText = reasoning.length() == 0 ? null : reasoning.toString();
             if (!toolCalls.isEmpty()) {
                 ToolCallAccumulator.Completed first = toolCalls.firstCompleted();
                 LOGGER.info(
-                        "[chat-tools] finished sessionId={} toolCall={} argsChars={} usage={} durationMs={}",
+                        "[chat-tools] finished sessionId={} toolCall={} argsChars={} reasoningChars={} usage={} durationMs={}",
                         sessionId, first.name(), first.argumentsJson().length(),
+                        reasoningText == null ? 0 : reasoningText.length(),
                         usage[0] == null ? "n/a" : usage[0].totalTokens(),
                         elapsedMillis(requestStarted));
-                return ToolCallResponse.call(
+                return ToolCallResponse.callWithReasoning(
                         new ToolCall(first.name(),
                                 parseToolCallArguments(first.name(), first.argumentsJson())),
                         first.id(),
+                        reasoningText,
                         usage[0]);
             }
             if (answer.isEmpty()) {
                 throw new ModelClientException(
                         "Chat stream produced neither tool calls nor content");
             }
-            LOGGER.info("[chat-tools] finished sessionId={} answerChars={} usage={} durationMs={}",
+            LOGGER.info("[chat-tools] finished sessionId={} answerChars={} reasoningChars={} usage={} durationMs={}",
                     sessionId, answer.length(),
+                    reasoningText == null ? 0 : reasoningText.length(),
                     usage[0] == null ? "n/a" : usage[0].totalTokens(),
                     elapsedMillis(requestStarted));
-            return ToolCallResponse.answer(answer.toString(), usage[0]);
+            return ToolCallResponse.answerWithReasoning(
+                    answer.toString(), reasoningText, usage[0]);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new ModelClientException("Chat tool stream was interrupted", exception);
@@ -285,6 +297,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             String line,
             String model,
             ReasoningFilter filter,
+            StringBuilder reasoning,
             ToolCallAccumulator toolCalls,
             ModelUsage[] usage) {
         if (line == null || !line.startsWith("data:")) {
@@ -311,6 +324,10 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         JsonNode content = delta.path("content");
         if (content.isString() && !content.stringValue().isEmpty()) {
             filter.accept(content.stringValue());
+        }
+        JsonNode reasoningDelta = delta.path("reasoning_content");
+        if (reasoningDelta.isString() && !reasoningDelta.stringValue().isEmpty()) {
+            reasoning.append(reasoningDelta.stringValue());
         }
         JsonNode calls = delta.get("tool_calls");
         if (calls != null && calls.isArray()) {
@@ -379,6 +396,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             String sessionId,
             String line,
             ReasoningFilter filter,
+            StringBuilder reasoning,
             ModelUsage[] usage,
             String model) {
         if (line == null || !line.startsWith("data:")) {
@@ -401,9 +419,14 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 usage[0] = parsed;
             }
         }
-        JsonNode content = root.path("choices").path(0).path("delta").path("content");
+        JsonNode delta = root.path("choices").path(0).path("delta");
+        JsonNode content = delta.path("content");
         if (content.isString() && !content.stringValue().isEmpty()) {
             filter.accept(content.stringValue());
+        }
+        JsonNode reasoningDelta = delta.path("reasoning_content");
+        if (reasoningDelta.isString() && !reasoningDelta.stringValue().isEmpty()) {
+            reasoning.append(reasoningDelta.stringValue());
         }
     }
 
@@ -536,6 +559,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         if (properties.isReasoningSplit()) {
             body.put("reasoning_split", true);
         }
+        properties.applyGenerationOptions(body);
         String serialized;
         try {
             serialized = objectMapper.writeValueAsString(body);
@@ -555,7 +579,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     }
 
     /** 把 LlmRequest 展开为厂商消息数组：可选 system 指令 + user/assistant/tool 序列。 */
-    private static List<Map<String, Object>> requestMessages(LlmRequest request) {
+    private List<Map<String, Object>> requestMessages(LlmRequest request) {
         List<Map<String, Object>> messages = new ArrayList<>();
         request.instruction().ifPresent(instruction -> messages.add(
                 message("system", instruction)));
@@ -568,22 +592,31 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 messages.add(toolMessage);
                 continue;
             }
-            if (message.role() == LlmMessage.Role.ASSISTANT && !message.toolCalls().isEmpty()) {
+            if (message.role() == LlmMessage.Role.ASSISTANT
+                    && (!message.toolCalls().isEmpty() || message.reasoningContent() != null)) {
                 Map<String, Object> assistantMessage = new LinkedHashMap<>();
                 assistantMessage.put("role", "assistant");
-                assistantMessage.put("content", message.content());
-                assistantMessage.put("tool_calls", message.toolCalls().stream()
-                        .map(call -> {
-                            Map<String, Object> function = new LinkedHashMap<>();
-                            function.put("name", call.name());
-                            function.put("arguments", call.argumentsJson());
-                            Map<String, Object> payload = new LinkedHashMap<>();
-                            payload.put("id", call.id());
-                            payload.put("type", "function");
-                            payload.put("function", function);
-                            return payload;
-                        })
-                        .collect(Collectors.toList()));
+                if (message.reasoningContent() != null && reasoningPassthroughEnabled(request)) {
+                    // 多轮 thinking 模式回传：模型要求历史 assistant 消息必须带回 reasoning_content。
+                    assistantMessage.put("reasoning_content", message.reasoningContent());
+                }
+                if (message.toolCalls().isEmpty()) {
+                    assistantMessage.put("content", message.content());
+                } else {
+                    assistantMessage.put("content", message.content());
+                    assistantMessage.put("tool_calls", message.toolCalls().stream()
+                            .map(call -> {
+                                Map<String, Object> function = new LinkedHashMap<>();
+                                function.put("name", call.name());
+                                function.put("arguments", call.argumentsJson());
+                                Map<String, Object> payload = new LinkedHashMap<>();
+                                payload.put("id", call.id());
+                                payload.put("type", "function");
+                                payload.put("function", function);
+                                return payload;
+                            })
+                            .collect(Collectors.toList()));
+                }
                 messages.add(assistantMessage);
                 continue;
             }
@@ -625,12 +658,13 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         }
     }
 
-    private String extractAnswer(JsonNode root) {
+    private AnswerPayload extractAnswer(JsonNode root) {
         JsonNode message = root.path("choices").path(0).path("message");
         String refusal = textValue(message.get("refusal"));
         if (refusal != null) {
             throw new ModelClientException("Model refused to answer: " + refusal);
         }
+        String reasoning = textValue(message.get("reasoning_content"));
         JsonNode content = message.get("content");
         if (content == null || content.isNull() || content.isMissingNode()) {
             throw new ModelClientException("Chat response did not contain message content");
@@ -644,13 +678,19 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 }
             }
             if (!text.isEmpty()) {
-                return requireVisibleAnswer(stripReasoning(text.toString()));
+                return new AnswerPayload(
+                        requireVisibleAnswer(stripReasoning(text.toString())), reasoning);
             }
         }
         if (content.isString() && !content.stringValue().isBlank()) {
-            return requireVisibleAnswer(stripReasoning(content.stringValue()));
+            return new AnswerPayload(
+                    requireVisibleAnswer(stripReasoning(content.stringValue())), reasoning);
         }
         throw new ModelClientException("Chat response content was not usable text");
+    }
+
+    /** 解析后的回答载荷：可见正文与可选的推理内容。 */
+    private record AnswerPayload(String answer, String reasoningContent) {
     }
 
     /**
@@ -700,6 +740,39 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         return request.model() == null || request.model().isBlank()
                 ? properties.getEffectiveChatModel() : request.model();
     }
+
+    /**
+     * 判断当前目标模型是否回传历史 assistant 消息的 {@code reasoning_content}。
+     *
+     * <p>reasoning_content 是 thinking 模型（MiniMax-M3、DeepSeek-R1、Qwen3、GLM 等）
+     * 的厂商扩展字段；发给不认识该字段的模型可能被严格网关拒绝。规则：</p>
+     * <ol>
+     * <li>{@code reasoningMode=DISABLED} 显式关闭；{@code ENABLED} 显式开启；</li>
+     * <li>已知 thinking 厂商（MINIMAX/DEEPSEEK/QWEN/GLM）默认开启；</li>
+     * <li>其他厂商按模型名启发式判断，避免会话中途切换模型时把字段发给非 thinking 模型。</li>
+     * </ol>
+     */
+    private boolean reasoningPassthroughEnabled(LlmRequest request) {
+        ModelClientProperties.ReasoningMode mode = properties.getReasoningMode();
+        if (mode == ModelClientProperties.ReasoningMode.DISABLED) {
+            return false;
+        }
+        if (mode == ModelClientProperties.ReasoningMode.ENABLED) {
+            return true;
+        }
+        String provider = properties.getProviderType() == null
+                ? "" : properties.getProviderType().trim();
+        if ("MINIMAX".equalsIgnoreCase(provider) || "DEEPSEEK".equalsIgnoreCase(provider)
+                || "QWEN".equalsIgnoreCase(provider) || "GLM".equalsIgnoreCase(provider)) {
+            return true;
+        }
+        String model = modelFor(request).toLowerCase(java.util.Locale.ROOT);
+        return THINKING_MODEL_HINTS.stream().anyMatch(model::contains);
+    }
+
+    /** 非 thinking 厂商下按模型名识别 thinking 模型的关键词。 */
+    private static final List<String> THINKING_MODEL_HINTS = List.of(
+            "minimax", "deepseek-r1", "qwq", "thinking", "reasoner");
 
     private String errorDetail(String responseBody) {
         if (responseBody == null || responseBody.isBlank()) {

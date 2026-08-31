@@ -13,7 +13,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-/** 根据 PostgreSQL 中的用途路由为每次调用选择 Provider 和模型。 */
+/** 根据任务显式携带的平台模型 ID 为每次调用解析模型配置。 */
 public final class RoutingModelClients {
 
     private RoutingModelClients() {
@@ -41,8 +41,10 @@ public final class RoutingModelClients {
 
         @Override
         public ModelPlan generatePlan(PlanningRequest request) {
+            Object modelId = request.agentRequest().attributes().get("modelId");
             ModelClientProperties properties = properties(
-                    providers.resolve(ModelProviderService.ROUTE_PLANNER), defaults);
+                    providers.resolve(text(modelId)),
+                    defaults);
             return new OpenAiCompatibleModelClient(
                     httpClient(properties), objectMapper, properties, usageListener, allowedRoot)
                     .generatePlan(request);
@@ -68,31 +70,40 @@ public final class RoutingModelClients {
 
         @Override
         public String chat(String sessionId, LlmRequest request) {
-            return delegate().chat(sessionId, request);
+            RoutedChat routed = route(request);
+            return routed.client().chat(sessionId, routed.request());
         }
 
         @Override
         public ChatResponse chatDetails(String sessionId, LlmRequest request) {
-            return delegate().chatDetails(sessionId, request);
+            RoutedChat routed = route(request);
+            return routed.client().chatDetails(sessionId, routed.request());
         }
 
         @Override
         public ChatResponse chatStream(
                 String sessionId, LlmRequest request, Consumer<String> onDelta) {
-            return delegate().chatStream(sessionId, request, onDelta);
+            RoutedChat routed = route(request);
+            return routed.client().chatStream(sessionId, routed.request(), onDelta);
         }
 
         @Override
         public ToolCallResponse chatWithTools(
                 String sessionId, LlmRequest request, Consumer<String> onDelta) {
-            return delegate().chatWithTools(sessionId, request, onDelta);
+            RoutedChat routed = route(request);
+            return routed.client().chatWithTools(sessionId, routed.request(), onDelta);
         }
 
-        private OpenAiCompatibleChatClient delegate() {
+        private RoutedChat route(LlmRequest request) {
+            ModelProviderService.ResolvedModel resolved = providers.resolve(request.model());
             ModelClientProperties properties = properties(
-                    providers.resolve(ModelProviderService.ROUTE_CHAT), defaults);
-            return new OpenAiCompatibleChatClient(
+                    resolved, defaults);
+            OpenAiCompatibleChatClient client = new OpenAiCompatibleChatClient(
                     httpClient(properties), objectMapper, properties, usageListener);
+            return new RoutedChat(client, request.withModel(resolved.modelId()));
+        }
+
+        private record RoutedChat(OpenAiCompatibleChatClient client, LlmRequest request) {
         }
     }
 
@@ -105,11 +116,31 @@ public final class RoutingModelClients {
         properties.setChatModel(route.modelId());
         properties.setResponseFormat(route.responseFormat());
         properties.setReasoningSplit(route.reasoningSplit());
+        properties.setProviderType(route.providerType());
+        ModelProviderService.AdvancedSettings advanced = route.advancedSettings();
+        properties.setMaxOutputTokens(advanced.outputTokens());
+        properties.setTemperature(advanced.temperature());
+        properties.setTopP(advanced.topP());
+        properties.setTopK(advanced.topK());
+        properties.setReasoningMode(ModelClientProperties.ReasoningMode.valueOf(
+                advanced.reasoningMode()));
         properties.setConnectTimeout(defaults.getConnectTimeout());
         properties.setRequestTimeout(defaults.getRequestTimeout());
-        properties.setMaxPromptChars(defaults.getMaxPromptChars());
+        properties.setMaxPromptChars(promptCharacterLimit(
+                advanced.inputTokens(), defaults.getMaxPromptChars()));
         properties.validate();
         return properties;
+    }
+
+    private static int promptCharacterLimit(Integer inputTokens, int fallback) {
+        if (inputTokens == null) return fallback;
+        // The planner currently bounds serialized prompts in characters. Two characters per token
+        // is conservative for mixed Chinese/English prompts while still honoring larger windows.
+        return (int) Math.clamp((long) inputTokens * 2L, 8_000L, 4_000_000L);
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
     }
 
     private static HttpClient httpClient(ModelClientProperties properties) {

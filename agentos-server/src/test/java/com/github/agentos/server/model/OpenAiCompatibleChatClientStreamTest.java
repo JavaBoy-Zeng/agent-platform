@@ -93,6 +93,28 @@ class OpenAiCompatibleChatClientStreamTest {
     }
 
     @Test
+    void capturesReasoningContentFromStreamedDelta() {
+        serve("""
+                {"choices":[{"delta":{"reasoning_content":"用户问日期 "}}]}
+                {"choices":[{"delta":{"reasoning_content":"→ 查日历 → 周三"}}]}
+                {"choices":[{"delta":{"content":"今天"}}]}
+                {"choices":[{"delta":{"content":"是周三"}}]}
+                {"usage":{"prompt_tokens":5,"completion_tokens":4}}
+                """);
+        List<String> deltas = new ArrayList<>();
+        client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), new ObjectMapper(), properties);
+
+        ChatClient.ChatResponse response = client.chatStream(
+                "s1", LlmRequest.of("今天周几"), deltas::add);
+
+        assertThat(response.answer()).isEqualTo("今天是周三");
+        assertThat(response.reasoningContent()).isEqualTo("用户问日期 → 查日历 → 周三");
+        // 推理内容不应进入 onDelta 回调。
+        assertThat(deltas).containsExactly("今天", "是周三");
+    }
+
+    @Test
     void deliversFirstDeltaBeforeTheProviderResponseCompletes() throws Exception {
         CountDownLatch firstChunkWritten = new CountDownLatch(1);
         CountDownLatch allowCompletion = new CountDownLatch(1);

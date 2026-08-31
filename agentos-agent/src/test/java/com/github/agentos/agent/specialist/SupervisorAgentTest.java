@@ -136,6 +136,23 @@ class SupervisorAgentTest {
                 .containsExactly("介绍 Agno", "Agno 是外部 Agent 框架", "那最新版本呢？");
     }
 
+    @Test
+    void classifyPromptRoutesKnowledgeOrganizationTasksAwayFromSearchAgent() {
+        AtomicReference<LlmRequest> seen = new AtomicReference<>();
+        SupervisorAgent supervisor = supervisor(json(
+                "GENERAL", "GENERAL_PLANNING", "main-agent", 0.9, ""),
+                new StubRoutableAgent(true), new AtomicInteger(), seen);
+
+        supervisor.run(AgentRequest.of("s1", "梳理微信的所有功能"),
+                InvocationContext.of("supervisor-agent"), running(), event -> { });
+
+        String instruction = seen.get().systemInstruction();
+        assertThat(instruction)
+                .contains("知识整理类任务")
+                .contains("不得选择 search-agent")
+                .contains("以模型自身知识为主体作答");
+    }
+
     private static SupervisorAgent supervisor(
             String response,
             StubRoutableAgent search,

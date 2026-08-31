@@ -10,6 +10,7 @@ import java.util.Objects;
  * @param iteration 已执行的迭代次数
  * @param output    成功执行后的输出
  * @param error     执行失败后的错误信息
+ * @param reasoning 成功执行时模型返回的思维链内容；跨轮 thinking 模式回传使用
  * @param updatedAt 状态最后更新时间
  */
 public record AgentState(
@@ -17,7 +18,14 @@ public record AgentState(
         int iteration,
         String output,
         String error,
+        String reasoning,
         Instant updatedAt) {
+
+    /** 兼容无 reasoning 的旧调用点。 */
+    public AgentState(Status status, int iteration, String output, String error,
+            Instant updatedAt) {
+        this(status, iteration, output, error, "", updatedAt);
+    }
 
     /**
      * 创建并校验状态快照。
@@ -32,6 +40,7 @@ public record AgentState(
         }
         output = output == null ? "" : output;
         error = error == null ? "" : error;
+        reasoning = reasoning == null ? "" : reasoning;
         updatedAt = Objects.requireNonNull(updatedAt, "updatedAt must not be null");
     }
 
@@ -60,7 +69,19 @@ public record AgentState(
      * @return 执行完成状态
      */
     public AgentState complete(String result) {
-        return new AgentState(Status.COMPLETED, iteration, result, "", Instant.now());
+        return complete(result, "");
+    }
+
+    /**
+     * 将当前状态转换为携带思维链的执行完成状态。
+     *
+     * @param result    Agent 的最终输出
+     * @param reasoning 模型返回的思维链内容；为空表示无推理内容
+     * @return 执行完成状态
+     */
+    public AgentState complete(String result, String reasoning) {
+        return new AgentState(
+                Status.COMPLETED, iteration, result, "", reasoning, Instant.now());
     }
 
     /**

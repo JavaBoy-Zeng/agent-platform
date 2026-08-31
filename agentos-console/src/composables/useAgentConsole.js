@@ -11,44 +11,22 @@ import {
 import { buildRunInput } from '../utils/runInput.js'
 import {
   deleteSessionRecord,
-  getConsoleCatalog,
+  deleteSessionRecords,
+  getModelManagement,
   getUsage,
   getSessionEvents,
   getSessionPage,
+  updateSessionPinned,
   updateSessionTitle
 } from '../services/consoleApi.js'
+import { appendOperationGroup, compactOperationGroups } from '../utils/operationGroups.js'
 
 const STORAGE_KEY = 'agentos.console.sessions.v1'
 const ACTIVE_SESSION_KEY = 'agentos.console.active-session.v1'
 const SESSION_PAGE_SIZE = 20
 const SESSION_CACHE_SIZE = 20
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING'])
-const MODEL_STORAGE_KEY = 'agentos.console.models.v1'
-const SELECTED_MODEL_KEY = 'agentos.console.selected-model.v1'
 const APPROVAL_MODE_KEY = 'agentos.console.approval-mode.v1'
-const DEFAULT_MODEL = Object.freeze({
-  id: 'minimax-h3',
-  name: 'Server 默认模型',
-  modelId: ''
-})
-
-function readModels() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(MODEL_STORAGE_KEY) || '[]')
-    const models = Array.isArray(stored)
-      ? stored.filter(model => model?.id && model?.name).map(model => ({
-          ...model,
-          modelId: model.id === DEFAULT_MODEL.id
-            ? ''
-            : String(model.modelId || model.id).trim()
-        }))
-      : []
-    return [DEFAULT_MODEL, ...models.filter(model => model.id !== DEFAULT_MODEL.id)]
-  } catch {
-    return [DEFAULT_MODEL]
-  }
-}
-
 function randomId(prefix) {
   const token = globalThis.crypto?.randomUUID?.().slice(0, 8)
     || Math.random().toString(36).slice(2, 10)
@@ -73,6 +51,8 @@ function newSession(id = randomId('session')) {
     title: '未命名任务',
     createdAt: nowIso(),
     updatedAt: nowIso(),
+    pinned: false,
+    pinnedAt: '',
     state: null,
     activeStage: 0,
     phase: '',
@@ -90,7 +70,7 @@ function isSessionBusy(session) {
 function sessionTitle(remote, cached) {
   const displayTitle = String(remote.state?.displayTitle || '').trim()
   if (displayTitle) return displayTitle
-  if (cached?.title && cached.title !== '未命名任务') return cached.title
+  if (cached?.title && !['未命名任务', '未命名项目'].includes(cached.title)) return cached.title
   const objective = String(remote.state?.lastObjective || '').trim()
   if (!objective) return '未命名任务'
   return objective.length > 28 ? `${objective.slice(0, 28)}…` : objective
@@ -104,6 +84,8 @@ function mergeRemoteSession(remote, cached) {
     title: sessionTitle(remote, cached),
     createdAt: remote.createdAt || cached?.createdAt || nowIso(),
     updatedAt: remote.lastActiveAt || cached?.updatedAt || nowIso(),
+    pinned: remote.state?.pinned === true,
+    pinnedAt: String(remote.state?.pinnedAt || ''),
     serverBacked: true,
     serverState: remote.state || {},
     submitting: false,
@@ -112,8 +94,9 @@ function mergeRemoteSession(remote, cached) {
   }
 }
 
-function isUnsavedDraft(session) {
-  return !session.serverBacked
+export function isUnsavedDraft(session) {
+  return Boolean(session)
+    && !session.serverBacked
     && !session.activeRunId
     && !session.state
     && (!Array.isArray(session.messages) || session.messages.length === 0)
@@ -125,8 +108,8 @@ export function useAgentConsole() {
   const agentId = ref('main-agent')
   const sessionId = ref('')
   const prompt = ref('')
-  const models = ref(readModels())
-  const selectedModelId = ref(localStorage.getItem(SELECTED_MODEL_KEY) || DEFAULT_MODEL.id)
+  const models = ref([])
+  const selectedModelKey = ref('')
   const approvalMode = ref(localStorage.getItem(APPROVAL_MODE_KEY) || 'FULL_ACCESS')
   const connection = ref('standby')
   const loadingSessions = ref(false)
@@ -139,6 +122,9 @@ export function useAgentConsole() {
 
   const currentSession = computed(() =>
     sessions.value.find((session) => session.id === currentSessionId.value) || null)
+  const currentSessionDraft = computed(() => isUnsavedDraft(currentSession.value))
+  const currentModel = computed(() =>
+    models.value.find(model => model.key === selectedModelKey.value) || null)
 
   const messages = computed(() => currentSession.value?.messages || [])
   const busy = computed(() => isSessionBusy(currentSession.value))
@@ -157,14 +143,18 @@ export function useAgentConsole() {
     || (isSessionBusy(currentSession.value) ? '正在运行' : '')).trim())
 
   function persist() {
-    const recent = sessions.value.slice(0, SESSION_CACHE_SIZE)
+    // 空白草稿只存在于当前页面生命周期；首次发送消息后才进入任务缓存和目录。
+    const persistableSessions = sessions.value.filter(session => !isUnsavedDraft(session))
+    const recent = persistableSessions.slice(0, SESSION_CACHE_SIZE)
     const active = currentSession.value
-    const cache = active && !recent.some(session => session.id === active.id)
+    const cache = active && !isUnsavedDraft(active) && !recent.some(session => session.id === active.id)
       ? [...recent.slice(0, SESSION_CACHE_SIZE - 1), active]
       : recent
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cache))
-    if (currentSessionId.value) {
+    if (currentSessionId.value && !isUnsavedDraft(active)) {
       localStorage.setItem(ACTIVE_SESSION_KEY, currentSessionId.value)
+    } else {
+      localStorage.removeItem(ACTIVE_SESSION_KEY)
     }
   }
 
@@ -262,25 +252,25 @@ export function useAgentConsole() {
   // 操作记录只从事件存储中的 TOOL_CALL_* 领域事件重建，与实时 SSE 事件同源，
   // 避免模型生成的文本描述进入执行记录。
   function recoverOperationGroups(trace, events) {
-    return events.flatMap((event, eventIndex) => {
-      if (event.type !== 'TOOL_CALL_COMPLETED' && event.type !== 'TOOL_CALL_FAILED') return []
+    const groups = []
+    events.forEach((event, eventIndex) => {
+      if (event.type !== 'TOOL_CALL_COMPLETED' && event.type !== 'TOOL_CALL_FAILED') return
       const data = event.data || {}
       const kind = classifyTool(data.toolName || '')
-      return [{
-          id: `${trace.invocationId}:ops:${eventIndex}`,
-          role: 'ops',
-          kind,
-          items: [{
-            toolName: data.toolName || '',
-            arguments: data.arguments || {},
-            summary: data.summary || event.message || '',
-            success: event.type === 'TOOL_CALL_COMPLETED',
-            status: event.type === 'TOOL_CALL_COMPLETED' ? 'COMPLETED' : 'FAILED'
-          }],
-          expanded: false,
-          createdAt: event.timestamp || trace.startedAt
-        }]
+      appendOperationGroup(groups, {
+        id: `${trace.invocationId}:ops:${eventIndex}`,
+        kind,
+        item: {
+          toolName: data.toolName || '',
+          arguments: data.arguments || {},
+          summary: data.summary || event.message || '',
+          success: event.type === 'TOOL_CALL_COMPLETED',
+          status: event.type === 'TOOL_CALL_COMPLETED' ? 'COMPLETED' : 'FAILED'
+        },
+        createdAt: event.timestamp || trace.startedAt
+      })
     })
+    return groups
   }
 
   function activateSession(session) {
@@ -290,6 +280,12 @@ export function useAgentConsole() {
   }
 
   function createSession() {
+    if (isUnsavedDraft(currentSession.value)) {
+      prompt.value = ''
+      activateSession(currentSession.value)
+      persist()
+      return currentSession.value
+    }
     const session = newSession()
     sessions.value.unshift(session)
     activateSession(session)
@@ -318,12 +314,38 @@ export function useAgentConsole() {
     }
   }
 
-  async function deleteSession(id) {
+  async function toggleSessionPin(id) {
+    const session = sessions.value.find((item) => item.id === id)
+    if (!session) return false
+    const previousPinned = Boolean(session.pinned)
+    const previousPinnedAt = String(session.pinnedAt || '')
+    session.pinned = !previousPinned
+    session.pinnedAt = session.pinned ? nowIso() : ''
+    persist()
+    if (!session.serverBacked) return true
+    try {
+      const remote = await updateSessionPinned(id, session.pinned)
+      session.pinned = remote?.state?.pinned === true
+      session.pinnedAt = String(remote?.state?.pinnedAt || session.pinnedAt || '')
+      connection.value = 'online'
+      persist()
+      return true
+    } catch (error) {
+      session.pinned = previousPinned
+      session.pinnedAt = previousPinnedAt
+      connection.value = error instanceof TypeError ? 'offline' : connection.value
+      sessionHistoryError.value = '会话置顶状态未能保存到服务端。'
+      persist()
+      return false
+    }
+  }
+
+  async function deleteSession(id, { skipRemote = false } = {}) {
     let index = sessions.value.findIndex((item) => item.id === id)
     if (index < 0 || isSessionBusy(sessions.value[index])) return false
 
     const target = sessions.value[index]
-    if (target.serverBacked) {
+    if (target.serverBacked && !skipRemote) {
       try {
         await deleteSessionRecord(id)
         serverSessionTotal.value = Math.max(0, serverSessionTotal.value - 1)
@@ -359,9 +381,43 @@ export function useAgentConsole() {
 
   async function deleteSessions(ids) {
     const uniqueIds = [...new Set(Array.isArray(ids) ? ids : [])]
-    let failed = 0
+    const remoteIds = uniqueIds.filter(id => {
+      const session = sessions.value.find(item => item.id === id)
+      return session?.serverBacked && !isSessionBusy(session)
+    })
+    const failedRemoteIds = new Set()
+    let deletedRemoteCount = 0
+
+    if (remoteIds.length) {
+      try {
+        const result = await deleteSessionRecords(remoteIds)
+        for (const id of result?.notFound || []) failedRemoteIds.add(id)
+        deletedRemoteCount = Number(result?.deleted || 0)
+        connection.value = 'online'
+      } catch (error) {
+        // 兼容尚未升级批量接口的旧服务端，桌面客户端仍可退回逐条删除。
+        if (error?.status === 404 || error?.status === 405) {
+          for (const id of remoteIds) {
+            try {
+              await deleteSessionRecord(id)
+              deletedRemoteCount += 1
+            } catch {
+              failedRemoteIds.add(id)
+            }
+          }
+        } else {
+          remoteIds.forEach(id => failedRemoteIds.add(id))
+          connection.value = error instanceof TypeError ? 'offline' : connection.value
+        }
+      }
+      serverSessionTotal.value = Math.max(0, serverSessionTotal.value - deletedRemoteCount)
+      loadedServerSessions.value = Math.max(0, loadedServerSessions.value - deletedRemoteCount)
+    }
+
+    let failed = failedRemoteIds.size
     for (const id of uniqueIds) {
-      if (!await deleteSession(id)) failed += 1
+      if (failedRemoteIds.has(id)) continue
+      if (!await deleteSession(id, { skipRemote: true })) failed += 1
     }
     if (failed > 0) {
       sessionHistoryError.value = '部分会话未能从服务端删除。'
@@ -402,7 +458,7 @@ export function useAgentConsole() {
       session = newSession(id)
       sessions.value.unshift(session)
     }
-    if (session.title === '未命名任务') {
+    if (['未命名任务', '未命名项目'].includes(session.title)) {
       session.title = firstPrompt.length > 28 ? `${firstPrompt.slice(0, 28)}…` : firstPrompt
     }
     activateSession(session)
@@ -420,45 +476,33 @@ export function useAgentConsole() {
     session.updatedAt = nowIso()
   }
 
-  function selectModel(modelId) {
-    if (!models.value.some(model => model.id === modelId)) return
-    selectedModelId.value = modelId
-    localStorage.setItem(SELECTED_MODEL_KEY, modelId)
-  }
-
-  function addModel(model) {
-    const modelId = String(model?.modelId || '').trim()
-    const name = String(model?.name || modelId).trim()
-    const id = String(model?.id || modelId).trim()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-zA-Z0-9._:/-]+/g, '')
-    if (!name || !modelId || !id) return false
-    const existing = models.value.find(item => item.id === id)
-    if (existing) {
-      selectModel(existing.id)
-      return false
-    }
-    models.value = [...models.value, { id, name, modelId }]
-    localStorage.setItem(MODEL_STORAGE_KEY, JSON.stringify(models.value))
-    selectModel(id)
-    return true
-  }
-
   async function refreshServerModel() {
     try {
-      const catalog = await getConsoleCatalog()
-      const routes = Array.isArray(catalog?.models) ? catalog.models : []
-      const route = routes.find(model => model.role === 'direct-chat')
-        || routes.find(model => model.role === 'planner')
-        || routes[0]
-      const modelId = String(route?.model || '').trim()
-      if (!modelId) return
-      models.value = models.value.map(model => model.id === DEFAULT_MODEL.id
-        ? { ...DEFAULT_MODEL, name: modelId }
-        : model)
+      const snapshot = await getModelManagement()
+      const configured = Array.isArray(snapshot?.models) ? snapshot.models : []
+      models.value = configured
+        .filter(model => model.enabled)
+        .map(model => ({
+          key: model.id,
+          id: model.id,
+          vendorModelId: model.modelId,
+          name: model.modelId,
+          modelType: model.modelType,
+          provider: model.providerName,
+          providerType: model.providerType
+        }))
+      if (!models.value.some(model => model.key === selectedModelKey.value)) {
+        selectedModelKey.value = ''
+      }
     } catch {
-      // 模型目录不可用时保留“Server 默认模型”，不影响任务提交。
+      models.value = []
+      selectedModelKey.value = ''
     }
+  }
+
+  function selectTaskModel(key) {
+    const normalized = String(key || '')
+    if (models.value.some(model => model.key === normalized)) selectedModelKey.value = normalized
   }
 
   function setApprovalMode(mode) {
@@ -524,12 +568,10 @@ export function useAgentConsole() {
   }
 
   function appendOperation(session, kind, item) {
-    session.messages.push({
+    appendOperationGroup(session.messages, {
       id: randomId('ops'),
-      role: 'ops',
       kind,
-      items: [item],
-      expanded: false,
+      item,
       createdAt: nowIso()
     })
   }
@@ -847,6 +889,7 @@ export function useAgentConsole() {
   async function execute(attachments = [], workspaceContext = null) {
     const task = prompt.value.trim()
     if (!task || busy.value) return
+    if (!currentModel.value?.id) throw new Error('请先选择一个已启用的模型')
 
     const normalizedSessionId = sanitizeId(sessionId.value, randomId('session'))
     const normalizedAgentId = sanitizeId(agentId.value, 'main-agent')
@@ -879,12 +922,11 @@ export function useAgentConsole() {
       } catch {
         session.runUsageBase = null
       }
-      const selectedModel = models.value.find(model => model.id === selectedModelId.value)
       const attributes = {
         source: 'agentos-console',
         approvalMode: approvalMode.value
       }
-      if (selectedModel?.modelId) attributes.model = selectedModel.modelId
+      attributes.modelId = currentModel.value.id
       if (workspaceContext?.name) {
         attributes.workspaceName = workspaceContext.name
         attributes.workspaceContextFiles = workspaceContext.files?.length || 0
@@ -1011,8 +1053,11 @@ export function useAgentConsole() {
     void refreshServerModel()
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
-      sessions.value = Array.isArray(stored) ? stored : []
+      // 旧版本会持久化空白任务；升级后直接丢弃，避免继续污染任务目录。
+      sessions.value = Array.isArray(stored) ? stored.filter(session => !isUnsavedDraft(session)) : []
       sessions.value.forEach(session => {
+        if (session.title === '未命名项目') session.title = '未命名任务'
+        session.messages = compactOperationGroups(session.messages)
         session.submitting = false
         session.activeStage = session.activeRunId
           ? Number(session.activeStage || 1)
@@ -1042,11 +1087,13 @@ export function useAgentConsole() {
   return {
     sessions,
     currentSessionId,
+    currentSessionDraft,
     agentId,
     sessionId,
     prompt,
     models,
-    selectedModelId,
+    selectedModelKey,
+    currentModel,
     approvalMode,
     busy,
     connection,
@@ -1060,13 +1107,16 @@ export function useAgentConsole() {
     serverSessionTotal,
     hasMoreSessions,
     createSession,
+    isSessionDraft: isUnsavedDraft,
     renameSession,
+    toggleSessionPin,
     deleteSession,
     deleteSessions,
     selectSession,
     loadMoreSessions,
-    selectModel,
-    addModel,
+    refreshSessions: () => loadSessionPage(true),
+    selectTaskModel,
+    refreshServerModel,
     setApprovalMode,
     execute,
     retryMessage,

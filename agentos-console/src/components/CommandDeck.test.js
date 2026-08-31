@@ -8,16 +8,24 @@ function mountDeck(overrides = {}) {
       agentId: 'main-agent',
       sessionId: 'session-1',
       prompt: 'hello',
-      models: [{ id: 'minimax-h3', name: 'minimax h3' }],
-      selectedModelId: 'minimax-h3',
+      currentModel: { id: 'model-deepseek', name: 'deepseek-v4-pro', provider: 'DeepSeek', modelType: 'BUILT_IN' },
+      models: [
+        { key: 'model-deepseek', id: 'model-deepseek', name: 'deepseek-v4-pro', provider: 'DeepSeek', providerType: 'DEEPSEEK', modelType: 'BUILT_IN' },
+        { key: 'model-custom', id: 'model-custom', name: 'my-model', provider: 'Private gateway', providerType: 'OPENAI_COMPATIBLE', modelType: 'CUSTOM' }
+      ],
+      selectedModelKey: 'model-deepseek',
       approvalMode: 'FULL_ACCESS',
       uploadAvailable: true,
       workspaceAvailable: true,
       workspaces: [
-        { id: 'workspace-1', name: 'agent-platform', root: '/local/agent-platform' },
+        { id: 'workspace-1', name: 'agent-platform', root: '/local/agent-platform', gitRepository: true },
         { id: 'workspace-2', name: 'assistant', root: '/local/assistant' }
       ],
-      currentWorkspace: { id: 'workspace-1', name: 'agent-platform', root: '/local/agent-platform' },
+      currentWorkspace: { id: 'workspace-1', name: 'agent-platform', root: '/local/agent-platform', gitRepository: true },
+      gitBranches: [
+        { name: 'main', current: true },
+        { name: 'feature/composer', current: false }
+      ],
       workspaceFiles: [
         { name: 'ReadMe.md', relativePath: 'ReadMe.md', language: 'markdown' },
         { name: 'AgentApplication.java', relativePath: 'src/main/java/AgentApplication.java', language: 'java' },
@@ -32,7 +40,7 @@ function mountDeck(overrides = {}) {
 describe('CommandDeck composer controls', () => {
   it('shows the default model and emits attachment upload', async () => {
     const wrapper = mountDeck()
-    expect(wrapper.get('.model-trigger').text()).toContain('minimax h3')
+    expect(wrapper.get('.model-trigger').text()).toContain('deepseek-v4-pro')
     await wrapper.get('.attach-button').trigger('click')
     expect(wrapper.emitted('upload')).toHaveLength(1)
   })
@@ -56,19 +64,48 @@ describe('CommandDeck composer controls', () => {
     expect(wrapper.emitted('update:approvalMode')?.[0]).toEqual(['REQUEST_APPROVAL'])
   })
 
-  it('adds a model through the in-app dialog', async () => {
+  it('opens the custom Git branch menu and requests a branch switch', async () => {
+    const wrapper = mountDeck()
+
+    expect(wrapper.get('.branch-trigger').text()).toContain('main')
+    await wrapper.get('.branch-trigger').trigger('click')
+    expect(wrapper.emitted('refresh-branches')).toHaveLength(1)
+    expect(wrapper.get('.branch-menu').attributes('role')).toBe('listbox')
+
+    const options = wrapper.findAll('.branch-option')
+    expect(options).toHaveLength(2)
+    await options[1].trigger('click')
+    expect(wrapper.emitted('select-branch')?.[0]).toEqual(['feature/composer'])
+  })
+
+  it('selects a configured provider and model for the current task', async () => {
+    const wrapper = mountDeck()
+    await wrapper.get('.model-trigger').trigger('click')
+    const options = wrapper.findAll('.model-option-list [role="option"]')
+    expect(options).toHaveLength(2)
+    await options[1].trigger('click')
+    expect(wrapper.emitted('update:selectedModelKey')?.[0]).toEqual(['model-custom'])
+  })
+
+  it('prompts for a model instead of submitting when none is selected', async () => {
+    const wrapper = mountDeck({ currentModel: null, selectedModelKey: '' })
+
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('run')).toBeUndefined()
+    expect(wrapper.get('.model-selection-error').text()).toContain('Choose an enabled model')
+    expect(wrapper.get('.model-menu').exists()).toBe(true)
+  })
+
+  it('opens the unified provider and route management page', async () => {
     const wrapper = mountDeck()
     await wrapper.get('.model-trigger').trigger('click')
     await wrapper.get('.model-menu footer button').trigger('click')
-    await wrapper.get('.model-dialog input').setValue('vendor/custom-reasoner-v1')
-    await wrapper.get('.model-dialog form').trigger('submit')
-    expect(wrapper.emitted('add-model')?.[0]).toEqual([{
-      modelId: 'vendor/custom-reasoner-v1'
-    }])
+    expect(wrapper.emitted('manage-models')).toHaveLength(1)
   })
 
   it('selects a recent task folder from the composer footer', async () => {
-    const wrapper = mountDeck()
+    const wrapper = mountDeck({ currentWorkspace: null })
     await wrapper.get('.workspace-context-trigger').trigger('click')
     const recent = wrapper.findAll('.composer-workspace-menu > button')
     await recent[0].trigger('click')
@@ -77,7 +114,7 @@ describe('CommandDeck composer controls', () => {
   })
 
   it('opens the native folder picker from the custom workspace menu', async () => {
-    const wrapper = mountDeck()
+    const wrapper = mountDeck({ currentWorkspace: null })
     await wrapper.get('.workspace-context-trigger').trigger('click')
     await wrapper.get('.composer-workspace-menu footer button').trigger('click')
 

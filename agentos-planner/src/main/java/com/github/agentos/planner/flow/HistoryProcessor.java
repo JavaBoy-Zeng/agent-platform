@@ -35,6 +35,8 @@ public final class HistoryProcessor implements LlmRequestProcessor {
 
     private static final String USER_PREFIX = "用户：";
     private static final String ASSISTANT_PREFIX = "助手：";
+    /** 可选前缀：紧跟在 {@link #ASSISTANT_PREFIX} 之后携带 base64 编码的 reasoning_content。 */
+    private static final String REASONING_PREFIX = "[reasoning=";
 
     private final String historyAttribute;
 
@@ -63,11 +65,15 @@ public final class HistoryProcessor implements LlmRequestProcessor {
      *
      * <p>以“用户：”或“助手：”开头的行开启新消息，其余行归属上一条消息
      * （消息正文本身可含换行）。无法识别角色时按用户消息处理。</p>
+     *
+     * <p>助手消息首行支持 {@code [reasoning=base64...]} 标注，解析后回填到
+     * {@link LlmMessage#reasoningContent()}，用于多轮 thinking 模式回传。</p>
      */
-    static List<LlmMessage> parseHistory(String text) {
+    public static List<LlmMessage> parseHistory(String text) {
         List<LlmMessage> messages = new ArrayList<>();
         StringBuilder current = null;
         LlmMessage.Role currentRole = null;
+        String currentReasoning = null;
         for (String line : text.split("\n", -1)) {
             String stripped = line.strip();
             if (stripped.isEmpty()) {
@@ -75,24 +81,47 @@ public final class HistoryProcessor implements LlmRequestProcessor {
             }
             LlmMessage.Role role = roleOf(stripped);
             if (role != null) {
-                appendMessage(messages, current, currentRole);
+                appendMessage(messages, current, currentRole, currentReasoning);
                 currentRole = role;
-                current = new StringBuilder(stripped.substring(prefixLength(stripped)));
+                String body = stripped.substring(prefixLength(stripped));
+                currentReasoning = null;
+                if (role == LlmMessage.Role.ASSISTANT && body.startsWith(REASONING_PREFIX)) {
+                    int closing = body.indexOf(']');
+                    if (closing > REASONING_PREFIX.length()) {
+                        currentReasoning = decodeReasoning(
+                                body.substring(REASONING_PREFIX.length(), closing));
+                        body = body.substring(closing + 1).strip();
+                    }
+                }
+                current = new StringBuilder(body);
             } else if (current != null) {
                 current.append('\n').append(stripped);
             }
         }
-        appendMessage(messages, current, currentRole);
+        appendMessage(messages, current, currentRole, currentReasoning);
         return messages;
     }
 
     private static void appendMessage(
             List<LlmMessage> messages, StringBuilder content,
-            LlmMessage.Role role) {
+            LlmMessage.Role role, String reasoningContent) {
         if (content == null || content.isEmpty() || role == null) {
             return;
         }
-        messages.add(new LlmMessage(role, content.toString()));
+        String text = content.toString();
+        messages.add(reasoningContent == null
+                ? new LlmMessage(role, text)
+                : LlmMessage.assistantWithReasoning(text, reasoningContent));
+    }
+
+    /** 解码 base64 形式的 reasoning；非法内容按 null 处理，避免污染模型上下文。 */
+    private static String decodeReasoning(String base64) {
+        try {
+            byte[] decoded = java.util.Base64.getDecoder().decode(base64);
+            return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (RuntimeException exception) {
+            return null;
+        }
     }
 
     private static LlmMessage.Role roleOf(String line) {

@@ -1,6 +1,7 @@
 package com.github.agentos.server.model;
 
 import com.github.agentos.planner.ChatClient;
+import com.github.agentos.planner.flow.LlmMessage;
 import com.github.agentos.planner.flow.LlmRequest;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -188,6 +189,153 @@ class OpenAiCompatibleChatClientTest {
                 .isInstanceOf(ModelClientException.class)
                 .hasMessageContaining("500")
                 .hasMessageContaining("boom");
+    }
+
+    @Test
+    void capturesReasoningContentFromNonStreamingResponse() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        String response = objectMapper.writeValueAsString(java.util.Map.of(
+                "choices", java.util.List.of(java.util.Map.of(
+                        "message", java.util.Map.of(
+                                "content", "今天是 2026-08-19",
+                                "reasoning_content", "用户问日期 → 查日历 → 周三")))));
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions",
+                exchange -> respond(exchange, 200, response));
+        server.start();
+
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper,
+                properties("test-model", ""));
+        ChatClient.ChatResponse result = client.chatDetails("s1", LlmRequest.of("今天几号"));
+
+        assertThat(result.answer()).isEqualTo("今天是 2026-08-19");
+        assertThat(result.reasoningContent()).isEqualTo("用户问日期 → 查日历 → 周三");
+    }
+
+    @Test
+    void omitsReasoningContentFieldWhenAbsent() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, objectMapper.writeValueAsString(java.util.Map.of(
+                    "choices", java.util.List.of(java.util.Map.of(
+                            "message", java.util.Map.of("content", "ok"))))));
+        });
+        server.start();
+
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper,
+                properties("test-model", ""));
+        LlmRequest request = LlmRequest.of("hi").withMessages(java.util.List.of(
+                LlmMessage.user("hi"),
+                LlmMessage.assistant("hello"),
+                LlmMessage.user("again")));
+        client.chat("s1", request);
+
+        JsonNode sent = objectMapper.readTree(requestBody.get());
+        // 普通 assistant 消息不能携带 reasoning_content 字段，否则会污染历史上下文。
+        assertThat(sent.path("messages").path(1).has("reasoning_content")).isFalse();
+    }
+
+    @Test
+    void sendsReasoningContentBackForAssistantMessage() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, objectMapper.writeValueAsString(java.util.Map.of(
+                    "choices", java.util.List.of(java.util.Map.of(
+                            "message", java.util.Map.of("content", "ok"))))));
+        });
+        server.start();
+
+        ModelClientProperties minimax = properties("test-model", "");
+        minimax.setProviderType("MINIMAX");
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper, minimax);
+        LlmRequest request = LlmRequest.of("follow-up").withMessages(java.util.List.of(
+                LlmMessage.user("今天几号"),
+                LlmMessage.assistantWithReasoning("2026-08-19", "查日历 → 周三"),
+                LlmMessage.user("明天呢")));
+        client.chat("s1", request);
+
+        JsonNode sent = objectMapper.readTree(requestBody.get());
+        JsonNode assistant = sent.path("messages").path(1);
+        assertThat(assistant.path("role").stringValue()).isEqualTo("assistant");
+        assertThat(assistant.path("reasoning_content").stringValue()).isEqualTo("查日历 → 周三");
+        assertThat(assistant.path("content").stringValue()).isEqualTo("2026-08-19");
+    }
+
+    /**
+     * reasoning_content 是 thinking 模型的厂商扩展字段：非 thinking 厂商
+     * （如 OPENAI_COMPATIBLE）收到历史 assistant 消息里的该字段可能直接拒绝请求。
+     * 会话中途从 MiniMax 切到非 thinking 模型时必须丢弃该字段。
+     */
+    @Test
+    void omitsReasoningContentForNonThinkingProvider() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, objectMapper.writeValueAsString(java.util.Map.of(
+                    "choices", java.util.List.of(java.util.Map.of(
+                            "message", java.util.Map.of("content", "ok"))))));
+        });
+        server.start();
+
+        // 默认 providerType=OPENAI_COMPATIBLE，模型名不含 thinking 关键词。
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper,
+                properties("gpt-style-model", ""));
+        LlmRequest request = LlmRequest.of("follow-up").withMessages(java.util.List.of(
+                LlmMessage.user("今天几号"),
+                LlmMessage.assistantWithReasoning("2026-08-19", "查日历 → 周三"),
+                LlmMessage.user("明天呢")));
+        client.chat("s1", request);
+
+        JsonNode sent = objectMapper.readTree(requestBody.get());
+        JsonNode assistant = sent.path("messages").path(1);
+        assertThat(assistant.path("reasoning_content").isMissingNode()).isTrue();
+        assertThat(assistant.path("content").stringValue()).isEqualTo("2026-08-19");
+    }
+
+    /** reasoningMode=DISABLED 显式关闭回传，即使厂商是 MiniMax。 */
+    @Test
+    void disablesReasoningPassthroughExplicitly() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, objectMapper.writeValueAsString(java.util.Map.of(
+                    "choices", java.util.List.of(java.util.Map.of(
+                            "message", java.util.Map.of("content", "ok"))))));
+        });
+        server.start();
+
+        ModelClientProperties disabled = properties("test-model", "");
+        disabled.setProviderType("MINIMAX");
+        disabled.setReasoningMode(ModelClientProperties.ReasoningMode.DISABLED);
+        ChatClient client = new OpenAiCompatibleChatClient(
+                HttpClient.newHttpClient(), objectMapper, disabled);
+        LlmRequest request = LlmRequest.of("follow-up").withMessages(java.util.List.of(
+                LlmMessage.user("今天几号"),
+                LlmMessage.assistantWithReasoning("2026-08-19", "查日历 → 周三"),
+                LlmMessage.user("明天呢")));
+        client.chat("s1", request);
+
+        JsonNode sent = objectMapper.readTree(requestBody.get());
+        assertThat(sent.path("messages").path(1).path("reasoning_content").isMissingNode())
+                .isTrue();
     }
 
     private ModelClientProperties properties(String model, String chatModel) {

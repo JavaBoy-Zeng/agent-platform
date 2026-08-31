@@ -40,6 +40,7 @@ class ReactAgentTest {
         // → ReactAgent 保存 continuation 并进入 WAITING → resume(approved=true)
         // → 工具真正执行，结果作为 TOOL 观察追加 → 第二轮模型给出最终回答。
         List<LlmMessage> messagesSeenOnResume = new ArrayList<>();
+        List<String> modelsSeen = new ArrayList<>();
         AtomicInteger toolExecutions = new AtomicInteger();
         java.util.concurrent.atomic.AtomicBoolean approved =
                 new java.util.concurrent.atomic.AtomicBoolean();
@@ -47,6 +48,7 @@ class ReactAgentTest {
                 "pa-1", PendingActionType.HUMAN_APPROVAL,
                 "审批写入", "请批准写入操作", Map.of());
         ChatClient chatClient = nativeToolCallClient((request, round) -> {
+            modelsSeen.add(request.model());
             request.messages().stream()
                     .filter(message -> message.role() == LlmMessage.Role.TOOL)
                     .forEach(messagesSeenOnResume::add);
@@ -75,15 +77,35 @@ class ReactAgentTest {
                 return ToolResult.success("已写入 " + call.arguments().get("path"));
             }
         };
+        java.util.concurrent.atomic.AtomicReference<ContinuationStore.PersistedContinuation>
+                savedContinuation = new java.util.concurrent.atomic.AtomicReference<>();
+        ContinuationStore continuationStore = new ContinuationStore() {
+            @Override
+            public void save(String invocationId, PersistedContinuation continuation) {
+                savedContinuation.set(continuation);
+            }
+
+            @Override
+            public java.util.Optional<PersistedContinuation> load(String invocationId) {
+                return java.util.Optional.ofNullable(savedContinuation.get());
+            }
+
+            @Override
+            public void delete(String invocationId) {
+                savedContinuation.set(null);
+            }
+        };
         ReactAgent agent = reactAgent(chatClient, dangerousWrite,
-                AgentExecutionLimits.defaults(), ContinuationStore.NOOP);
+                AgentExecutionLimits.defaults(), continuationStore);
         List<AgentRunEvent> events = new ArrayList<>();
         InvocationContext context = InvocationContext.of(ReactAgent.ID)
                 .withRuntime(invocationForResume(), com.github.agentos.kernel.AgentEventPublisher.NOOP);
 
         // 第一次 run：工具返回 pendingAction，进入 WAITING。
+        AgentRequest routedRequest = new AgentRequest(
+                "session-pa", "写入 /tmp/x", Map.of("modelId", "model-deepseek"));
         AgentState waiting = agent.run(
-                AgentRequest.of("session-pa", "写入 /tmp/x"),
+                routedRequest,
                 context, AgentState.ready().startNextIteration(), events::add);
         assertThat(waiting.status()).isEqualTo(AgentState.Status.WAITING);
         assertThat(events).extracting(AgentRunEvent::type)
@@ -94,6 +116,9 @@ class ReactAgentTest {
                 .extracting(event -> event.data().get("continuationSaved"))
                 .contains(true);
         assertThat(toolExecutions).hasValue(0);
+        assertThat(savedContinuation.get()).isNotNull();
+        assertThat(savedContinuation.get().request().attributes())
+                .containsEntry("modelId", "model-deepseek");
 
         // 审批通过后 resume：翻 approved 标志，从断点恢复。
         approved.set(true);
@@ -117,6 +142,7 @@ class ReactAgentTest {
         assertThat(completed.output()).isEqualTo("写入完成，这是最终回答");
         assertThat(toolExecutions).hasValue(1);
         assertThat(messagesSeenOnResume).isNotEmpty();
+        assertThat(modelsSeen).containsExactly("model-deepseek", "model-deepseek");
         // resume 事件流包含工具执行与观察。
         assertThat(resumeEvents).extracting(AgentRunEvent::type).contains(
                 AgentRunEvent.Type.RUN_STARTED,

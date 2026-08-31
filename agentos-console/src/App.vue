@@ -5,6 +5,7 @@ import AppSidebar from './components/AppSidebar.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import { useAgentConsole } from './composables/useAgentConsole.js'
 import { useDesktopWorkspace } from './composables/useDesktopWorkspace.js'
+import { useAutomationDesktop } from './composables/useAutomationDesktop.js'
 import { useLocale } from './composables/useLocale.js'
 import { useTheme } from './composables/useTheme.js'
 import { clearAuth, getAuthToken, setAuthUser } from './services/apiConfig.js'
@@ -16,8 +17,10 @@ const route = useRoute()
 const { t } = useLocale()
 const theme = useTheme()
 const desktopWorkspace = useDesktopWorkspace(agentConsole)
+const automationDesktop = useAutomationDesktop(desktopWorkspace)
 provide('agentConsole', agentConsole)
 provide('desktopWorkspace', desktopWorkspace)
+provide('automationDesktop', automationDesktop)
 provide('theme', theme)
 
 const isLogin = computed(() => route.path === '/login')

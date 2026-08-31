@@ -10,15 +10,24 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
   error: { type: String, default: '' }
 })
-const emit = defineEmits(['select', 'pick', 'clear'])
+const emit = defineEmits(['select', 'pick'])
 
 const root = ref(null)
 const menu = ref(null)
+const searchInput = ref(null)
 const open = ref(false)
-const recentWorkspaces = computed(() => props.workspaces.slice(0, 6))
+const query = ref('')
+const visibleWorkspaces = computed(() => {
+  const normalized = query.value.trim().toLocaleLowerCase()
+  if (!normalized) return props.workspaces.slice(0, 6)
+  return props.workspaces.filter(workspace =>
+    String(workspace.name || '').toLocaleLowerCase().includes(normalized)
+      || String(workspace.root || '').toLocaleLowerCase().includes(normalized))
+})
 
 function close() {
   open.value = false
+  query.value = ''
 }
 
 async function toggle(event) {
@@ -26,10 +35,14 @@ async function toggle(event) {
   event?.preventDefault?.()
   if (props.busy) return
   open.value = !open.value
-  if (open.value && ['ArrowDown', 'Enter', ' '].includes(event?.key)) {
+  if (open.value) {
     await nextTick()
-    menu.value?.querySelector('[role="menuitem"]')?.focus()
+    searchInput.value?.focus()
   }
+}
+
+function focusFirstWorkspace() {
+  menu.value?.querySelector('.workspace-result')?.focus()
 }
 
 function select(workspace) {
@@ -39,11 +52,6 @@ function select(workspace) {
 
 function pick() {
   emit('pick')
-  close()
-}
-
-function clear() {
-  emit('clear')
   close()
 }
 
@@ -91,48 +99,61 @@ onUnmounted(() => {
       {{ t('本地') }}
     </span>
 
-    <div class="workspace-context-picker">
+    <div v-if="currentWorkspace" class="workspace-context-fixed" :title="currentWorkspace.root">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z" /></svg>
+      <span><strong>{{ currentWorkspace.name }}</strong><small>{{ currentWorkspace.root }}</small></span>
+      <svg class="workspace-lock" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 10 0v3M5 11h14v10H5z" /></svg>
+      <span class="sr-only">{{ t('任务目录已锁定，不允许修改') }}</span>
+    </div>
+
+    <div v-else class="workspace-context-picker">
       <button
         class="workspace-context-trigger"
         type="button"
         :disabled="busy"
         aria-haspopup="menu"
         :aria-expanded="open"
-        :title="currentWorkspace?.root || t('选择文件夹（可选）')"
+        :title="t('首次选择后不可修改')"
         @pointerdown.stop
         @click="toggle"
         @keydown="toggle"
       >
         <span v-if="busy" class="mini-loader" aria-hidden="true"></span>
         <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM7 7V5h5" /></svg>
-        <span>{{ currentWorkspace?.name || t('选择文件夹（可选）') }}</span>
+        <span>{{ t('默认目录') }}</span>
         <svg class="workspace-context-chevron" :class="{ open }" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5 5 5-5" /></svg>
       </button>
 
       <div v-if="open" ref="menu" class="composer-workspace-menu" role="menu" :aria-label="t('选择任务文件夹')" @keydown="navigate">
         <header>
-          <small>WORKSPACE</small>
           <strong>{{ t('最近') }}</strong>
         </header>
+        <label class="workspace-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <span class="sr-only">{{ t('搜索目录') }}</span>
+          <input ref="searchInput" v-model="query" type="search" autocomplete="off"
+                 :placeholder="t('搜索目录名称或路径')" @keydown.down.prevent="focusFirstWorkspace">
+          <button v-if="query" type="button" :aria-label="t('清除搜索')" @click="query = ''; searchInput?.focus()">×</button>
+        </label>
         <button
-          v-for="workspace in recentWorkspaces"
+          v-for="workspace in visibleWorkspaces"
           :key="workspace.id"
+          class="workspace-result"
           type="button"
           role="menuitem"
-          :class="{ selected: workspace.id === currentWorkspace?.id }"
           @click="select(workspace)"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z" /></svg>
           <span><strong>{{ workspace.name }}</strong><small>{{ workspace.root }}</small></span>
-          <svg v-if="workspace.id === currentWorkspace?.id" class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 6" /></svg>
+          <span></span>
         </button>
-        <p v-if="!recentWorkspaces.length" class="workspace-menu-empty">{{ t('还没有最近使用的文件夹') }}</p>
+        <p v-if="!visibleWorkspaces.length" class="workspace-menu-empty">
+          {{ query ? t('没有匹配的目录') : t('还没有最近使用的文件夹') }}
+        </p>
         <footer>
-          <button type="button" role="menuitem" @click="pick">
-            <span aria-hidden="true">＋</span>{{ t('选择其他文件夹') }}
-          </button>
-          <button v-if="currentWorkspace" type="button" role="menuitem" @click="clear">
-            {{ t('不使用文件夹') }}
+          <button class="workspace-pick-action" type="button" role="menuitem" @click="pick">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h7l2 2h9v9H3zM8 5v6M5 8h6" /></svg>
+            {{ t('选择文件夹') }}
           </button>
         </footer>
       </div>

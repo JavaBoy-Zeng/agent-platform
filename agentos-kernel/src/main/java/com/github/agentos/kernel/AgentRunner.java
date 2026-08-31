@@ -648,8 +648,15 @@ public final class AgentRunner {
         AgentEventType type = state.status() == AgentState.Status.COMPLETED
                 ? AgentEventType.AGENT_COMPLETED : AgentEventType.AGENT_FAILED;
         String message = state.status() == AgentState.Status.COMPLETED ? state.output() : state.error();
+        java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("status", state.status().name());
+        // 跨轮 thinking 模式：把思维链写进终态事件，会话历史据此回传 reasoning_content。
+        if (state.status() == AgentState.Status.COMPLETED
+                && state.reasoning() != null && !state.reasoning().isBlank()) {
+            data.put("reasoningContent", state.reasoning());
+        }
         publish(context.eventPublisher(), DefaultAgentEvent.of(
-                context, type, message, java.util.Map.of("status", state.status().name()),
+                context, type, message, java.util.Map.copyOf(data),
                 EventActions.stateDelta(stateDelta)));
     }
 

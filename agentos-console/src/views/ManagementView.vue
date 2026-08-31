@@ -50,7 +50,7 @@ const pages = computed(() => ({
   traces: { index: '09', title: 'Traces', kicker: 'TIME / CAUSALITY', description: t('以 Span 时间线定位一次调用链的耗时与故障。'), session: true },
   artifacts: { index: '10', title: 'Artifacts', kicker: 'OUTPUT VAULT', description: t('下载或治理 Agent 在运行中登记的文件产物。'), session: true },
   approvals: { index: '11', title: 'Approvals', kicker: 'HUMAN GATE', description: t('集中处理被风险策略挂起的外部动作。') },
-  models: { index: '12', title: 'Models', kicker: 'INFERENCE ROUTING', description: t('查看模型路由、Provider 与当前会话 Token 用量。'), session: true },
+  models: { index: '12', title: 'Models', kicker: 'MODEL REGISTRY', description: t('管理已配置的内置与自定义模型。') },
   evals: { index: '13', title: 'Evals', kicker: 'TRAJECTORY CHECK', description: t('对单次执行回放工具轨迹，校验路径而不只校验答案。'), session: true }
 }))
 const page = computed(() => pages.value[section.value])
@@ -144,7 +144,7 @@ const summary = computed(() => {
     traces: [data.value?.traces?.length || 0, 'traces', (data.value?.traces || []).reduce((n, t) => n + (t.spanCount || 0), 0), 'spans'],
     artifacts: [data.value?.artifacts?.length || 0, 'files', formatBytes((data.value?.artifacts || []).reduce((n, a) => n + (a.sizeBytes || 0), 0)), 'stored'],
     approvals: [data.value?.approvals?.length || 0, 'waiting', data.value?.scanned || 0, 'sessions scanned'],
-    models: [catalogItems.value.length, 'routes', formatNumber(data.value?.usage?.totalTokens || 0), 'tokens'],
+    models: [catalogItems.value.length, 'enabled models', catalogItems.value.filter(model => model.modelType === 'CUSTOM').length, 'custom models'],
     evals: [invocationOptions.value.length, 'invocations', evalResult.value ? evalResult.value.findings.filter(f => f.passed).length : 0, 'checks passed']
   }[section.value] || [0, 'items', 0, 'active']
   return values
@@ -281,8 +281,6 @@ async function load() {
         try { return await getPendingAction(id) } catch { return null }
       }))).filter(Boolean)
       data.value = { approvals, scanned: scanned.length }
-    } else if (section.value === 'models') {
-      data.value = { usage: selectedSessionId.value ? await getUsage(selectedSessionId.value) : null }
     } else data.value = {}
   } catch (reason) {
     error.value = reason?.message || '无法读取 Console 数据'
@@ -392,14 +390,14 @@ onMounted(load)</script>
       </div>
     </header>
 
-    <div class="summary-strip">
+    <div v-if="section !== 'models'" class="summary-strip">
       <div><small>TOTAL</small><strong>{{ summary[0] }}</strong><span>{{ summary[1] }}</span></div>
       <div><small>SIGNAL</small><strong>{{ summary[2] }}</strong><span>{{ summary[3] }}</span></div>
       <div><small>RUNTIME</small><strong class="online-text">ONLINE</strong><span>local node</span></div>
       <div><small>UPDATED</small><strong>{{ new Date().toLocaleTimeString(localeTag, { hour: '2-digit', minute: '2-digit' }) }}</strong><span>live snapshot</span></div>
     </div>
 
-    <div class="content-toolbar">
+    <div v-if="section !== 'models'" class="content-toolbar">
       <label class="console-search">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
         <input v-model="query" type="search" :placeholder="searchPlaceholder" />
@@ -587,7 +585,7 @@ onMounted(load)</script>
         <article v-for="approval in data.approvals" :key="approval.pendingAction?.pendingActionId"><span class="approval-mark">!</span><div><small>RISK GATE / {{ approval.sessionId }}</small><h2>{{ approval.pendingAction?.title || approval.pendingAction?.description || t('外部动作等待确认') }}</h2><p>{{ approval.pendingAction?.description || t('该动作需要人工确认后才能继续运行。') }}</p></div><footer><button type="button" @click="decide(approval, false)">REJECT</button><button class="approve" type="button" @click="decide(approval, true)">APPROVE</button></footer></article>
       </div>
 
-      <ModelManagementPanel v-else-if="section === 'models'" :usage="data.usage" />
+      <ModelManagementPanel v-else-if="section === 'models'" />
 
       <div v-if="isEmpty" class="empty-state">
         <span>∅</span><h2>NO RECORDS IN SCOPE</h2><p>{{ t('当前范围没有可展示的数据。运行一个 Agent 任务后再刷新此面板。') }}</p>

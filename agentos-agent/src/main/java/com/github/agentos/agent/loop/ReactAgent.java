@@ -123,6 +123,7 @@ public final class ReactAgent implements Agent, AgentLoop {
 
     /** React Agent 的内存续跑状态：已累积的对话消息序列 + 挂起的工具调用。 */
     private record ReactContinuation(
+            AgentRequest request,
             List<LlmMessage> messages,
             int modelCalls,
             int toolCalls,
@@ -200,6 +201,10 @@ public final class ReactAgent implements Agent, AgentLoop {
             return runningState.fail(
                     "approved invocation cannot resume because its execution continuation is missing");
         }
+        AgentRequest resumedRequest = continuation.request();
+        if (!resumedRequest.sessionId().equals(request.sessionId())) {
+            return runningState.fail("approved invocation continuation belongs to another session");
+        }
         long started = System.nanoTime();
         String runId = "react-resume-" + UUID.randomUUID();
         LOGGER.info(
@@ -233,7 +238,7 @@ public final class ReactAgent implements Agent, AgentLoop {
             ToolResult result = toolDispatcher.dispatch(
                     pendingCall,
                     tool -> new ToolContext(
-                            request,
+                            resumedRequest,
                             context,
                             runId,
                             "step-" + callNumber,
@@ -296,7 +301,7 @@ public final class ReactAgent implements Agent, AgentLoop {
             context.invocation().clearPendingAction();
         }
         String systemInstruction = buildSystemInstruction();
-        return runLoop(request, context, runningState, eventSink,
+        return runLoop(resumedRequest, context, runningState, eventSink,
                 messages, systemInstruction,
                 continuation.modelCalls(), toolCalls, 0, 0L, 0L, runId, started);
     }
@@ -382,7 +387,7 @@ public final class ReactAgent implements Agent, AgentLoop {
                                     "totalInputTokens", totalInputTokens,
                                     "totalOutputTokens", totalOutputTokens,
                                     "totalTokens", totalInputTokens + totalOutputTokens)));
-                    return runningState.complete(answer);
+                    return runningState.complete(answer, decision.reasoningContent());
                 }
 
                 if (toolCalls >= limits.maxToolCalls()) {
@@ -436,12 +441,13 @@ public final class ReactAgent implements Agent, AgentLoop {
                     // 保存断点状态到内存与持久化存储——审批恢复时从该点继续。
                     String callId = decision.toolCallId() == null
                             ? "call-" + callNumber : decision.toolCallId();
-                    messages.add(LlmMessage.assistantToolCall(
+                    messages.add(LlmMessage.assistantToolCallWithReasoning(
                             decision.answer().isBlank() ? TOOL_CALL_PLACEHOLDER : decision.answer(),
+                            decision.reasoningContent(),
                             new LlmMessage.ToolCallPart(
                                     callId, call.toolName(), argumentsJson(call))));
                     saveContinuation(context.invocationId(), new ReactContinuation(
-                            List.copyOf(messages), modelCalls, toolCalls,
+                            request, List.copyOf(messages), modelCalls, toolCalls,
                             call, callId, call.toolName()));
                     eventSink.emit(AgentRunEvent.of(
                             AgentRunEvent.Type.DECISION,
@@ -507,8 +513,9 @@ public final class ReactAgent implements Agent, AgentLoop {
                 // 原生协议回填：assistant 携带 tool_use，TOOL 消息按 id 配对回传结果。
                 String callId = decision.toolCallId() == null
                         ? "call-" + callNumber : decision.toolCallId();
-                messages.add(LlmMessage.assistantToolCall(
+                messages.add(LlmMessage.assistantToolCallWithReasoning(
                         decision.answer().isBlank() ? TOOL_CALL_PLACEHOLDER : decision.answer(),
+                        decision.reasoningContent(),
                         new LlmMessage.ToolCallPart(
                                 callId, call.toolName(), argumentsJson(call))));
                 messages.add(LlmMessage.toolResult(callId, observation));
@@ -597,6 +604,7 @@ public final class ReactAgent implements Agent, AgentLoop {
         }
         return continuationStore.load(invocationId)
                 .map(loaded -> new ReactContinuation(
+                        loaded.request(),
                         loaded.reactMessages(),
                         loaded.modelCalls(),
                         loaded.toolCalls(),
@@ -668,7 +676,7 @@ public final class ReactAgent implements Agent, AgentLoop {
             // 反思走一次模型调用（无 tools），让模型自检进度。
             LlmRequest reflectionRequest = new LlmRequest(
                     systemInstruction + "\n\n[反思阶段] " + reflectionPrompt,
-                    reflectionMessages).withTools(List.of());
+                    reflectionMessages).withTools(List.of()).withRouting(request);
             ChatClient.ToolCallResponse response = chatClient.chatWithTools(
                     request.sessionId(), reflectionRequest, delta -> { });
             String answer = response.answer() == null ? "" : response.answer().strip();
@@ -741,7 +749,7 @@ public final class ReactAgent implements Agent, AgentLoop {
         try {
             continuationStore.save(invocationId,
                     ContinuationStore.PersistedContinuation.forReact(
-                            null,  // request 由 AgentRunner 在 resume 时注入，此处只保存对话状态
+                            continuation.request(),
                             continuation.messages(),
                             continuation.modelCalls(),
                             continuation.toolCalls(),
@@ -807,7 +815,8 @@ public final class ReactAgent implements Agent, AgentLoop {
         AtomicBoolean streamed = new AtomicBoolean(false);
         ChatClient.ToolCallResponse response = chatClient.chatWithTools(
                 request.sessionId(),
-                new LlmRequest(systemInstruction, List.copyOf(messages), "", toolDefinitions),
+                new LlmRequest(systemInstruction, List.copyOf(messages), "", toolDefinitions)
+                        .withRouting(request),
                 delta -> {
                     streamed.set(true);
                     eventSink.emit(AgentRunEvent.of(
@@ -825,8 +834,8 @@ public final class ReactAgent implements Agent, AgentLoop {
                 response.toolCall() == null ? "-" : response.toolCall().toolName(),
                 logValue(answer));
         return new RoundDecision(
-                answer, response.usage(), response.toolCall(), response.toolCallId(),
-                streamed.get());
+                answer, response.reasoningContent(), response.usage(),
+                response.toolCall(), response.toolCallId(), streamed.get());
     }
 
     private static String argumentsJson(ToolCall call) {
@@ -917,6 +926,7 @@ public final class ReactAgent implements Agent, AgentLoop {
     /** 一轮决策的产物。 */
     private record RoundDecision(
             String answer,
+            String reasoningContent,
             ModelUsage usage,
             ToolCall toolCall,
             String toolCallId,

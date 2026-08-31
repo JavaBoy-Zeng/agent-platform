@@ -11,8 +11,12 @@ const props = defineProps({
   prompt: { type: String, required: true },
   busy: { type: Boolean, default: false },
   canStop: { type: Boolean, default: false },
+  currentModel: {
+    type: Object,
+    default: null
+  },
   models: { type: Array, default: () => [] },
-  selectedModelId: { type: String, default: 'minimax-h3' },
+  selectedModelKey: { type: String, default: '' },
   approvalMode: { type: String, default: 'FULL_ACCESS' },
   attachments: { type: Array, default: () => [] },
   uploading: { type: Boolean, default: false },
@@ -24,29 +28,38 @@ const props = defineProps({
   workspaceFiles: { type: Array, default: () => [] },
   workspaceFilesLoading: { type: Boolean, default: false },
   workspaceBusy: { type: Boolean, default: false },
-  workspaceError: { type: String, default: '' }
+  workspaceError: { type: String, default: '' },
+  gitBranches: { type: Array, default: () => [] },
+  gitBranchLoading: { type: Boolean, default: false },
+  gitBranchError: { type: String, default: '' }
 })
 
 const emit = defineEmits([
-  'update:agentId', 'update:sessionId', 'update:prompt', 'update:selectedModelId',
-  'update:approvalMode', 'add-model', 'upload', 'select-workspace', 'pick-workspace',
-  'clear-workspace', 'remove-attachment', 'run', 'stop'
+  'update:agentId', 'update:sessionId', 'update:prompt',
+  'update:selectedModelKey',
+  'update:approvalMode', 'manage-models', 'upload', 'select-workspace', 'pick-workspace',
+  'refresh-branches', 'select-branch', 'remove-attachment', 'run', 'stop'
 ])
 
 const promptInput = ref(null)
 const deck = ref(null)
-const modelApiIdInput = ref(null)
+const branchMenu = ref(null)
+const branchSearchInput = ref(null)
 const openMenu = ref('')
-const addingModel = ref(false)
-const modelApiId = ref('')
 const mentionState = ref(null)
 const mentionActiveIndex = ref(0)
+const branchQuery = ref('')
+const modelSelectionError = ref(false)
 
-const selectedModel = computed(() =>
-  props.models.find(model => model.id === props.selectedModelId)
-  || props.models[0]
-  || { id: 'minimax-h3', name: t('Server 默认模型'), modelId: '' })
-const selectedModelLabel = computed(() => selectedModel.value.modelId || selectedModel.value.name)
+const selectedModelLabel = computed(() => props.currentModel?.name || t('选择模型'))
+const builtInModels = computed(() => props.models.filter(model => model.modelType === 'BUILT_IN'))
+const customModels = computed(() => props.models.filter(model => model.modelType === 'CUSTOM'))
+const currentBranch = computed(() => props.gitBranches.find(branch => branch.current) || null)
+const filteredBranches = computed(() => {
+  const query = branchQuery.value.trim().toLocaleLowerCase()
+  if (!query) return props.gitBranches
+  return props.gitBranches.filter(branch => branch.name.toLocaleLowerCase().includes(query))
+})
 const mentionCandidates = computed(() => {
   const query = mentionState.value?.query?.toLowerCase() || ''
   return props.workspaceFiles
@@ -114,7 +127,7 @@ function onKeydown(event) {
   }
   if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || event.shiftKey) return
   event.preventDefault()
-  if (!props.busy && props.prompt.trim()) emit('run')
+  if (!props.busy && props.prompt.trim()) requestRun()
 }
 
 function updateMentionState(value, cursor) {
@@ -159,8 +172,15 @@ function selectMention(file) {
   })
 }
 
-function toggleMenu(name) {
-  openMenu.value = openMenu.value === name ? '' : name
+async function toggleMenu(name) {
+  const opening = openMenu.value !== name
+  openMenu.value = opening ? name : ''
+  if (name === 'branch' && opening) {
+    branchQuery.value = ''
+    emit('refresh-branches')
+    await nextTick()
+    branchSearchInput.value?.focus()
+  }
 }
 
 function selectPermission(id) {
@@ -168,28 +188,55 @@ function selectPermission(id) {
   openMenu.value = ''
 }
 
-function selectModel(id) {
-  emit('update:selectedModelId', id)
+function selectModel(key) {
+  emit('update:selectedModelKey', key)
+  modelSelectionError.value = false
   openMenu.value = ''
 }
 
-function showAddModel() {
+function requestRun() {
+  if (props.busy || !props.prompt.trim()) return
+  if (!props.currentModel?.id) {
+    modelSelectionError.value = true
+    openMenu.value = 'model'
+    nextTick(() => deck.value?.querySelector('.model-option-list [role="option"]')?.focus())
+    return
+  }
+  modelSelectionError.value = false
+  emit('run')
+}
+
+function selectBranch(name) {
+  if (!name || currentBranch.value?.name === name) return
+  emit('select-branch', name)
+}
+
+function focusFirstBranch() {
+  branchMenu.value?.querySelector('.branch-option')?.focus()
+}
+
+function navigateBranches(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    openMenu.value = ''
+    deck.value?.querySelector('.branch-trigger')?.focus()
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  const items = [...(branchMenu.value?.querySelectorAll('.branch-option:not(:disabled)') || [])]
+  if (!items.length) return
+  event.preventDefault()
+  const index = items.indexOf(document.activeElement)
+  const next = event.key === 'Home' ? 0
+    : event.key === 'End' ? items.length - 1
+      : event.key === 'ArrowDown' ? (index + 1) % items.length
+        : (index - 1 + items.length) % items.length
+  items[next].focus()
+}
+
+function showModelManagement() {
   openMenu.value = ''
-  addingModel.value = true
-  modelApiId.value = ''
-  nextTick(() => modelApiIdInput.value?.focus())
-}
-
-function closeAddModel() {
-  addingModel.value = false
-  modelApiId.value = ''
-}
-
-function submitModel() {
-  const modelId = modelApiId.value.trim()
-  if (!modelId) return
-  emit('add-model', { modelId })
-  closeAddModel()
+  emit('manage-models')
 }
 
 function closeMenus(event) {
@@ -199,11 +246,13 @@ function closeMenus(event) {
 function onEscape(event) {
   if (event.key !== 'Escape') return
   if (mentionState.value) closeMention()
-  if (addingModel.value) closeAddModel()
   else openMenu.value = ''
 }
 
 watch(() => props.prompt, () => nextTick(scrollToTop))
+watch(() => currentBranch.value?.name, (next, previous) => {
+  if (previous && next && previous !== next && openMenu.value === 'branch') openMenu.value = ''
+})
 onMounted(() => {
   document.addEventListener('pointerdown', closeMenus)
   document.addEventListener('keydown', onEscape)
@@ -215,7 +264,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <form ref="deck" class="command-deck" @submit.prevent="$emit('run')">
+  <form ref="deck" class="command-deck" @submit.prevent="requestRun">
     <div class="deck-topline">
       <label class="identity-field"><span>AGENT</span><input :value="agentId" autocomplete="off" aria-label="Agent ID" @input="$emit('update:agentId', $event.target.value)"></label>
       <label class="identity-field session-field"><span>SESSION</span><input :value="sessionId" autocomplete="off" aria-label="Session ID" @input="$emit('update:sessionId', $event.target.value)"></label>
@@ -266,6 +315,8 @@ onUnmounted(() => {
       <span v-if="uploadError" class="attachment-error">{{ uploadError }}</span>
     </div>
 
+    <p v-if="modelSelectionError" class="model-selection-error" role="alert">{{ t('请先选择一个已启用的模型') }}</p>
+
     <div class="deck-actions">
       <div class="deck-left-actions">
         <button class="deck-icon-button attach-button" type="button" :disabled="uploading || !uploadAvailable"
@@ -292,23 +343,67 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
+
+        <div class="deck-menu-wrap branch-wrap">
+          <button class="branch-trigger" type="button"
+                  :disabled="!currentWorkspace?.gitRepository"
+                  aria-haspopup="listbox" :aria-expanded="openMenu === 'branch'"
+                  :title="currentWorkspace?.gitRepository ? t('选择 Git 分支') : t('当前目录不是 Git 仓库')"
+                  @pointerdown.stop @click="toggleMenu('branch')">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M8 17c5 0 8-3 8-8"/></svg>
+            <span>{{ currentBranch?.name || (currentWorkspace?.gitRepository ? t('分支') : t('无 Git')) }}</span>
+            <svg class="branch-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5 5 5-5"/></svg>
+          </button>
+          <div v-if="openMenu === 'branch'" ref="branchMenu" class="deck-popover branch-menu"
+               role="listbox" :aria-label="t('选择 Git 分支')" @keydown="navigateBranches">
+            <header>
+              <span><strong>{{ t('Git 分支') }}</strong><small>{{ currentWorkspace?.name }}</small></span>
+              <span v-if="gitBranchLoading" class="mini-loader" aria-hidden="true"></span>
+            </header>
+            <label class="branch-search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+              <span class="sr-only">{{ t('搜索分支') }}</span>
+              <input ref="branchSearchInput" v-model="branchQuery" type="search" autocomplete="off"
+                     :placeholder="t('搜索本地分支')" @keydown.down.prevent="focusFirstBranch">
+            </label>
+            <p v-if="gitBranchError" class="branch-menu-error" role="status">{{ gitBranchError }}</p>
+            <button v-for="branch in filteredBranches" :key="branch.name" class="branch-option"
+                    type="button" role="option" :aria-selected="branch.current"
+                    :class="{ selected: branch.current }" :disabled="gitBranchLoading"
+                    @click="selectBranch(branch.name)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M8 17c5 0 8-3 8-8"/></svg>
+              <span>{{ branch.name }}</span>
+              <svg v-if="branch.current" class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 6" /></svg>
+            </button>
+            <p v-if="!gitBranchLoading && !gitBranchError && !filteredBranches.length" class="branch-menu-empty">
+              {{ branchQuery ? t('没有匹配的分支') : t('没有本地分支') }}
+            </p>
+          </div>
+        </div>
       </div>
 
       <div class="deck-right-actions">
         <div class="deck-menu-wrap model-wrap">
-          <button class="model-trigger" type="button" aria-haspopup="listbox" :aria-expanded="openMenu === 'model'"
+          <button class="model-trigger" :class="{ invalid: modelSelectionError }" type="button" aria-haspopup="listbox" :aria-expanded="openMenu === 'model'"
                   @pointerdown.stop @click="toggleMenu('model')">
             <span>{{ selectedModelLabel }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5 5 5-5" /></svg>
           </button>
-          <div v-if="openMenu === 'model'" class="deck-popover model-menu" role="listbox" :aria-label="t('模型管理')">
-            <header><strong>{{ t('模型管理') }}</strong><small>{{ t('选择本次任务使用的模型') }}</small></header>
-            <button v-for="model in models" :key="model.id" type="button" role="option"
-                    :aria-selected="selectedModelId === model.id" :class="{ selected: selectedModelId === model.id }"
-                    @click="selectModel(model.id)">
-              <span><strong>{{ model.modelId || model.name }}</strong><small>{{ model.modelId ? t('厂商模型 ID') : t('跟随 Server 当前模型') }}</small></span>
-              <svg v-if="selectedModelId === model.id" class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 6" /></svg>
-            </button>
-            <footer><button type="button" @click="showAddModel"><span>＋</span>{{ t('添加模型') }}</button></footer>
+          <div v-if="openMenu === 'model'" class="deck-popover model-menu" :aria-label="t('模型管理')">
+            <header><strong>{{ t('选择本次任务模型') }}</strong><small>{{ t('任务的规划、工具调用与最终回答都使用该模型') }}</small></header>
+            <div class="model-option-list" role="listbox" :aria-label="t('选择本次任务模型')">
+              <template v-for="group in [{ type: 'BUILT_IN', label: t('内置模型'), items: builtInModels }, { type: 'CUSTOM', label: t('自定义模型'), items: customModels }]" :key="group.type">
+                <p v-if="group.items.length" class="model-group-label">{{ group.label }} <span>{{ group.items.length }}</span></p>
+                <button v-for="model in group.items" :key="model.key" type="button" role="option"
+                        :aria-selected="selectedModelKey === model.key" :class="{ selected: selectedModelKey === model.key }"
+                        @click="selectModel(model.key)">
+                  <span class="model-option-mark" aria-hidden="true">{{ (model.providerType || model.provider || 'AI').slice(0, 2).toUpperCase() }}</span>
+                  <span><strong>{{ model.name }}</strong><small>{{ model.provider }} · {{ model.providerType }}</small></span>
+                  <svg v-if="selectedModelKey === model.key" class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 6" /></svg>
+                </button>
+              </template>
+              <p v-if="!models.length" class="model-menu-empty" role="status">{{ t('没有已启用的模型，请先前往模型管理添加或启用模型') }}</p>
+            </div>
+            <footer><button type="button" @click="showModelManagement"><span>↗</span>{{ t('管理模型') }}</button></footer>
           </div>
         </div>
 
@@ -328,19 +423,7 @@ onUnmounted(() => {
       :error="workspaceError"
       @select="$emit('select-workspace', $event)"
       @pick="$emit('pick-workspace')"
-      @clear="$emit('clear-workspace')"
     />
   </form>
 
-  <Teleport to="body">
-    <div v-if="addingModel" class="app-dialog-backdrop" @pointerdown.self="closeAddModel">
-      <section class="model-dialog" role="dialog" aria-modal="true" aria-labelledby="addModelTitle">
-        <header><div><small>MODEL REGISTRY</small><h2 id="addModelTitle">{{ t('添加模型') }}</h2></div><button type="button" :aria-label="t('关闭')" @click="closeAddModel">×</button></header>
-        <form @submit.prevent="submitModel">
-          <label><span>{{ t('厂商模型 ID') }}</span><input ref="modelApiIdInput" v-model="modelApiId" type="text" maxlength="160" placeholder="MiniMax-M2.1" autocomplete="off"><small>{{ t('请填写当前 Server 模型端点支持的真实模型 ID。') }}</small></label>
-          <footer><button type="button" @click="closeAddModel">{{ t('取消') }}</button><button class="dialog-primary" type="submit" :disabled="!modelApiId.trim()">{{ t('添加并使用') }}</button></footer>
-        </form>
-      </section>
-    </div>
-  </Teleport>
 </template>

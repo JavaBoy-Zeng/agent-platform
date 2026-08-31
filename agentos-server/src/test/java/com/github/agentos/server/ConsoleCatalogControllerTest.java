@@ -12,7 +12,7 @@ import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.server.controller.ConsoleCatalogController;
 import com.github.agentos.server.catalog.RuntimeCatalogService;
-import com.github.agentos.server.model.ModelClientProperties;
+import com.github.agentos.server.model.ModelProviderService;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 
@@ -95,7 +96,8 @@ class ConsoleCatalogControllerTest {
             AgentRegistry registry, ToolRegistry tools) {
         RuntimeCatalogService service = new RuntimeCatalogService(
                 tools, provider(registry), provider(null), provider(null),
-                new ModelClientProperties(), AgentExecutionLimits.defaults());
+                new ModelProviderService("memory", null, new ObjectMapper(), ""),
+                AgentExecutionLimits.defaults());
         return new ConsoleCatalogController(service);
     }
 

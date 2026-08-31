@@ -34,8 +34,20 @@ export const updateSessionTitle = (sessionId, title) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title })
   })
+export const updateSessionPinned = (sessionId, pinned) =>
+  request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned })
+  })
 export const deleteSessionRecord = (sessionId) =>
   request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+export const deleteSessionRecords = (sessionIds) =>
+  request('/api/sessions/batch-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionIds })
+  })
 export const getUsage = (sessionId) => request(`/api/usage/${encodeURIComponent(sessionId)}`)
 export const getTraces = (sessionId) => request(`/api/traces?sessionId=${encodeURIComponent(sessionId)}`)
 export const getArtifacts = (sessionId) => request(`/api/artifacts?sessionId=${encodeURIComponent(sessionId)}`)
@@ -59,12 +71,6 @@ export const deleteModelProvider = (providerId) =>
   request(`/api/model-management/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' })
 export const testModelProvider = (providerId) =>
   request(`/api/model-management/providers/${encodeURIComponent(providerId)}/test`, { method: 'POST' })
-export const assignModelRoute = (routeKey, route) =>
-  request(`/api/model-management/routes/${encodeURIComponent(routeKey)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(route)
-  })
 
 /** 按会话读取领域事件轨迹，按 Invocation 分组。 */
 export const getSessionEvents = (sessionId, type = '') => {

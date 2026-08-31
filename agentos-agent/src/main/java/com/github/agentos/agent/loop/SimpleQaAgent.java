@@ -160,7 +160,7 @@ public final class SimpleQaAgent implements Agent, AgentLoop {
                     request.sessionId(),
                     answer,
                     Map.of("agentId", ID, "router", "direct-chat")));
-            return runningState.complete(answer);
+            return runningState.complete(answer, response.reasoningContent());
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();

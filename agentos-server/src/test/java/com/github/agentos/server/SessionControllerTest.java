@@ -13,6 +13,7 @@ import java.util.Map;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -107,10 +108,51 @@ class SessionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.state.displayTitle").value("重庆天气"));
 
+        mvc.perform(patch("/api/sessions/{sessionId}", "session-1")
+                        .contentType("application/json")
+                        .content("{\"pinned\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state.pinned").value(true))
+                .andExpect(jsonPath("$.state.pinnedAt").isNotEmpty());
+
+        mvc.perform(patch("/api/sessions/{sessionId}", "session-1")
+                        .contentType("application/json")
+                        .content("{\"pinned\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state.pinned").value(false))
+                .andExpect(jsonPath("$.state.pinnedAt").value(""));
+
         mvc.perform(delete("/api/sessions/{sessionId}", "session-1"))
                 .andExpect(status().isNoContent());
         mvc.perform(get("/api/sessions/{sessionId}", "session-1"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void batchDeleteReturnsDeletedCountAndMissingSessions() throws Exception {
+        SessionService service = new InMemorySessionService();
+        service.getOrCreate("session-1", "user-1");
+        service.getOrCreate("session-2", "user-1");
+        MockMvc mvc = mvc(service);
+
+        mvc.perform(post("/api/sessions/batch-delete")
+                        .contentType("application/json")
+                        .content("{\"sessionIds\":[\"session-1\",\"missing\",\"session-2\"]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.requested").value(3))
+                .andExpect(jsonPath("$.deleted").value(2))
+                .andExpect(jsonPath("$.notFound[0]").value("missing"));
+        mvc.perform(get("/api/sessions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void batchDeleteRejectsAnEmptyRequest() throws Exception {
+        mvc(new InMemorySessionService()).perform(post("/api/sessions/batch-delete")
+                        .contentType("application/json")
+                        .content("{\"sessionIds\":[]}"))
+                .andExpect(status().isBadRequest());
     }
 
     private static MockMvc mvc(SessionService service) {

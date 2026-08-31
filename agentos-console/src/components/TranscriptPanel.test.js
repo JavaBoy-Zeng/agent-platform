@@ -20,8 +20,10 @@ describe('TranscriptPanel result presentation', () => {
       }
     })
     expect(wrapper.find('.op-result').exists()).toBe(false)
+    expect(wrapper.get('.op-summary').attributes('aria-expanded')).toBe('false')
     await wrapper.get('.op-summary').trigger('click')
     expect(wrapper.get('.op-result').text()).toBe('saved')
+    expect(wrapper.get('.op-summary').attributes('aria-expanded')).toBe('true')
   })
 
   it('offers copy, retry and token usage on a completed answer', async () => {

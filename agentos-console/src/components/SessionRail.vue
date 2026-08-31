@@ -174,11 +174,11 @@ function sessionBusy(session) {
 </script>
 
 <template>
-  <aside class="session-rail reveal reveal-1" :aria-label="t('会话列表')">
+  <aside class="session-rail reveal reveal-1" :aria-label="t('任务列表')">
     <div class="rail-heading">
       <div>
         <span class="section-index">01</span>
-        <h2>{{ selectionMode ? t('已选 {count} 个', { count: selectedSessions.length }) : t('会话') }}</h2>
+        <h2>{{ selectionMode ? t('已选 {count} 个', { count: selectedSessions.length }) : t('任务') }}</h2>
       </div>
       <button
         class="rail-select-toggle"
@@ -233,9 +233,9 @@ function sessionBusy(session) {
           type="button"
           :role="selectionMode ? 'checkbox' : undefined"
           :aria-checked="selectionMode ? selectedSessionIds.has(session.id) : undefined"
-          :aria-label="selectionMode ? t('选择会话：{title}', { title: t(session.title) }) : undefined"
+          :aria-label="selectionMode ? t('选择任务：{title}', { title: t(session.title) }) : undefined"
           :disabled="selectionMode && sessionBusy(session)"
-          :title="selectionMode && sessionBusy(session) ? t('运行中的会话不可选择') : ''"
+          :title="selectionMode && sessionBusy(session) ? t('运行中的任务不可选择') : ''"
           @click="selectionMode ? toggleSessionSelection(session) : selectSession(session.id)"
         >
           <span
@@ -262,7 +262,7 @@ function sessionBusy(session) {
               v-model="draftTitle"
               class="session-rename-input"
               maxlength="60"
-              :aria-label="t('会话名称')"
+              :aria-label="t('任务名称')"
               @keydown.enter.prevent="commitRename(session)"
               @keydown.esc.prevent="cancelRename"
               @blur="commitRename(session)"
@@ -292,7 +292,7 @@ function sessionBusy(session) {
               role="menuitem"
               class="danger"
               :disabled="sessionBusy(session)"
-              :title="t(sessionBusy(session) ? '运行中的会话无法删除' : '删除会话')"
+              :title="t(sessionBusy(session) ? '运行中的任务无法删除' : '删除任务')"
               @click="requestDelete(session)"
             >
               <span aria-hidden="true">⌫</span> {{ t('删除') }}
@@ -313,12 +313,12 @@ function sessionBusy(session) {
         @click="emit('load-more')"
       >
         <span v-if="loading" class="session-loader" aria-hidden="true"></span>
-        {{ t(loading ? '正在读取会话…' : '加载更早会话') }}
+        {{ t(loading ? '正在读取任务…' : '加载更早任务') }}
       </button>
     </div>
 
     <button class="rail-create" type="button" @click="$emit('create')">
-      <span>＋</span> {{ t('新建任务通道') }}
+      <span>＋</span> {{ t('新建任务') }}
     </button>
 
   </aside>
@@ -339,9 +339,9 @@ function sessionBusy(session) {
         >
           <div class="confirm-dialog-icon" aria-hidden="true">⌫</div>
           <div class="confirm-dialog-copy">
-            <h2 id="deleteDialogTitle">{{ t('删除这个会话？') }}</h2>
+            <h2 id="deleteDialogTitle">{{ t('删除这个任务？') }}</h2>
             <p id="deleteDialogDescription">
-              {{ t('“{title}”将从服务端会话列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { title: t(pendingDeleteSession.title) }) }}
+              {{ t('“{title}”将从服务端任务列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { title: t(pendingDeleteSession.title) }) }}
             </p>
           </div>
           <div class="confirm-dialog-actions">
@@ -376,9 +376,9 @@ function sessionBusy(session) {
         >
           <div class="confirm-dialog-icon" aria-hidden="true">⌫</div>
           <div class="confirm-dialog-copy">
-            <h2 id="bulkDeleteDialogTitle">{{ t('批量删除会话？') }}</h2>
+            <h2 id="bulkDeleteDialogTitle">{{ t('批量删除任务？') }}</h2>
             <p id="bulkDeleteDialogDescription">
-              {{ t('选中的 {count} 个会话将从服务端会话列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { count: pendingBulkDeleteIds.length }) }}
+              {{ t('选中的 {count} 个任务将从服务端任务列表中移除。为满足审计要求，已生成的运行事件仍按系统留存策略保存。', { count: pendingBulkDeleteIds.length }) }}
             </p>
           </div>
           <div class="confirm-dialog-actions">
@@ -389,7 +389,7 @@ function sessionBusy(session) {
               class="dialog-confirm"
               @click="confirmBulkDelete"
             >
-              {{ t('删除 {count} 个会话', { count: pendingBulkDeleteIds.length }) }}
+              {{ t('删除 {count} 个任务', { count: pendingBulkDeleteIds.length }) }}
             </button>
           </div>
         </section>

@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS model_providers (
     default_model VARCHAR(256) NOT NULL,
     response_format VARCHAR(32) NOT NULL,
     reasoning_split BOOLEAN NOT NULL DEFAULT FALSE,
+    settings_payload TEXT NOT NULL DEFAULT '{}',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     last_status VARCHAR(32) NOT NULL DEFAULT 'UNTESTED',
     last_error TEXT NOT NULL DEFAULT '',
@@ -135,16 +136,20 @@ CREATE TABLE IF NOT EXISTS model_providers (
     updated_at TIMESTAMPTZ NOT NULL,
     version BIGINT NOT NULL DEFAULT 0
 );
+-- 兼容已初始化的 PostgreSQL 数据库；CREATE TABLE IF NOT EXISTS 不会为旧表补字段。
+ALTER TABLE model_providers
+    ADD COLUMN IF NOT EXISTS settings_payload TEXT NOT NULL DEFAULT '{}';
 COMMENT ON COLUMN model_providers.provider_id IS '模型服务商配置的唯一标识';
 COMMENT ON COLUMN model_providers.display_name IS '管理页面展示的模型服务商名称';
-COMMENT ON COLUMN model_providers.provider_type IS '服务商类型，例如 OPENAI、MINIMAX、CC_SWITCH 或 OPENAI_COMPATIBLE';
+COMMENT ON COLUMN model_providers.provider_type IS '服务商类型：OPENAI、DEEPSEEK、GLM、QWEN、MINIMAX、CC_SWITCH 或 OPENAI_COMPATIBLE';
 COMMENT ON COLUMN model_providers.protocol IS '模型调用协议，当前支持 CHAT_COMPLETIONS';
 COMMENT ON COLUMN model_providers.endpoint IS '模型服务兼容接口的完整 HTTPS 或 HTTP 地址';
 COMMENT ON COLUMN model_providers.encrypted_api_key IS '使用 AES-256-GCM 加密并以 Base64 编码的 API 密钥';
 COMMENT ON COLUMN model_providers.models_payload IS '该服务商可选模型标识列表的 JSON 文本';
-COMMENT ON COLUMN model_providers.default_model IS '未在路由中覆盖时使用的默认模型标识';
+COMMENT ON COLUMN model_providers.default_model IS '该服务商配置用于连接测试和初始选择的模型标识';
 COMMENT ON COLUMN model_providers.response_format IS '兼容接口的响应格式策略枚举值';
 COMMENT ON COLUMN model_providers.reasoning_split IS '是否从 reasoning_content 分离模型思考内容';
+COMMENT ON COLUMN model_providers.settings_payload IS '模型上下文窗口、输出上限、工具轮数、多模态、思考模式及采样参数的 JSON 配置';
 COMMENT ON COLUMN model_providers.enabled IS '配置是否允许被运行时路由使用';
 COMMENT ON COLUMN model_providers.last_status IS '最近连接测试状态：UNTESTED、CONNECTED 或 FAILED';
 COMMENT ON COLUMN model_providers.last_error IS '最近连接测试的脱敏错误摘要';
@@ -153,16 +158,124 @@ COMMENT ON COLUMN model_providers.created_at IS '配置创建时间';
 COMMENT ON COLUMN model_providers.updated_at IS '配置最近更新时间';
 COMMENT ON COLUMN model_providers.version IS 'MyBatis-Plus 乐观锁版本号';
 
-CREATE TABLE IF NOT EXISTS model_routes (
-    route_key VARCHAR(32) PRIMARY KEY,
-    provider_id VARCHAR(128) NOT NULL,
+-- 任务已改为显式携带平台模型 ID，不再保留 Planner/Chat 全局路由配置。
+DROP TABLE IF EXISTS model_routes;
+
+CREATE TABLE IF NOT EXISTS automation_tasks (
+    automation_id VARCHAR(128) PRIMARY KEY,
+    team_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    prompt TEXT NOT NULL,
+    agent_id VARCHAR(128) NOT NULL DEFAULT 'main-agent',
     model_id VARCHAR(256) NOT NULL,
+    approval_mode VARCHAR(32) NOT NULL,
+    desktop_client_id VARCHAR(128) NOT NULL,
+    workspace_id VARCHAR(128) NOT NULL,
+    workspace_name VARCHAR(256) NOT NULL,
+    trigger_payload TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    next_trigger_at TIMESTAMPTZ NULL,
+    last_trigger_at TIMESTAMPTZ NULL,
+    deleted_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
-    version BIGINT NOT NULL DEFAULT 0,
-    CONSTRAINT fk_model_routes_provider FOREIGN KEY(provider_id) REFERENCES model_providers(provider_id)
+    version BIGINT NOT NULL DEFAULT 0
 );
-COMMENT ON COLUMN model_routes.route_key IS '运行时模型用途键，当前为 planner 或 chat';
-COMMENT ON COLUMN model_routes.provider_id IS '该用途当前绑定的模型服务商标识';
-COMMENT ON COLUMN model_routes.model_id IS '该用途实际调用的模型标识';
-COMMENT ON COLUMN model_routes.updated_at IS '路由最近更新时间';
-COMMENT ON COLUMN model_routes.version IS 'MyBatis-Plus 乐观锁版本号';
+COMMENT ON COLUMN automation_tasks.automation_id IS '自动化任务唯一标识';
+COMMENT ON COLUMN automation_tasks.team_id IS '任务所属团队标识，用于租户隔离';
+COMMENT ON COLUMN automation_tasks.user_id IS '任务创建和管理用户标识';
+COMMENT ON COLUMN automation_tasks.name IS '用户可见的自动化任务名称，长度不超过 80 字符';
+COMMENT ON COLUMN automation_tasks.prompt IS '每次触发时交给 Agent 的任务指令，长度不超过 2000 字符';
+COMMENT ON COLUMN automation_tasks.agent_id IS '执行任务使用的 Agent 标识，首版固定为 main-agent';
+COMMENT ON COLUMN automation_tasks.model_id IS '执行任务使用的已配置平台模型标识';
+COMMENT ON COLUMN automation_tasks.approval_mode IS '工具权限模式：REQUEST_APPROVAL、RISK_BASED 或 FULL_ACCESS';
+COMMENT ON COLUMN automation_tasks.desktop_client_id IS '负责读取本地工作区并派发执行的桌面客户端稳定标识';
+COMMENT ON COLUMN automation_tasks.workspace_id IS '桌面客户端本地保存的工作区不透明标识，不包含绝对路径';
+COMMENT ON COLUMN automation_tasks.workspace_name IS '工作区展示名称快照，不包含本地绝对路径';
+COMMENT ON COLUMN automation_tasks.trigger_payload IS '周期、Cron 或间隔触发规则及 IANA 时区的 JSON 文本';
+COMMENT ON COLUMN automation_tasks.enabled IS '是否允许定时触发和手动立即执行';
+COMMENT ON COLUMN automation_tasks.next_trigger_at IS '按任务触发规则计算的下一次计划触发时间，停用时为 NULL';
+COMMENT ON COLUMN automation_tasks.last_trigger_at IS '最近一次由调度器或用户触发的计划时间';
+COMMENT ON COLUMN automation_tasks.deleted_at IS '软删除时间，NULL 表示任务仍可见';
+COMMENT ON COLUMN automation_tasks.created_at IS '任务创建时间';
+COMMENT ON COLUMN automation_tasks.updated_at IS '任务最近更新时间';
+COMMENT ON COLUMN automation_tasks.version IS '任务乐观锁版本号';
+CREATE INDEX IF NOT EXISTS idx_automation_tasks_owner ON automation_tasks(team_id, user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_tasks_due ON automation_tasks(next_trigger_at) WHERE enabled AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS automation_executions (
+    execution_id VARCHAR(128) PRIMARY KEY,
+    automation_id VARCHAR(128) NOT NULL,
+    team_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    task_name VARCHAR(80) NOT NULL,
+    trigger_source VARCHAR(32) NOT NULL,
+    status VARCHAR(48) NOT NULL,
+    scheduled_key VARCHAR(320) NOT NULL UNIQUE,
+    scheduled_at TIMESTAMPTZ NOT NULL,
+    desktop_client_id VARCHAR(128) NOT NULL,
+    workspace_id VARCHAR(128) NOT NULL,
+    workspace_name VARCHAR(256) NOT NULL,
+    claimed_at TIMESTAMPTZ NULL,
+    lease_expires_at TIMESTAMPTZ NULL,
+    session_id VARCHAR(128) NOT NULL DEFAULT '',
+    run_id VARCHAR(128) NOT NULL DEFAULT '',
+    invocation_id VARCHAR(128) NOT NULL DEFAULT '',
+    started_at TIMESTAMPTZ NULL,
+    finished_at TIMESTAMPTZ NULL,
+    result_excerpt TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    version BIGINT NOT NULL DEFAULT 0
+);
+COMMENT ON COLUMN automation_executions.execution_id IS '单次自动化执行唯一标识';
+COMMENT ON COLUMN automation_executions.automation_id IS '产生该执行的自动化任务标识，任务软删除后仍保留';
+COMMENT ON COLUMN automation_executions.team_id IS '执行所属团队标识，用于租户隔离';
+COMMENT ON COLUMN automation_executions.user_id IS '执行所属用户标识';
+COMMENT ON COLUMN automation_executions.task_name IS '触发时的任务名称快照';
+COMMENT ON COLUMN automation_executions.trigger_source IS '触发来源：SCHEDULED 或 MANUAL';
+COMMENT ON COLUMN automation_executions.status IS '执行状态，包括排队、领取、运行、等待审批、终态及跳过原因';
+COMMENT ON COLUMN automation_executions.scheduled_key IS '自动触发去重键，避免多 Server 实例重复创建同一次执行';
+COMMENT ON COLUMN automation_executions.scheduled_at IS '本次执行对应的计划触发时间';
+COMMENT ON COLUMN automation_executions.desktop_client_id IS '本次执行指定领取的桌面客户端标识';
+COMMENT ON COLUMN automation_executions.workspace_id IS '触发时绑定的本地工作区不透明标识';
+COMMENT ON COLUMN automation_executions.workspace_name IS '触发时绑定的工作区名称快照';
+COMMENT ON COLUMN automation_executions.claimed_at IS '桌面客户端领取执行的时间';
+COMMENT ON COLUMN automation_executions.lease_expires_at IS '桌面领取租约失效时间，超时后执行转为跳过';
+COMMENT ON COLUMN automation_executions.session_id IS '本次执行创建的独立 Chat 会话标识，未启动时为空字符串';
+COMMENT ON COLUMN automation_executions.run_id IS '后台 Agent Run 标识，未启动时为空字符串';
+COMMENT ON COLUMN automation_executions.invocation_id IS 'Agent 调用标识，尚未产生时为空字符串';
+COMMENT ON COLUMN automation_executions.started_at IS 'Agent Run 实际开始时间';
+COMMENT ON COLUMN automation_executions.finished_at IS '执行进入最终状态的时间';
+COMMENT ON COLUMN automation_executions.result_excerpt IS '完成结果的有界文本摘要，完整内容保存在会话事件中';
+COMMENT ON COLUMN automation_executions.error_message IS '失败、取消或跳过原因的有界错误摘要';
+COMMENT ON COLUMN automation_executions.created_at IS '执行记录创建时间';
+COMMENT ON COLUMN automation_executions.updated_at IS '执行记录最近更新时间';
+COMMENT ON COLUMN automation_executions.version IS '执行记录乐观锁版本号';
+CREATE INDEX IF NOT EXISTS idx_automation_executions_owner ON automation_executions(team_id, user_id, scheduled_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_executions_claim ON automation_executions(desktop_client_id, status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_automation_executions_task ON automation_executions(automation_id, scheduled_at DESC);
+
+CREATE TABLE IF NOT EXISTS automation_clients (
+    client_key VARCHAR(400) PRIMARY KEY,
+    client_id VARCHAR(128) NOT NULL,
+    team_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    platform VARCHAR(32) NOT NULL,
+    app_version VARCHAR(64) NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+COMMENT ON COLUMN automation_clients.client_key IS '团队、用户与桌面客户端标识组合后的唯一键';
+COMMENT ON COLUMN automation_clients.client_id IS 'AgentOS Desktop 安装实例的稳定随机标识';
+COMMENT ON COLUMN automation_clients.team_id IS '桌面客户端当前登录用户所属团队标识';
+COMMENT ON COLUMN automation_clients.user_id IS '桌面客户端当前登录用户标识';
+COMMENT ON COLUMN automation_clients.platform IS '桌面操作系统平台：macos、windows 或 linux';
+COMMENT ON COLUMN automation_clients.app_version IS '桌面客户端上报的应用版本';
+COMMENT ON COLUMN automation_clients.last_seen_at IS '最近一次成功心跳时间，用于判断客户端是否在线';
+COMMENT ON COLUMN automation_clients.created_at IS '客户端首次登记时间';
+COMMENT ON COLUMN automation_clients.updated_at IS '客户端登记信息最近更新时间';
+CREATE INDEX IF NOT EXISTS idx_automation_clients_seen ON automation_clients(team_id, user_id, last_seen_at DESC);

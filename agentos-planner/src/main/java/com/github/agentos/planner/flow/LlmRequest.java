@@ -1,5 +1,7 @@
 package com.github.agentos.planner.flow;
 
+import com.github.agentos.kernel.AgentRequest;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -13,7 +15,7 @@ import java.util.Optional;
  *
  * @param systemInstruction 系统指令；为 {@code null} 表示不发送 system 消息
  * @param messages          从早到晚排列的用户/助手/工具消息，最后一条是当前输入
- * @param model             请求级模型覆盖；为空时使用服务端默认模型
+ * @param model             任务显式选择的平台模型 ID；服务端不提供默认模型
  * @param tools             原生 function calling 工具定义；为空表示本次调用不带工具
  */
 public record LlmRequest(
@@ -22,7 +24,7 @@ public record LlmRequest(
         String model,
         List<LlmToolDefinition> tools) {
 
-    /** 兼容使用服务端默认模型、不带工具的请求构造。 */
+    /** 创建尚未注入任务模型、不带工具的请求。 */
     public LlmRequest(String systemInstruction, List<LlmMessage> messages) {
         this(systemInstruction, messages, "", List.of());
     }
@@ -83,9 +85,17 @@ public record LlmRequest(
         return new LlmRequest(systemInstruction, merged, model, tools);
     }
 
-    /** 派生请求级模型覆盖；空值恢复为服务端默认模型。 */
+    /** 派生任务显式选择的平台模型 ID。 */
     public LlmRequest withModel(String value) {
         return new LlmRequest(systemInstruction, messages, value, tools);
+    }
+
+    /** 派生携带同一次 Agent 任务所选平台模型 ID 的请求。 */
+    public LlmRequest withRouting(AgentRequest request) {
+        Objects.requireNonNull(request, "request must not be null");
+        Object selectedModel = request.attributes().getOrDefault("modelId", "");
+        return new LlmRequest(
+                systemInstruction, messages, String.valueOf(selectedModel), tools);
     }
 
     /** 派生携带原生工具定义的新请求；空列表视为清除工具。 */

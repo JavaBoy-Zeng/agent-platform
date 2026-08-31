@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * OpenAI-compatible model endpoint settings.
@@ -20,6 +21,12 @@ public class ModelClientProperties {
     private String chatModel = "";
     private ResponseFormat responseFormat = ResponseFormat.JSON_SCHEMA;
     private boolean reasoningSplit;
+    private String providerType = "OPENAI_COMPATIBLE";
+    private Integer maxOutputTokens;
+    private Double temperature;
+    private Double topP;
+    private Integer topK;
+    private ReasoningMode reasoningMode = ReasoningMode.DEFAULT;
     private Duration connectTimeout = Duration.ofSeconds(10);
     private Duration requestTimeout = Duration.ofSeconds(60);
     private int maxPromptChars = 60_000;
@@ -92,6 +99,72 @@ public class ModelClientProperties {
         this.reasoningSplit = reasoningSplit;
     }
 
+    /** Returns the configured provider family used for compatible request extensions. */
+    public String getProviderType() {
+        return providerType;
+    }
+
+    /** Sets the provider family used for compatible request extensions. */
+    public void setProviderType(String providerType) {
+        this.providerType = providerType == null ? "OPENAI_COMPATIBLE" : providerType;
+    }
+
+    public Integer getMaxOutputTokens() {
+        return maxOutputTokens;
+    }
+
+    public void setMaxOutputTokens(Integer maxOutputTokens) {
+        this.maxOutputTokens = maxOutputTokens;
+    }
+
+    public Double getTemperature() {
+        return temperature;
+    }
+
+    public void setTemperature(Double temperature) {
+        this.temperature = temperature;
+    }
+
+    public Double getTopP() {
+        return topP;
+    }
+
+    public void setTopP(Double topP) {
+        this.topP = topP;
+    }
+
+    public Integer getTopK() {
+        return topK;
+    }
+
+    public void setTopK(Integer topK) {
+        this.topK = topK;
+    }
+
+    public ReasoningMode getReasoningMode() {
+        return reasoningMode;
+    }
+
+    public void setReasoningMode(ReasoningMode reasoningMode) {
+        this.reasoningMode = reasoningMode == null ? ReasoningMode.DEFAULT : reasoningMode;
+    }
+
+    /** Adds optional OpenAI-compatible generation controls without overriding provider defaults. */
+    public void applyGenerationOptions(Map<String, Object> body) {
+        if (maxOutputTokens != null) body.put("max_tokens", maxOutputTokens);
+        if (temperature != null) body.put("temperature", temperature);
+        if (topP != null) body.put("top_p", topP);
+        if (topK != null) body.put("top_k", topK);
+        if (reasoningMode == ReasoningMode.DEFAULT) return;
+        boolean enabled = reasoningMode == ReasoningMode.ENABLED;
+        if ("QWEN".equalsIgnoreCase(providerType)) {
+            body.put("enable_thinking", enabled);
+        } else if ("DEEPSEEK".equalsIgnoreCase(providerType)
+                || "GLM".equalsIgnoreCase(providerType)) {
+            body.put("thinking", Map.of("type", enabled ? "enabled" : "disabled"));
+        }
+    }
+
     /** Returns the HTTP connection timeout. */
     public Duration getConnectTimeout() {
         return connectTimeout;
@@ -143,6 +216,18 @@ public class ModelClientProperties {
         if (maxPromptChars < 8_000) {
             throw new IllegalStateException("agentos.model.max-prompt-chars must be at least 8000");
         }
+        if (maxOutputTokens != null && maxOutputTokens <= 0) {
+            throw new IllegalStateException("agentos.model.max-output-tokens must be positive");
+        }
+        if (temperature != null && (temperature < 0 || temperature > 2)) {
+            throw new IllegalStateException("agentos.model.temperature must be between 0 and 2");
+        }
+        if (topP != null && (topP < 0 || topP > 1)) {
+            throw new IllegalStateException("agentos.model.top-p must be between 0 and 1");
+        }
+        if (topK != null && (topK < 1 || topK > 100)) {
+            throw new IllegalStateException("agentos.model.top-k must be between 1 and 100");
+        }
     }
 
     private static void requirePositive(Duration duration, String propertyName) {
@@ -159,5 +244,12 @@ public class ModelClientProperties {
         JSON_OBJECT,
         /** Rely only on the prompt and omit {@code response_format}. */
         NONE
+    }
+
+    /** Whether a provider should use its default, thinking, or non-thinking mode. */
+    public enum ReasoningMode {
+        DEFAULT,
+        ENABLED,
+        DISABLED
     }
 }

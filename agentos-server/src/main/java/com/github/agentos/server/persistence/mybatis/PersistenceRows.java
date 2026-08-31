@@ -96,6 +96,7 @@ public final class PersistenceRows {
             @TableField("default_model") String defaultModel,
             @TableField("response_format") String responseFormat,
             @TableField("reasoning_split") boolean reasoningSplit,
+            @TableField("settings_payload") String settingsPayload,
             boolean enabled,
             @TableField("last_status") String lastStatus,
             @TableField("last_error") String lastError,
@@ -105,12 +106,68 @@ public final class PersistenceRows {
             long version) {
     }
 
-    @TableName("model_routes")
-    public record ModelRouteRow(
-            @TableId("route_key") String routeKey,
-            @TableField("provider_id") String providerId,
+    @TableName("automation_tasks")
+    public record AutomationTaskRow(
+            @TableId("automation_id") String automationId,
+            @TableField("team_id") String teamId,
+            @TableField("user_id") String userId,
+            String name,
+            String prompt,
+            @TableField("agent_id") String agentId,
             @TableField("model_id") String modelId,
+            @TableField("approval_mode") String approvalMode,
+            @TableField("desktop_client_id") String desktopClientId,
+            @TableField("workspace_id") String workspaceId,
+            @TableField("workspace_name") String workspaceName,
+            @TableField("trigger_payload") String triggerPayload,
+            boolean enabled,
+            @TableField("next_trigger_at") Instant nextTriggerAt,
+            @TableField("last_trigger_at") Instant lastTriggerAt,
+            @TableField("deleted_at") Instant deletedAt,
+            @TableField("created_at") Instant createdAt,
             @TableField("updated_at") Instant updatedAt,
             long version) {
     }
+
+    @TableName("automation_executions")
+    public record AutomationExecutionRow(
+            @TableId("execution_id") String executionId,
+            @TableField("automation_id") String automationId,
+            @TableField("team_id") String teamId,
+            @TableField("user_id") String userId,
+            @TableField("task_name") String taskName,
+            @TableField("trigger_source") String triggerSource,
+            String status,
+            @TableField("scheduled_key") String scheduledKey,
+            @TableField("scheduled_at") Instant scheduledAt,
+            @TableField("desktop_client_id") String desktopClientId,
+            @TableField("workspace_id") String workspaceId,
+            @TableField("workspace_name") String workspaceName,
+            @TableField("claimed_at") Instant claimedAt,
+            @TableField("lease_expires_at") Instant leaseExpiresAt,
+            @TableField("session_id") String sessionId,
+            @TableField("run_id") String runId,
+            @TableField("invocation_id") String invocationId,
+            @TableField("started_at") Instant startedAt,
+            @TableField("finished_at") Instant finishedAt,
+            @TableField("result_excerpt") String resultExcerpt,
+            @TableField("error_message") String errorMessage,
+            @TableField("created_at") Instant createdAt,
+            @TableField("updated_at") Instant updatedAt,
+            long version) {
+    }
+
+    @TableName("automation_clients")
+    public record AutomationClientRow(
+            @TableId("client_key") String clientKey,
+            @TableField("client_id") String clientId,
+            @TableField("team_id") String teamId,
+            @TableField("user_id") String userId,
+            String platform,
+            @TableField("app_version") String appVersion,
+            @TableField("last_seen_at") Instant lastSeenAt,
+            @TableField("created_at") Instant createdAt,
+            @TableField("updated_at") Instant updatedAt) {
+    }
+
 }

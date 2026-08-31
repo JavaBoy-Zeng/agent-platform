@@ -83,7 +83,7 @@ public final class SystemCatalogAgent extends BaseAgent implements Agent, Routab
         if (requestedObject.contains("mcp")) return renderMcp(snapshot);
         if (containsAny(requestedObject, "模型", "model")) return renderModels(snapshot);
         if (containsAny(requestedObject, "限制", "预算", "limit")) return renderLimits(snapshot);
-        return "当前 AgentOS 运行时已注册：%d 个 Agent、%d 个工具、%d 个 Skill、%d 个 MCP Server、%d 个模型路由。"
+        return "当前 AgentOS 运行时已注册：%d 个 Agent、%d 个工具、%d 个 Skill、%d 个 MCP Server、%d 个已启用模型。"
                 .formatted(snapshot.agents().size(), snapshot.tools().size(), snapshot.skills().size(),
                         snapshot.mcpServers().size(), snapshot.models().size());
     }
@@ -121,9 +121,9 @@ public final class SystemCatalogAgent extends BaseAgent implements Agent, Routab
     }
 
     private static String renderModels(CatalogSnapshot snapshot) {
-        StringBuilder answer = new StringBuilder("当前 AgentOS 模型路由：\n");
-        snapshot.models().forEach(model -> answer.append("\n- `").append(model.role())
-                .append("`：").append(model.model()).append("（").append(model.workload())
+        StringBuilder answer = new StringBuilder("当前 AgentOS 已启用模型：\n");
+        snapshot.models().forEach(model -> answer.append("\n- `").append(model.modelId())
+                .append("`：").append(model.provider()).append("（").append(model.modelType())
                 .append("）"));
         return answer.toString();
     }

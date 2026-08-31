@@ -335,12 +335,12 @@ smoke_test_packaged_jar() {
         fail "新 JAR 冒烟测试启动失败或构建标识不匹配"
     fi
     assert_safe_catalog "http://127.0.0.1:$SMOKE_PORT"
-    validation="$(curl -fsS \
-        "http://127.0.0.1:$SMOKE_PORT/api/model-management/validate")"
-    grep -Fq '"routeKey":"planner"' <<< "$validation" \
-        || fail "PostgreSQL 中的 planner 模型路由验证失败"
-    grep -Fq '"routeKey":"chat"' <<< "$validation" \
-        || fail "PostgreSQL 中的 chat 模型路由验证失败"
+    if ! validation="$(curl --fail-with-body -sS \
+            "http://127.0.0.1:$SMOKE_PORT/api/model-management/validate")"; then
+        printf '[deploy] 模型配置校验响应：%s\n' "$validation" >&2
+        tail -n 80 "$SMOKE_LOG" >&2 || true
+        fail "新 JAR 模型配置校验失败"
+    fi
 
     kill -TERM "$SMOKE_PID"
     wait "$SMOKE_PID" 2>/dev/null || true

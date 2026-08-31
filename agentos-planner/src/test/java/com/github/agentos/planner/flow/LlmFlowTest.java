@@ -45,4 +45,14 @@ class LlmFlowTest {
         assertThat(request.messages())
                 .containsExactly(LlmMessage.user("什么是 JVM"));
     }
+
+    @Test
+    void carriesOnlyTheTaskModelIdIntoChatRequests() {
+        LlmFlow flow = new LlmFlow(List.of());
+
+        LlmRequest request = flow.build(new AgentRequest(
+                "s1", "分析结果", Map.of("modelId", "model-deepseek")));
+
+        assertThat(request.model()).isEqualTo("model-deepseek");
+    }
 }

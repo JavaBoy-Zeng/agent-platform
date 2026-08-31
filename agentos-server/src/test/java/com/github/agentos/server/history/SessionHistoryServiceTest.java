@@ -112,6 +112,32 @@ class SessionHistoryServiceTest {
                         "用户：我叫曾智\n助手：你好，曾智。");
     }
 
+    /**
+     * 多轮 thinking 模式：AGENT_COMPLETED 携带的 reasoningContent 必须编码进
+     * 历史文本，HistoryProcessor 才能在下一轮请求回传 reasoning_content，
+     * 否则 MiniMax 等思维链模型会拒绝请求（HTTP 400）。
+     */
+    @Test
+    void encodesReasoningContentIntoAssistantHistoryLine() {
+        String reasoning = "用户问日期 → 查日历 → 周三";
+        String encoded = java.util.Base64.getEncoder().encodeToString(
+                reasoning.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        append("i1", AgentEventType.AGENT_STARTED, "今天几号", 1);
+        append("i1", AgentEventType.AGENT_COMPLETED, "2026-08-19", 2,
+                Map.of("reasoningContent", reasoning));
+
+        Optional<String> history = service.history("session-1");
+
+        assertThat(history).hasValueSatisfying(text -> assertThat(text)
+                .isEqualTo("用户：今天几号\n助手：[reasoning=" + encoded + "]2026-08-19"));
+        // 端到端链路：历史文本经 HistoryProcessor 解析后还原为带 reasoning 的 assistant 消息。
+        assertThat(HistoryProcessor.parseHistory(history.orElse("")))
+                .containsExactly(
+                        com.github.agentos.planner.flow.LlmMessage.user("今天几号"),
+                        com.github.agentos.planner.flow.LlmMessage.assistantWithReasoning(
+                                "2026-08-19", reasoning));
+    }
+
     @Test
     void keepsRequestUnchangedWhenSessionHasNoHistory() {
         AgentRequest request = new AgentRequest(

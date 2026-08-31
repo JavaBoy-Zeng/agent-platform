@@ -237,7 +237,7 @@ public final class SearchAgent extends BaseAgent implements Agent, RoutableAgent
                     + "包含关键发现，并保留每个来源的原始链接；不得补充结果之外的事实：\n"
                     + "目标：" + objective + "\n\n" + contextBuilder;
             LlmRequest summarizeRequest = new LlmRequest(SYSTEM_INSTRUCTION,
-                    List.of(LlmMessage.user(summarizePrompt)));
+                    List.of(LlmMessage.user(summarizePrompt))).withRouting(request);
             AtomicInteger deltaSequence = new AtomicInteger();
             String answer = chatStreamWithRetry(
                     request.sessionId(), summarizeRequest, context,

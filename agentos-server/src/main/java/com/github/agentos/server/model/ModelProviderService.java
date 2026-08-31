@@ -2,7 +2,6 @@ package com.github.agentos.server.model;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.github.agentos.server.persistence.mybatis.ModelProviderMapper;
-import com.github.agentos.server.persistence.mybatis.ModelRouteMapper;
 import com.github.agentos.server.persistence.mybatis.PersistenceRows;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,45 +32,35 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** 模型服务商配置、运行时路由、密钥加密与连接测试的统一应用服务。 */
+/** 模型配置、密钥加密、运行时解析与连接测试的统一应用服务。 */
 public class ModelProviderService {
 
-    public static final String ROUTE_PLANNER = "planner";
-    public static final String ROUTE_CHAT = "chat";
+    public static final String MODEL_TYPE_BUILT_IN = "BUILT_IN";
+    public static final String MODEL_TYPE_CUSTOM = "CUSTOM";
 
     private final boolean persistent;
     private final ModelProviderMapper providerMapper;
-    private final ModelRouteMapper routeMapper;
     private final ObjectMapper objectMapper;
     private final ModelSecretCipher cipher;
-    private final ModelClientProperties clientDefaults;
     private final Map<String, PersistenceRows.ModelProviderRow> memoryProviders =
-            new ConcurrentHashMap<>();
-    private final Map<String, PersistenceRows.ModelRouteRow> memoryRoutes =
             new ConcurrentHashMap<>();
 
     public ModelProviderService(
             String persistenceMode,
             ModelProviderMapper providerMapper,
-            ModelRouteMapper routeMapper,
             ObjectMapper objectMapper,
-            String secretKey,
-            ModelClientProperties clientDefaults) {
+            String secretKey) {
         this.persistent = persistenceMode != null
                 && ("postgresql".equalsIgnoreCase(persistenceMode.trim())
                 || "postgres".equalsIgnoreCase(persistenceMode.trim()));
         this.providerMapper = providerMapper;
-        this.routeMapper = routeMapper;
         this.objectMapper = Objects.requireNonNull(objectMapper);
-        this.clientDefaults = Objects.requireNonNull(clientDefaults);
         this.cipher = ModelSecretCipher.create(secretKey, persistent);
-        bootstrapLegacyConfiguration();
     }
 
     public ManagementSnapshot snapshot() {
         List<ProviderView> providers = rows().stream().map(this::view).toList();
-        List<RouteView> routes = routeRows().stream().map(this::routeView).toList();
-        return new ManagementSnapshot(providers, routes);
+        return new ManagementSnapshot(providers, modelOptions());
     }
 
     public Optional<ProviderView> find(String providerId) {
@@ -81,13 +70,15 @@ public class ModelProviderService {
     @Transactional
     public ProviderView create(SaveProviderRequest request) {
         ValidatedProvider value = validate(request, null);
+        ensureUniqueModels(value, null);
         String id = UUID.randomUUID().toString();
         Instant now = Instant.now();
         PersistenceRows.ModelProviderRow row = new PersistenceRows.ModelProviderRow(
                 id, value.displayName(), value.providerType(), value.protocol(),
                 value.endpoint().toString(), cipher.encrypt(value.apiKey()),
                 write(value.models()), value.defaultModel(), value.responseFormat(),
-                value.reasoningSplit(), value.enabled(), "UNTESTED", "", null,
+                value.reasoningSplit(), write(value.advancedSettings()), value.enabled(),
+                "UNTESTED", "", null,
                 now, now, 0);
         try {
             insertProvider(row);
@@ -101,14 +92,15 @@ public class ModelProviderService {
     public ProviderView update(String providerId, SaveProviderRequest request) {
         PersistenceRows.ModelProviderRow current = requiredProvider(providerId);
         ValidatedProvider value = validate(request, current);
+        ensureUniqueModels(value, current);
         String encryptedKey = value.apiKey().isEmpty()
                 ? current.encryptedApiKey() : cipher.encrypt(value.apiKey());
         PersistenceRows.ModelProviderRow updated = new PersistenceRows.ModelProviderRow(
                 current.providerId(), value.displayName(), value.providerType(), value.protocol(),
                 value.endpoint().toString(), encryptedKey, write(value.models()),
                 value.defaultModel(), value.responseFormat(), value.reasoningSplit(),
-                value.enabled(), "UNTESTED", "", null, current.createdAt(), Instant.now(),
-                current.version());
+                write(value.advancedSettings()), value.enabled(), "UNTESTED", "", null,
+                current.createdAt(), Instant.now(), current.version());
         updateProvider(updated);
         return view(requiredProvider(providerId));
     }
@@ -116,64 +108,49 @@ public class ModelProviderService {
     @Transactional
     public void delete(String providerId) {
         PersistenceRows.ModelProviderRow row = requiredProvider(providerId);
-        boolean inUse = routeRows().stream().anyMatch(route ->
-                route.providerId().equals(row.providerId()));
-        if (inUse) {
-            throw new ProviderInUseException("请先把 planner/chat 路由切换到其他 Provider");
-        }
         if (persistent) providerMapper.deleteById(row.providerId());
         else memoryProviders.remove(row.providerId());
     }
 
-    @Transactional
-    public RouteView assignRoute(String routeKey, AssignRouteRequest request) {
-        String key = normalizeRoute(routeKey);
-        PersistenceRows.ModelProviderRow provider = requiredProvider(request.providerId());
-        if (!provider.enabled()) throw new IllegalArgumentException("不能路由到已停用的 Provider");
-        List<String> models = readModels(provider.modelsPayload());
-        String model = request.modelId() == null || request.modelId().isBlank()
-                ? provider.defaultModel() : request.modelId().trim();
-        if (!models.contains(model)) {
-            throw new IllegalArgumentException("模型不在 Provider 的可选模型列表中: " + model);
+    /** 根据任务携带的平台模型 ID 解析完整配置；不提供任何全局或隐式回退。 */
+    public ResolvedModel resolve(String modelId) {
+        String selectedId = requireText(modelId, "modelId");
+        for (PersistenceRows.ModelProviderRow provider : rows()) {
+            for (String vendorModelId : readModels(provider.modelsPayload())) {
+                if (configuredModelId(provider.providerId(), vendorModelId).equals(selectedId)) {
+                    return resolveProvider(selectedId, provider, vendorModelId);
+                }
+            }
         }
-        PersistenceRows.ModelRouteRow current = routeRow(key);
-        PersistenceRows.ModelRouteRow updated = new PersistenceRows.ModelRouteRow(
-                key, provider.providerId(), model, Instant.now(),
-                current == null ? 0 : current.version());
-        if (persistent) {
-            if (current == null) routeMapper.insert(updated);
-            else routeMapper.updateById(updated);
-        } else {
-            memoryRoutes.put(key, updated);
-        }
-        return routeView(routeRow(key));
+        throw new ModelNotFoundException("模型不存在或配置已变更: " + selectedId);
     }
 
-    public ResolvedModel resolve(String routeKey) {
-        String key = normalizeRoute(routeKey);
-        PersistenceRows.ModelRouteRow route = routeRow(key);
-        if (route == null) throw new IllegalStateException("模型路由尚未配置: " + key);
-        PersistenceRows.ModelProviderRow provider = requiredProvider(route.providerId());
+    private ResolvedModel resolveProvider(
+            String configuredModelId, PersistenceRows.ModelProviderRow provider,
+            String vendorModelId) {
         if (!provider.enabled()) {
-            throw new IllegalStateException("模型路由绑定的 Provider 已停用: " + provider.displayName());
+            throw new IllegalStateException("所选模型已停用: " + vendorModelId);
         }
         return new ResolvedModel(
-                route.routeKey(), provider.providerId(), provider.displayName(),
+                configuredModelId, provider.providerId(), provider.displayName(),
                 URI.create(provider.endpoint()), cipher.decrypt(provider.encryptedApiKey()),
-                route.modelId(), ModelClientProperties.ResponseFormat.valueOf(
-                        provider.responseFormat()), provider.reasoningSplit(), provider.updatedAt());
+                vendorModelId, ModelClientProperties.ResponseFormat.valueOf(
+                        provider.responseFormat()), provider.providerType(),
+                provider.reasoningSplit(), readSettings(provider.settingsPayload()),
+                provider.updatedAt());
     }
 
-    /** 验证正式路由可解析且已保存的 API Key 能使用当前主密钥解密，不发起模型请求。 */
-    public List<RouteValidation> validateRoutes() {
-        return List.of(validateRoute(ROUTE_PLANNER), validateRoute(ROUTE_CHAT));
-    }
-
-    private RouteValidation validateRoute(String routeKey) {
-        ResolvedModel model = resolve(routeKey);
-        return new RouteValidation(
-                model.routeKey(), model.providerId(), model.providerName(), model.modelId(),
-                !model.apiKey().isBlank());
+    /** 验证全部已启用模型可使用当前主密钥解密，不要求系统必须配置模型。 */
+    public List<ModelValidation> validateModels() {
+        List<ModelValidation> validations = new ArrayList<>();
+        for (ModelOptionView model : modelOptions()) {
+            if (!model.enabled()) continue;
+            ResolvedModel resolved = resolve(model.id());
+            validations.add(new ModelValidation(
+                    model.id(), model.modelId(), model.modelType(), model.providerName(),
+                    !resolved.apiKey().isBlank()));
+        }
+        return List.copyOf(validations);
     }
 
     @Transactional
@@ -211,26 +188,11 @@ public class ModelProviderService {
                 provider.providerId(), provider.displayName(), provider.providerType(),
                 provider.protocol(), provider.endpoint(), provider.encryptedApiKey(),
                 provider.modelsPayload(), provider.defaultModel(), provider.responseFormat(),
-                provider.reasoningSplit(), provider.enabled(), status,
+                provider.reasoningSplit(), provider.settingsPayload(), provider.enabled(), status,
                 "CONNECTED".equals(status) ? "" : message, Instant.now(), provider.createdAt(),
                 Instant.now(), provider.version());
         updateProvider(checked);
         return new ConnectionTestResult(status, message, latencyMs, checked.lastCheckedAt());
-    }
-
-    private void bootstrapLegacyConfiguration() {
-        if (!rows().isEmpty() || clientDefaults.getModel() == null
-                || clientDefaults.getModel().isBlank()) return;
-        String model = clientDefaults.getModel().trim();
-        String chatModel = clientDefaults.getEffectiveChatModel().trim();
-        List<String> models = model.equals(chatModel) ? List.of(model) : List.of(model, chatModel);
-        ProviderView provider = create(new SaveProviderRequest(
-                "Default OpenAI-compatible", "OPENAI_COMPATIBLE", "CHAT_COMPLETIONS",
-                clientDefaults.getEndpoint().toString(), clientDefaults.getApiKey(), models,
-                model, clientDefaults.getResponseFormat().name(),
-                clientDefaults.isReasoningSplit(), true));
-        assignRoute(ROUTE_PLANNER, new AssignRouteRequest(provider.id(), model));
-        assignRoute(ROUTE_CHAT, new AssignRouteRequest(provider.id(), chatModel));
     }
 
     private ValidatedProvider validate(
@@ -238,7 +200,8 @@ public class ModelProviderService {
         Objects.requireNonNull(request, "request must not be null");
         String displayName = requireText(request.displayName(), "displayName");
         String providerType = enumValue(request.providerType(), "providerType",
-                List.of("OPENAI", "MINIMAX", "CC_SWITCH", "OPENAI_COMPATIBLE"));
+                List.of("OPENAI", "DEEPSEEK", "GLM", "QWEN", "MINIMAX",
+                        "CC_SWITCH", "OPENAI_COMPATIBLE"));
         String protocol = enumValue(request.protocol(), "protocol", List.of("CHAT_COMPLETIONS"));
         URI endpoint;
         try {
@@ -262,8 +225,25 @@ public class ModelProviderService {
         String responseFormat = enumValue(request.responseFormat(), "responseFormat",
                 List.of("JSON_SCHEMA", "JSON_OBJECT", "NONE"));
         String apiKey = request.apiKey() == null ? "" : request.apiKey().trim();
+        AdvancedSettings advancedSettings = validateSettings(request.advancedSettings());
         return new ValidatedProvider(displayName, providerType, protocol, endpoint, apiKey,
-                models, defaultModel, responseFormat, request.reasoningSplit(), request.enabled());
+                models, defaultModel, responseFormat, request.reasoningSplit(),
+                advancedSettings, request.enabled());
+    }
+
+    private void ensureUniqueModels(
+            ValidatedProvider candidate, PersistenceRows.ModelProviderRow current) {
+        String candidateType = modelType(candidate.providerType());
+        for (PersistenceRows.ModelProviderRow existing : rows()) {
+            if (current != null && existing.providerId().equals(current.providerId())) continue;
+            if (!modelType(existing.providerType()).equals(candidateType)) continue;
+            for (String modelId : candidate.models()) {
+                if (readModels(existing.modelsPayload()).contains(modelId)) {
+                    throw new DuplicateModelException(
+                            "模型已存在: " + modelId + "（" + modelTypeLabel(candidateType) + "）");
+                }
+            }
+        }
     }
 
     private List<PersistenceRows.ModelProviderRow> rows() {
@@ -272,15 +252,6 @@ public class ModelProviderService {
                         .orderByAsc("created_at", "display_name"))
                 : memoryProviders.values().stream()
                         .sorted(java.util.Comparator.comparing(PersistenceRows.ModelProviderRow::createdAt))
-                        .toList();
-    }
-
-    private List<PersistenceRows.ModelRouteRow> routeRows() {
-        return persistent
-                ? routeMapper.selectList(new QueryWrapper<PersistenceRows.ModelRouteRow>()
-                        .orderByAsc("route_key"))
-                : memoryRoutes.values().stream()
-                        .sorted(java.util.Comparator.comparing(PersistenceRows.ModelRouteRow::routeKey))
                         .toList();
     }
 
@@ -295,10 +266,6 @@ public class ModelProviderService {
         return row;
     }
 
-    private PersistenceRows.ModelRouteRow routeRow(String key) {
-        return persistent ? routeMapper.selectById(key) : memoryRoutes.get(key);
-    }
-
     private void insertProvider(PersistenceRows.ModelProviderRow row) {
         if (persistent) providerMapper.insert(row);
         else memoryProviders.put(row.providerId(), row);
@@ -311,18 +278,28 @@ public class ModelProviderService {
 
     private ProviderView view(PersistenceRows.ModelProviderRow row) {
         return new ProviderView(
-                row.providerId(), row.displayName(), row.providerType(), row.protocol(),
+                row.providerId(), row.displayName(), row.providerType(),
+                modelType(row.providerType()), row.protocol(),
                 row.endpoint(), readModels(row.modelsPayload()), row.defaultModel(),
-                row.responseFormat(), row.reasoningSplit(), row.enabled(),
+                row.responseFormat(), row.reasoningSplit(), readSettings(row.settingsPayload()),
+                row.enabled(),
                 row.encryptedApiKey() != null && !row.encryptedApiKey().isBlank(),
                 row.lastStatus(), row.lastError(), row.lastCheckedAt(),
                 row.createdAt(), row.updatedAt());
     }
 
-    private RouteView routeView(PersistenceRows.ModelRouteRow row) {
-        PersistenceRows.ModelProviderRow provider = requiredProvider(row.providerId());
-        return new RouteView(row.routeKey(), row.providerId(), provider.displayName(),
-                row.modelId(), row.updatedAt());
+    private List<ModelOptionView> modelOptions() {
+        List<ModelOptionView> models = new ArrayList<>();
+        for (PersistenceRows.ModelProviderRow provider : rows()) {
+            String type = modelType(provider.providerType());
+            for (String vendorModelId : readModels(provider.modelsPayload())) {
+                models.add(new ModelOptionView(
+                        configuredModelId(provider.providerId(), vendorModelId),
+                        vendorModelId, type, provider.providerId(), provider.displayName(),
+                        provider.providerType(), provider.enabled()));
+            }
+        }
+        return List.copyOf(models);
     }
 
     private List<String> readModels(String payload) {
@@ -333,6 +310,50 @@ public class ModelProviderService {
         }
     }
 
+    private AdvancedSettings readSettings(String payload) {
+        if (payload == null || payload.isBlank()) return AdvancedSettings.defaults();
+        try {
+            return validateSettings(objectMapper.readValue(payload, AdvancedSettings.class));
+        } catch (JacksonException | IllegalArgumentException exception) {
+            throw new IllegalStateException("无法读取 Provider 高级配置", exception);
+        }
+    }
+
+    private static AdvancedSettings validateSettings(AdvancedSettings settings) {
+        AdvancedSettings value = settings == null ? AdvancedSettings.defaults() : settings;
+        Integer inputTokens = optionalRange(value.inputTokens(), 1, 2_000_000, "inputTokens");
+        Integer outputTokens = optionalRange(value.outputTokens(), 1, 512_000, "outputTokens");
+        Integer toolCallRounds = optionalRange(
+                value.toolCallRounds() == null ? 500 : value.toolCallRounds(),
+                1, 500, "toolCallRounds");
+        Double temperature = optionalRange(value.temperature(), 0, 2, "temperature");
+        Double topP = optionalRange(value.topP(), 0, 1, "topP");
+        Integer topK = optionalRange(value.topK(), 1, 100, "topK");
+        String reasoningMode = value.reasoningMode() == null || value.reasoningMode().isBlank()
+                ? ModelClientProperties.ReasoningMode.DEFAULT.name()
+                : enumValue(value.reasoningMode(), "reasoningMode",
+                        List.of("DEFAULT", "ENABLED", "DISABLED"));
+        return new AdvancedSettings(inputTokens, outputTokens, toolCallRounds,
+                Boolean.TRUE.equals(value.imageInput()), reasoningMode,
+                temperature, topP, topK);
+    }
+
+    private static Integer optionalRange(Integer value, int minimum, int maximum, String field) {
+        if (value != null && (value < minimum || value > maximum)) {
+            throw new IllegalArgumentException(
+                    field + " 必须在 " + minimum + " 到 " + maximum + " 之间");
+        }
+        return value;
+    }
+
+    private static Double optionalRange(Double value, double minimum, double maximum, String field) {
+        if (value != null && (!Double.isFinite(value) || value < minimum || value > maximum)) {
+            throw new IllegalArgumentException(
+                    field + " 必须在 " + minimum + " 到 " + maximum + " 之间");
+        }
+        return value;
+    }
+
     private String write(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -341,12 +362,18 @@ public class ModelProviderService {
         }
     }
 
-    private static String normalizeRoute(String route) {
-        String value = requireText(route, "routeKey").toLowerCase(Locale.ROOT);
-        if (!ROUTE_PLANNER.equals(value) && !ROUTE_CHAT.equals(value)) {
-            throw new IllegalArgumentException("routeKey 必须是 planner 或 chat");
-        }
-        return value;
+    private static String configuredModelId(String providerId, String vendorModelId) {
+        byte[] source = (providerId + "\u0000" + vendorModelId).getBytes(StandardCharsets.UTF_8);
+        return "model-" + UUID.nameUUIDFromBytes(source);
+    }
+
+    private static String modelType(String providerType) {
+        return "OPENAI_COMPATIBLE".equals(providerType)
+                ? MODEL_TYPE_CUSTOM : MODEL_TYPE_BUILT_IN;
+    }
+
+    private static String modelTypeLabel(String modelType) {
+        return MODEL_TYPE_CUSTOM.equals(modelType) ? "自定义" : "内置";
     }
 
     private static String enumValue(String value, String field, List<String> allowed) {
@@ -369,33 +396,33 @@ public class ModelProviderService {
         return value.length() > 400 ? value.substring(0, 400) + "…" : value;
     }
 
-    public record ManagementSnapshot(List<ProviderView> providers, List<RouteView> routes) {
+    public record ManagementSnapshot(
+            List<ProviderView> providers, List<ModelOptionView> models) {
     }
 
     public record ProviderView(
-            String id, String displayName, String providerType, String protocol, String endpoint,
+            String id, String displayName, String providerType, String modelType,
+            String protocol, String endpoint,
             List<String> models, String defaultModel, String responseFormat,
-            boolean reasoningSplit, boolean enabled, boolean hasApiKey, String lastStatus,
+            boolean reasoningSplit, AdvancedSettings advancedSettings, boolean enabled,
+            boolean hasApiKey, String lastStatus,
             String lastError, Instant lastCheckedAt, Instant createdAt, Instant updatedAt) {
     }
 
-    public record RouteView(
-            String routeKey, String providerId, String providerName, String modelId,
-            Instant updatedAt) {
+    public record ModelOptionView(
+            String id, String modelId, String modelType, String providerId,
+            String providerName, String providerType, boolean enabled) {
     }
 
-    public record RouteValidation(
-            String routeKey, String providerId, String providerName, String modelId,
+    public record ModelValidation(
+            String id, String modelId, String modelType, String providerName,
             boolean hasApiKey) {
     }
 
     public record SaveProviderRequest(
             String displayName, String providerType, String protocol, String endpoint,
             String apiKey, List<String> models, String defaultModel, String responseFormat,
-            boolean reasoningSplit, boolean enabled) {
-    }
-
-    public record AssignRouteRequest(String providerId, String modelId) {
+            boolean reasoningSplit, AdvancedSettings advancedSettings, boolean enabled) {
     }
 
     public record ConnectionTestResult(
@@ -403,23 +430,40 @@ public class ModelProviderService {
     }
 
     public record ResolvedModel(
-            String routeKey, String providerId, String providerName, URI endpoint, String apiKey,
+            String id, String providerId, String providerName, URI endpoint, String apiKey,
             String modelId, ModelClientProperties.ResponseFormat responseFormat,
-            boolean reasoningSplit, Instant providerUpdatedAt) {
+            String providerType, boolean reasoningSplit, AdvancedSettings advancedSettings,
+            Instant providerUpdatedAt) {
+    }
+
+    /** Optional model capabilities and request sampling controls; null values keep provider defaults. */
+    public record AdvancedSettings(
+            Integer inputTokens, Integer outputTokens, Integer toolCallRounds,
+            Boolean imageInput, String reasoningMode, Double temperature, Double topP,
+            Integer topK) {
+
+        public static AdvancedSettings defaults() {
+            return new AdvancedSettings(
+                    null, null, 500, false, "DEFAULT", null, null, null);
+        }
     }
 
     private record ValidatedProvider(
             String displayName, String providerType, String protocol, URI endpoint, String apiKey,
             List<String> models, String defaultModel, String responseFormat,
-            boolean reasoningSplit, boolean enabled) {
+            boolean reasoningSplit, AdvancedSettings advancedSettings, boolean enabled) {
     }
 
     public static final class ProviderNotFoundException extends RuntimeException {
         public ProviderNotFoundException(String message) { super(message); }
     }
 
-    public static final class ProviderInUseException extends RuntimeException {
-        public ProviderInUseException(String message) { super(message); }
+    public static final class ModelNotFoundException extends RuntimeException {
+        public ModelNotFoundException(String message) { super(message); }
+    }
+
+    public static final class DuplicateModelException extends RuntimeException {
+        public DuplicateModelException(String message) { super(message); }
     }
 
     /** AES-256-GCM 密钥封装；主密钥只从环境配置读取，不进入数据库。 */

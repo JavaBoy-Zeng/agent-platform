@@ -1,8 +1,11 @@
 package com.github.agentos.server.handler;
 
 import com.github.agentos.kernel.AgentRunRejectedException;
-import com.github.agentos.server.model.ModelProviderService.ProviderInUseException;
+import com.github.agentos.server.model.ModelProviderService.DuplicateModelException;
+import com.github.agentos.server.model.ModelProviderService.ModelNotFoundException;
 import com.github.agentos.server.model.ModelProviderService.ProviderNotFoundException;
+import com.github.agentos.server.automation.AutomationService.AutomationConflictException;
+import com.github.agentos.server.automation.AutomationService.AutomationNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -64,10 +67,34 @@ public class AgentExceptionHandler {
         return detail;
     }
 
-    @ExceptionHandler(ProviderInUseException.class)
-    ProblemDetail handleProviderInUse(ProviderInUseException exception) {
+    @ExceptionHandler(ModelNotFoundException.class)
+    ProblemDetail handleModelNotFound(ModelNotFoundException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        detail.setTitle("Model not found");
+        detail.setDetail(exception.getMessage());
+        return detail;
+    }
+
+    @ExceptionHandler(DuplicateModelException.class)
+    ProblemDetail handleDuplicateModel(DuplicateModelException exception) {
         ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.CONFLICT);
-        detail.setTitle("Model Provider is in use");
+        detail.setTitle("Model already exists");
+        detail.setDetail(exception.getMessage());
+        return detail;
+    }
+
+    @ExceptionHandler(AutomationNotFoundException.class)
+    ProblemDetail handleAutomationNotFound(AutomationNotFoundException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        detail.setTitle("Automation not found");
+        detail.setDetail(exception.getMessage());
+        return detail;
+    }
+
+    @ExceptionHandler(AutomationConflictException.class)
+    ProblemDetail handleAutomationConflict(AutomationConflictException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        detail.setTitle("Automation conflict");
         detail.setDetail(exception.getMessage());
         return detail;
     }

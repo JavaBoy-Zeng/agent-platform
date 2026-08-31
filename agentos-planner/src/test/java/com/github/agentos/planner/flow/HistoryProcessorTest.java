@@ -3,6 +3,8 @@ package com.github.agentos.planner.flow;
 import com.github.agentos.kernel.AgentRequest;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,5 +66,39 @@ class HistoryProcessorTest {
                 LlmMessage.user("今天几号"),
                 LlmMessage.assistant("2026-08-19"),
                 LlmMessage.user("那明天呢"));
+    }
+
+    @Test
+    void parsesReasoningAnnotationOnAssistantLine() {
+        String reasoning = "先回忆用户问的是日期，然后查日历。";
+        String encoded = Base64.getEncoder().encodeToString(
+                reasoning.getBytes(StandardCharsets.UTF_8));
+        String history = "用户：今天几号\n助手：[reasoning=" + encoded + "]2026-08-19";
+
+        assertThat(HistoryProcessor.parseHistory(history))
+                .containsExactly(
+                        LlmMessage.user("今天几号"),
+                        LlmMessage.assistantWithReasoning("2026-08-19", reasoning));
+    }
+
+    @Test
+    void malformedReasoningAnnotationFallsBackToPlainAssistant() {
+        String history = "用户：今天几号\n助手：[reasoning=!!not-base64!!]2026-08-19";
+
+        assertThat(HistoryProcessor.parseHistory(history))
+                .containsExactly(
+                        LlmMessage.user("今天几号"),
+                        LlmMessage.assistant("2026-08-19"));
+    }
+
+    @Test
+    void reasoningAnnotationOnUserLineIsIgnored() {
+        // 推理标注只对助手消息生效；用户消息上的同名标记按正文保留。
+        String history = "用户：[reasoning=abc]那明天呢\n助手：明天 2026-08-20";
+
+        assertThat(HistoryProcessor.parseHistory(history))
+                .containsExactly(
+                        LlmMessage.user("[reasoning=abc]那明天呢"),
+                        LlmMessage.assistant("明天 2026-08-20"));
     }
 }

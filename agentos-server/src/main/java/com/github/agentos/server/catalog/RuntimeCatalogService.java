@@ -6,7 +6,6 @@ import com.github.agentos.agent.registry.AgentRegistry;
 import com.github.agentos.agent.workflow.BaseAgent;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.server.config.mcp.McpProperties;
-import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.ModelProviderService;
 import com.github.agentos.tool.api.ToolDefinition;
 import com.github.agentos.tool.runtime.ToolRegistry;
@@ -16,7 +15,6 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,7 +27,6 @@ public final class RuntimeCatalogService {
     private final ObjectProvider<AgentRegistry> agentRegistry;
     private final ObjectProvider<SkillRegistry> skillRegistry;
     private final ObjectProvider<McpProperties> mcpProperties;
-    private final ModelClientProperties modelProperties;
     private final ModelProviderService modelProviderService;
     private final AgentExecutionLimits limits;
 
@@ -39,32 +36,13 @@ public final class RuntimeCatalogService {
             ObjectProvider<AgentRegistry> agentRegistry,
             ObjectProvider<SkillRegistry> skillRegistry,
             ObjectProvider<McpProperties> mcpProperties,
-            ModelClientProperties modelProperties,
             ModelProviderService modelProviderService,
             AgentExecutionLimits limits) {
         this.toolRegistry = toolRegistry;
         this.agentRegistry = agentRegistry;
         this.skillRegistry = skillRegistry;
         this.mcpProperties = mcpProperties;
-        this.modelProperties = modelProperties;
         this.modelProviderService = modelProviderService;
-        this.limits = limits;
-    }
-
-    /** 兼容不装配 Provider 管理服务的目录单元测试。 */
-    public RuntimeCatalogService(
-            ToolRegistry toolRegistry,
-            ObjectProvider<AgentRegistry> agentRegistry,
-            ObjectProvider<SkillRegistry> skillRegistry,
-            ObjectProvider<McpProperties> mcpProperties,
-            ModelClientProperties modelProperties,
-            AgentExecutionLimits limits) {
-        this.toolRegistry = toolRegistry;
-        this.agentRegistry = agentRegistry;
-        this.skillRegistry = skillRegistry;
-        this.mcpProperties = mcpProperties;
-        this.modelProperties = modelProperties;
-        this.modelProviderService = null;
         this.limits = limits;
     }
 
@@ -90,18 +68,12 @@ public final class RuntimeCatalogService {
     }
 
     private List<ModelView> models() {
-        if (modelProviderService != null) {
-            return modelProviderService.snapshot().routes().stream()
-                    .map(route -> new ModelView(
-                            route.routeKey(), route.modelId(), route.providerName(),
-                            "planner".equals(route.routeKey()) ? "PLANNING" : "CHAT"))
-                    .toList();
-        }
-        return List.of(
-                new ModelView("planner", modelProperties.getModel(),
-                        provider(modelProperties.getEndpoint()), "PLANNING"),
-                new ModelView("direct-chat", modelProperties.getEffectiveChatModel(),
-                        provider(modelProperties.getEndpoint()), "CHAT"));
+        return modelProviderService.snapshot().models().stream()
+                .filter(ModelProviderService.ModelOptionView::enabled)
+                .map(model -> new ModelView(
+                        model.id(), model.modelId(), model.providerName(),
+                        model.modelType()))
+                .toList();
     }
 
     public Optional<AgentDetail> agent(String agentId) {
@@ -125,11 +97,6 @@ public final class RuntimeCatalogService {
         return toolRegistry.all().stream()
                 .map(com.github.agentos.tool.api.AgentTool::name)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-    }
-
-    private static String provider(URI endpoint) {
-        return endpoint == null || endpoint.getHost() == null
-                ? "OpenAI compatible" : endpoint.getHost();
     }
 
     public record CatalogSnapshot(
@@ -179,7 +146,7 @@ public final class RuntimeCatalogService {
     public record McpServerView(String name, String status, String transport) {
     }
 
-    public record ModelView(String role, String model, String provider, String workload) {
+    public record ModelView(String id, String modelId, String provider, String modelType) {
     }
 
     private static String displayName(String id) {

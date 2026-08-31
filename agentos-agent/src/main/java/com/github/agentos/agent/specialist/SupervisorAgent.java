@@ -40,7 +40,11 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             规则：
             - 当前 AgentOS、当前系统、已注册工具/Agent/Skill/MCP/模型属于 LOCAL_RUNTIME，交 main-agent；
               上游通常会确定性拦截，此处不得选择 search-agent。
-            - 只有需要外部网页、公开资料或外部实时事实时才选择 search-agent，并要求 WEB_RESEARCH。
+            - search-agent 仅限时效性检索：答案随时间变化、必须联网才能获得的外部事实
+              （最新版本、新闻、今日天气、当前价格、实时行情等），并要求 WEB_RESEARCH。
+            - 知识整理类任务（梳理、罗列、总结、介绍、科普、对比、解释某领域的既有知识）
+              一律交 main-agent，scope 记为 GENERAL：这类问题应以模型自身知识为主体作答，
+              检索最多是补充，绝不能只复述搜索摘要，因此不得选择 search-agent。
             - 本地代码编写或执行选择 code-agent；生成落盘文档选择 report-agent。
             - 多步骤、混合能力或无法可靠判断时选择 main-agent。
             - 作用域歧义且会改变工具选择时，将 confidence 设为低于 0.75，并提供 clarifyingQuestion。
@@ -121,7 +125,8 @@ public final class SupervisorAgent implements Agent, AgentLoop {
         try {
             LlmRequest classifyRequest = historyProcessor.process(
                     new LlmRequest(CLASSIFY_INSTRUCTION,
-                            java.util.List.of(LlmMessage.user(request.objective()))),
+                            java.util.List.of(LlmMessage.user(request.objective())))
+                            .withRouting(request),
                     request);
             decision = parseDecision(chatClient.chat(request.sessionId(), classifyRequest));
         } catch (RuntimeException exception) {

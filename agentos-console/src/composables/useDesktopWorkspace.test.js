@@ -33,6 +33,12 @@ describe('desktop workspace state', () => {
       if (command === 'workspace_file_index') {
         return [{ name: 'ReadMe.md', relativePath: 'ReadMe.md', language: 'markdown' }]
       }
+      if (command === 'git_branches') {
+        return [{ name: 'main', current: true }, { name: 'feature/composer', current: false }]
+      }
+      if (command === 'git_switch_branch') {
+        return { branch: 'feature/composer', entries: [] }
+      }
       return null
     })
     setAuthToken('test-token')
@@ -51,11 +57,16 @@ describe('desktop workspace state', () => {
     expect(desktop.invoke).toHaveBeenCalledWith('authorize_workspace', expect.objectContaining({ token: 'test-token' }))
     workspace.bindWorkspace('workspace-1')
     expect(workspace.currentWorkspace.value?.id).toBe('workspace-1')
-    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v1'))).toEqual({ 'task-1': 'workspace-1' })
-    workspace.clearWorkspace()
-    expect(workspace.currentWorkspace.value).toBeNull()
-    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v1'))).toEqual({})
-    workspace.bindWorkspace('workspace-1')
+    expect(workspace.workspaceForSession('task-1')?.id).toBe('workspace-1')
+    expect(workspace.currentWorkspaceIds.value).toEqual(['workspace-1'])
+    expect(workspace.currentWorkspaces.value.map(item => item.id)).toEqual(['workspace-1'])
+    expect(workspace.workspaceIdsForSession('task-1')).toEqual(['workspace-1'])
+    expect(workspace.workspacesForSession('task-1').map(item => item.id)).toEqual(['workspace-1'])
+    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v2'))).toEqual({ 'task-1': ['workspace-1'] })
+    expect(workspace.clearWorkspace()).toBe(false)
+    expect(workspace.bindWorkspace('workspace-2')).toBe(false)
+    expect(workspace.currentWorkspace.value?.id).toBe('workspace-1')
+    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v2'))).toEqual({ 'task-1': ['workspace-1'] })
     await expect(workspace.uploadAttachments()).resolves.toEqual([
       { name: 'brief.pdf', relativePath: 'brief.pdf', size: 42 }
     ])
@@ -67,6 +78,13 @@ describe('desktop workspace state', () => {
       grantId: 'grant-1', workspaceId: 'workspace-1', mentionedPaths: ['src/Main.java']
     }))
     expect(workspace.contextLoading.value).toBe(false)
+    await expect(workspace.refreshGitBranches()).resolves.toEqual([
+      { name: 'main', current: true }, { name: 'feature/composer', current: false }
+    ])
+    await expect(workspace.switchGitBranch('feature/composer')).resolves.toBe(true)
+    expect(desktop.invoke).toHaveBeenCalledWith('git_switch_branch', expect.objectContaining({
+      grantId: 'grant-1', workspaceId: 'workspace-1', branch: 'feature/composer'
+    }))
     wrapper.unmount()
     await flushPromises()
   })
@@ -136,7 +154,123 @@ describe('desktop workspace state', () => {
 
     expect(picked?.id).toBe('workspace-3')
     expect(workspace.currentWorkspace.value).toBeNull()
+    expect(localStorage.getItem('agentos.session-workspaces.v2')).toBeNull()
+    wrapper.unmount()
+    await flushPromises()
+  })
+
+  it('migrates legacy single-workspace associations into the extensible collection format', async () => {
+    localStorage.setItem('agentos.session-workspaces.v1', JSON.stringify({
+      'legacy-task': 'workspace-legacy'
+    }))
+    desktop.invoke.mockImplementation(async command => {
+      if (command === 'authorize_workspace') {
+        return { grantId: 'grant-legacy', user: 'alice', expiresAt: Date.now() + 60_000 }
+      }
+      if (command === 'list_workspaces') {
+        return [{ id: 'workspace-legacy', name: 'legacy', root: '/local/legacy', gitRepository: false }]
+      }
+      return null
+    })
+    setAuthToken('test-token')
+    setAuthUser({ username: 'alice', roles: ['WORKSPACE'] })
+    const agentConsole = { currentSessionId: ref('legacy-task') }
+    let workspace
+    const Harness = defineComponent({
+      setup() {
+        workspace = useDesktopWorkspace(agentConsole)
+        return () => h('div')
+      }
+    })
+
+    const wrapper = mount(Harness)
+    await flushPromises()
+
+    expect(workspace.currentWorkspace.value?.id).toBe('workspace-legacy')
+    expect(workspace.currentWorkspaceIds.value).toEqual(['workspace-legacy'])
+    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v2'))).toEqual({
+      'legacy-task': ['workspace-legacy']
+    })
     expect(localStorage.getItem('agentos.session-workspaces.v1')).toBeNull()
+    wrapper.unmount()
+    await flushPromises()
+  })
+
+  it('keeps a policy seam for adding and removing multiple workspaces later', async () => {
+    desktop.invoke.mockImplementation(async command => {
+      if (command === 'authorize_workspace') {
+        return { grantId: 'grant-future', user: 'alice', expiresAt: Date.now() + 60_000 }
+      }
+      if (command === 'list_workspaces') {
+        return [
+          { id: 'workspace-a', name: 'alpha', root: '/local/alpha', gitRepository: true },
+          { id: 'workspace-b', name: 'beta', root: '/local/beta', gitRepository: false }
+        ]
+      }
+      return null
+    })
+    setAuthToken('test-token')
+    setAuthUser({ username: 'alice', roles: ['WORKSPACE'] })
+    const agentConsole = { currentSessionId: ref('future-task') }
+    let workspace
+    const Harness = defineComponent({
+      setup() {
+        workspace = useDesktopWorkspace(agentConsole, {
+          workspacePolicy: { maxDirectoriesPerTask: 2, lockAfterFirstBinding: false }
+        })
+        return () => h('div')
+      }
+    })
+
+    const wrapper = mount(Harness)
+    await flushPromises()
+
+    expect(workspace.bindWorkspace('workspace-a')).toBe(true)
+    expect(workspace.bindWorkspace('workspace-b')).toBe(true)
+    expect(workspace.currentWorkspaceIds.value).toEqual(['workspace-a', 'workspace-b'])
+    expect(workspace.currentWorkspaces.value.map(item => item.id)).toEqual(['workspace-a', 'workspace-b'])
+    expect(workspace.currentWorkspace.value?.id).toBe('workspace-a')
+    expect(workspace.unbindWorkspace('workspace-a')).toBe(true)
+    expect(workspace.currentWorkspace.value?.id).toBe('workspace-b')
+    wrapper.unmount()
+    await flushPromises()
+  })
+
+  it('lets an unsent draft move between directories while formal tasks stay locked', async () => {
+    desktop.invoke.mockImplementation(async command => {
+      if (command === 'authorize_workspace') {
+        return { grantId: 'grant-draft', user: 'alice', expiresAt: Date.now() + 60_000 }
+      }
+      if (command === 'list_workspaces') {
+        return [
+          { id: 'workspace-a', name: 'alpha', root: '/local/alpha', gitRepository: true },
+          { id: 'workspace-b', name: 'beta', root: '/local/beta', gitRepository: true }
+        ]
+      }
+      if (command === 'git_branches') return [{ name: 'main', current: true }]
+      return null
+    })
+    setAuthToken('test-token')
+    setAuthUser({ username: 'alice', roles: ['WORKSPACE'] })
+    const agentConsole = {
+      currentSessionId: ref('draft-task'),
+      currentSessionDraft: ref(true)
+    }
+    let workspace
+    const Harness = defineComponent({
+      setup() {
+        workspace = useDesktopWorkspace(agentConsole)
+        return () => h('div')
+      }
+    })
+    const wrapper = mount(Harness)
+    await flushPromises()
+
+    expect(workspace.bindWorkspace('workspace-a')).toBe(true)
+    expect(workspace.bindWorkspace('workspace-b')).toBe(true)
+    expect(workspace.currentWorkspace.value?.id).toBe('workspace-b')
+    expect(workspace.clearWorkspace()).toBe(true)
+    expect(workspace.currentWorkspace.value).toBeNull()
     wrapper.unmount()
     await flushPromises()
   })

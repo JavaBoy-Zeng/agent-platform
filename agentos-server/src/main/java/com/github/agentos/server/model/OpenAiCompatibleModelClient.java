@@ -398,6 +398,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         if (properties.isReasoningSplit()) {
             body.put("reasoning_split", true);
         }
+        properties.applyGenerationOptions(body);
         return body;
     }
 

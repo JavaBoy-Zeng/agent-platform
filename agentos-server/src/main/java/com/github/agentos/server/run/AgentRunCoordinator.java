@@ -22,6 +22,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
 
 /**
  * 管理与浏览器连接解耦的后台 Agent 运行，并保存可按序号补播的运行事件。
@@ -76,15 +77,24 @@ public final class AgentRunCoordinator {
      * 创建后台任务并立即返回可持久化的运行快照。
      */
     public synchronized RunSnapshot start(AgentRequest request, InvocationContext context) {
+        return start(request, context, ignored -> { });
+    }
+
+    /** 创建后台运行，并在运行进入终态后回调最终快照。 */
+    public synchronized RunSnapshot start(
+            AgentRequest request,
+            InvocationContext context,
+            Consumer<RunSnapshot> completionListener) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
+        Objects.requireNonNull(completionListener, "completionListener must not be null");
         makeRoomForRun();
         String runId = UUID.randomUUID().toString();
         AgentState initialState = runner.state(request.sessionId())
                 .orElseGet(AgentState::ready)
                 .startNextIteration();
         ManagedRun run = new ManagedRun(
-                runId, request.sessionId(), initialState, maxEventsPerRun);
+                runId, request.sessionId(), initialState, maxEventsPerRun, completionListener);
         runs.put(runId, run);
 
         boolean started;
@@ -191,6 +201,7 @@ public final class AgentRunCoordinator {
                     : exception.getMessage();
             run.finish(run.state().fail(message), currentInvocation(run));
         }
+        run.notifyCompletion();
     }
 
     private AgentInvocation currentInvocation(ManagedRun run) {
@@ -310,16 +321,32 @@ public final class AgentRunCoordinator {
          * 是否已经写入最终状态事件并关闭全部订阅者。
          */
         private boolean terminal;
+        /** 自动化等调用方使用的可选终态监听器。 */
+        private final Consumer<RunSnapshot> completionListener;
 
         /**
          * 创建一条尚未结束、事件窗口为空的后台运行记录。
          */
-        ManagedRun(String runId, String sessionId, AgentState initialState, int maxEvents) {
+        ManagedRun(
+                String runId,
+                String sessionId,
+                AgentState initialState,
+                int maxEvents,
+                Consumer<RunSnapshot> completionListener) {
             this.runId = runId;
             this.sessionId = sessionId;
             this.state = initialState;
             this.maxEvents = maxEvents;
             this.updatedAt = createdAt;
+            this.completionListener = completionListener;
+        }
+
+        void notifyCompletion() {
+            try {
+                completionListener.accept(snapshot(null));
+            } catch (RuntimeException ignored) {
+                // 终态持久化监听失败不能反向破坏已经完成的 Agent Run。
+            }
         }
 
         /**
