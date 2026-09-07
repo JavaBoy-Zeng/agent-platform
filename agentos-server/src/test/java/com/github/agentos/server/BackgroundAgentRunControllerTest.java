@@ -70,7 +70,9 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry(), 1, 2);
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                    new BackgroundAgentRunController(coordinator, historyService())).build();
+                    new BackgroundAgentRunController(
+                            coordinator, historyService(),
+                            TestSessionAuthorizations.owned("retention-2"))).build();
 
             AgentRunCoordinator.RunSnapshot first = coordinator.start(
                     AgentRequest.of("retention-1", "first"),
@@ -131,7 +133,8 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry());
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                    new BackgroundAgentRunController(coordinator, historyService())).build();
+                    new BackgroundAgentRunController(
+                            coordinator, historyService(), TestSessionAuthorizations.owned())).build();
 
             String body = mvc.perform(post("/api/agent-runs")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -223,7 +226,9 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry());
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                    new BackgroundAgentRunController(coordinator, historyService())).build();
+                    new BackgroundAgentRunController(
+                            coordinator, historyService(),
+                            TestSessionAuthorizations.owned("list-1", "list-2"))).build();
 
             AgentRunCoordinator.RunSnapshot first = coordinator.start(
                     new AgentRequest("list-1", "hello", Map.of()),
@@ -265,7 +270,8 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     runner, executor, new AgentRunTaskRegistry());
             MockMvc mvc = MockMvcBuilders.standaloneSetup(new BackgroundAgentRunController(
-                    coordinator, new SessionHistoryService(eventStore, 5, 400))).build();
+                    coordinator, new SessionHistoryService(eventStore, 5, 400),
+                    TestSessionAuthorizations.owned())).build();
 
             String firstRunId = JsonPath.read(mvc.perform(post("/api/agent-runs")
                             .contentType(MediaType.APPLICATION_JSON)

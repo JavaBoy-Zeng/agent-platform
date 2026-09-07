@@ -59,14 +59,21 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     user_id VARCHAR(128) NOT NULL,
     state_payload TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    last_active_at TIMESTAMPTZ NOT NULL
+    last_active_at TIMESTAMPTZ NOT NULL,
+    deleted_at TIMESTAMPTZ NULL
 );
+-- 兼容已初始化的 PostgreSQL 数据库；新列为空时表示活跃会话。
+ALTER TABLE agent_sessions
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL;
 COMMENT ON COLUMN agent_sessions.session_id IS '持续对话会话的唯一标识';
 COMMENT ON COLUMN agent_sessions.user_id IS '会话所属用户标识';
 COMMENT ON COLUMN agent_sessions.state_payload IS '会话结构化状态的 JSON 文本';
 COMMENT ON COLUMN agent_sessions.created_at IS '会话创建时间';
 COMMENT ON COLUMN agent_sessions.last_active_at IS '会话最近活跃时间';
+COMMENT ON COLUMN agent_sessions.deleted_at IS '会话软删除时间，空值表示未删除；删除后保留原始用户归属并禁止复用会话标识';
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_active ON agent_sessions(last_active_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_owner_active
+    ON agent_sessions(user_id, last_active_at DESC) WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(128) PRIMARY KEY,
@@ -279,3 +286,16 @@ COMMENT ON COLUMN automation_clients.last_seen_at IS '最近一次成功心跳�
 COMMENT ON COLUMN automation_clients.created_at IS '客户端首次登记时间';
 COMMENT ON COLUMN automation_clients.updated_at IS '客户端登记信息最近更新时间';
 CREATE INDEX IF NOT EXISTS idx_automation_clients_seen ON automation_clients(team_id, user_id, last_seen_at DESC);
+
+-- 通用 key/value 配置：当前用于非管理员模型调用限频开关（agentos.settings.non-admin-call-limit）。
+CREATE TABLE IF NOT EXISTS settings (
+    setting_key VARCHAR(128) PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    updated_by VARCHAR(128) NOT NULL DEFAULT ''
+);
+COMMENT ON TABLE settings IS '管理员运行时可调的全局配置（key/value 形式）';
+COMMENT ON COLUMN settings.setting_key IS '配置项主键，例如 agentos.settings.non-admin-call-limit';
+COMMENT ON COLUMN settings.setting_value IS '配置项 JSON 文本；schema 由调用方定义';
+COMMENT ON COLUMN settings.updated_at IS '配置最近更新时间';
+COMMENT ON COLUMN settings.updated_by IS '最近一次写入该配置的管理员用户名';

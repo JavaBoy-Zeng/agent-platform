@@ -85,7 +85,8 @@ class EvaluationControllerTest {
 
     private static MockMvc mvc(AgentEventStore store) {
         return MockMvcBuilders.standaloneSetup(new EvaluationController(
-                new EvaluationService(store, new ToolTrajectoryEvaluator()))).build();
+                new EvaluationService(store, new ToolTrajectoryEvaluator()),
+                TestSessionAuthorizations.owned("session-1"))).build();
     }
 
     /** 构造一次包含单工具调用与最终回答的事件流。 */

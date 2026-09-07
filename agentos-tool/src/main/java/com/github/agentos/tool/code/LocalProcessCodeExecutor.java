@@ -14,7 +14,8 @@ import java.util.Objects;
  * <p>代码写入临时目录后按语言与宿主机平台选择启动命令：Python 经
  * {@code python3}（Windows 为 {@code python}）、Shell 经 {@code /bin/sh}
  * （Windows 为 {@code cmd /c} 执行 {@code .cmd}）、Java 使用 JDK 11+
- * 单文件源码模式（约定入口类为 {@code Main}）。宿主机直连执行风险较高，
+ * 单文件源码模式、JavaScript 使用 Node.js、Go 使用 {@code go run}。
+ * 宿主机直连执行风险较高，
  * 对应工具应声明 {@code HIGH} 风险等级并走 HITL 审批。</p>
  */
 public final class LocalProcessCodeExecutor implements CodeExecutor {
@@ -103,6 +104,8 @@ public final class LocalProcessCodeExecutor implements CodeExecutor {
                     ? List.of("cmd", "/c", source.toString())
                     : List.of("/bin/sh", source.toString());
             case JAVA -> List.of("java", source.getFileName().toString());
+            case JAVASCRIPT -> List.of("node", source.toString());
+            case GO -> List.of("go", "run", source.toString());
         };
     }
 

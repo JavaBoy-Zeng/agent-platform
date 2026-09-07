@@ -246,6 +246,45 @@ public class ModelProviderService {
         }
     }
 
+    /** Provider 表是否为空（用于启动引导：空时按 agentos.model.* 自动 seed）。 */
+    public boolean isEmpty() {
+        return rows().isEmpty();
+    }
+
+    /**
+     * 在 Provider 表为空时按 {@code agentos.model.*} 兜底配置自动 seed 一条
+     * {@code OPENAI_COMPATIBLE} 记录，使普通用户也能开箱即用。
+     *
+     * <p>已有任何 Provider 时直接跳过，避免覆盖运维手工配置；密钥为空时仍可创建，
+     * 仅在做实际模型调用时表现为未鉴权，由运维后续补充。</p>
+     */
+    @Transactional
+    public Optional<ProviderView> seedFromProperties(ModelClientProperties defaults) {
+        if (!rows().isEmpty() || defaults == null) {
+            return Optional.empty();
+        }
+        Objects.requireNonNull(defaults.getEndpoint(), "agentos.model.endpoint must not be null");
+        String model = defaults.getModel();
+        if (model == null || model.isBlank()) {
+            throw new IllegalStateException(
+                    "agentos.model.model must not be blank; configure it before starting");
+        }
+        SaveProviderRequest seed = new SaveProviderRequest(
+                "Default (agentos.model)",
+                "OPENAI_COMPATIBLE",
+                "CHAT_COMPLETIONS",
+                defaults.getEndpoint().toString(),
+                defaults.getApiKey() == null ? "" : defaults.getApiKey(),
+                List.of(model),
+                model,
+                defaults.getResponseFormat() == null
+                        ? "JSON_OBJECT" : defaults.getResponseFormat().name(),
+                defaults.isReasoningSplit(),
+                null,
+                true);
+        return Optional.of(create(seed));
+    }
+
     private List<PersistenceRows.ModelProviderRow> rows() {
         return persistent
                 ? providerMapper.selectList(new QueryWrapper<PersistenceRows.ModelProviderRow>()

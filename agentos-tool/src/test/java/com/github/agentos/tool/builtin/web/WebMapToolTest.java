@@ -31,7 +31,7 @@ class WebMapToolTest {
 
     @BeforeEach
     void startServer() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v2/map", exchange -> {
             String receivedBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -48,7 +48,7 @@ class WebMapToolTest {
                     """);
         });
         server.start();
-        baseUrl = "http://localhost:" + server.getAddress().getPort();
+        baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
         tool = new WebMapTool(
                 HttpClient.newHttpClient(), new ObjectMapper(), baseUrl, "test-key",
                 Duration.ofSeconds(5), 200, 12_000);

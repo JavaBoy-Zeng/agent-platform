@@ -4,10 +4,13 @@ import com.github.agentos.kernel.AgentRunRejectedException;
 import com.github.agentos.server.model.ModelProviderService.DuplicateModelException;
 import com.github.agentos.server.model.ModelProviderService.ModelNotFoundException;
 import com.github.agentos.server.model.ModelProviderService.ProviderNotFoundException;
+import com.github.agentos.server.model.NonAdminCallRateLimitException;
 import com.github.agentos.server.automation.AutomationService.AutomationConflictException;
 import com.github.agentos.server.automation.AutomationService.AutomationNotFoundException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -97,5 +100,18 @@ public class AgentExceptionHandler {
         detail.setTitle("Automation conflict");
         detail.setDetail(exception.getMessage());
         return detail;
+    }
+
+    /** 非管理员模型调用被限频：429 + Retry-After，方便客户端自动退避。 */
+    @ExceptionHandler(NonAdminCallRateLimitException.class)
+    ResponseEntity<ProblemDetail> handleNonAdminRateLimit(NonAdminCallRateLimitException exception) {
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.TOO_MANY_REQUESTS);
+        detail.setTitle("Non-admin model call rate limit");
+        detail.setDetail(exception.getMessage());
+        long retryAfterSeconds = Math.max(1L,
+                (exception.retryAfterMillis() + 999L) / 1000L);
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds))
+                .body(detail);
     }
 }

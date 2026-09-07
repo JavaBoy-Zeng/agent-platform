@@ -1,4 +1,4 @@
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelAgentRun,
   createAgentRun,
@@ -12,6 +12,7 @@ import { buildRunInput } from '../utils/runInput.js'
 import {
   deleteSessionRecord,
   deleteSessionRecords,
+  getModelCatalog,
   getModelManagement,
   getUsage,
   getSessionEvents,
@@ -21,16 +22,22 @@ import {
 } from '../services/consoleApi.js'
 import { appendOperationGroup, compactOperationGroups } from '../utils/operationGroups.js'
 
-const STORAGE_KEY = 'agentos.console.sessions.v1'
-const ACTIVE_SESSION_KEY = 'agentos.console.active-session.v1'
+const LEGACY_STORAGE_KEY = 'agentos.console.sessions.v1'
+const LEGACY_ACTIVE_SESSION_KEY = 'agentos.console.active-session.v1'
+const STORAGE_KEY_PREFIX = 'agentos.console.sessions.v2'
+const ACTIVE_SESSION_KEY_PREFIX = 'agentos.console.active-session.v2'
 const SESSION_PAGE_SIZE = 20
 const SESSION_CACHE_SIZE = 20
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING'])
 const APPROVAL_MODE_KEY = 'agentos.console.approval-mode.v1'
 function randomId(prefix) {
-  const token = globalThis.crypto?.randomUUID?.().slice(0, 8)
-    || Math.random().toString(36).slice(2, 10)
+  const token = globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
   return `${prefix}-${token}`
+}
+
+function scopedStorageKey(prefix, ownerId) {
+  return `${prefix}.${encodeURIComponent(ownerId)}`
 }
 
 function sanitizeId(value, fallback) {
@@ -102,7 +109,10 @@ export function isUnsavedDraft(session) {
     && (!Array.isArray(session.messages) || session.messages.length === 0)
 }
 
-export function useAgentConsole() {
+export function useAgentConsole(ownerId = '') {
+  const owner = String(ownerId || '').trim()
+  const storageKey = scopedStorageKey(STORAGE_KEY_PREFIX, owner)
+  const activeSessionKey = scopedStorageKey(ACTIVE_SESSION_KEY_PREFIX, owner)
   const sessions = ref([])
   const currentSessionId = ref('')
   const agentId = ref('main-agent')
@@ -119,6 +129,8 @@ export function useAgentConsole() {
   const serverHasMoreSessions = ref(false)
   const monitoredRuns = new Map()
   const pipelineTimers = new Map()
+  const streamAbortController = new AbortController()
+  let disposed = false
 
   const currentSession = computed(() =>
     sessions.value.find((session) => session.id === currentSessionId.value) || null)
@@ -143,6 +155,7 @@ export function useAgentConsole() {
     || (isSessionBusy(currentSession.value) ? '正在运行' : '')).trim())
 
   function persist() {
+    if (disposed || !owner) return
     // 空白草稿只存在于当前页面生命周期；首次发送消息后才进入任务缓存和目录。
     const persistableSessions = sessions.value.filter(session => !isUnsavedDraft(session))
     const recent = persistableSessions.slice(0, SESSION_CACHE_SIZE)
@@ -150,11 +163,11 @@ export function useAgentConsole() {
     const cache = active && !isUnsavedDraft(active) && !recent.some(session => session.id === active.id)
       ? [...recent.slice(0, SESSION_CACHE_SIZE - 1), active]
       : recent
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cache))
+    localStorage.setItem(storageKey, JSON.stringify(cache))
     if (currentSessionId.value && !isUnsavedDraft(active)) {
-      localStorage.setItem(ACTIVE_SESSION_KEY, currentSessionId.value)
+      localStorage.setItem(activeSessionKey, currentSessionId.value)
     } else {
-      localStorage.removeItem(ACTIVE_SESSION_KEY)
+      localStorage.removeItem(activeSessionKey)
     }
   }
 
@@ -165,8 +178,7 @@ export function useAgentConsole() {
     if (reset) {
       const remoteIds = new Set(remoteSessions.map(session => session.id))
       const localOnly = sessions.value.filter(session =>
-        (isUnsavedDraft(session) || session.id === currentSessionId.value)
-          && !remoteIds.has(session.id))
+        isUnsavedDraft(session) && !remoteIds.has(session.id))
       sessions.value = [...localOnly, ...remoteSessions]
       return
     }
@@ -182,6 +194,7 @@ export function useAgentConsole() {
     const offset = reset ? 0 : loadedServerSessions.value
     try {
       const page = await getSessionPage(offset, SESSION_PAGE_SIZE)
+      if (disposed) return
       connection.value = 'online'
       mergeSessionPage(Array.isArray(page?.items) ? page.items : [], reset)
       serverSessionTotal.value = Number(page?.total || 0)
@@ -205,6 +218,7 @@ export function useAgentConsole() {
     session.historyLoading = true
     try {
       const traces = await getSessionEvents(session.id)
+      if (disposed) return
       const recovered = []
       const ordered = [...(Array.isArray(traces) ? traces : [])]
         .sort((left, right) => new Date(left.startedAt) - new Date(right.startedAt))
@@ -276,7 +290,7 @@ export function useAgentConsole() {
   function activateSession(session) {
     currentSessionId.value = session.id
     sessionId.value = session.id
-    localStorage.setItem(ACTIVE_SESSION_KEY, session.id)
+    if (!disposed && owner) localStorage.setItem(activeSessionKey, session.id)
   }
 
   function createSession() {
@@ -391,8 +405,10 @@ export function useAgentConsole() {
     if (remoteIds.length) {
       try {
         const result = await deleteSessionRecords(remoteIds)
-        for (const id of result?.notFound || []) failedRemoteIds.add(id)
-        deletedRemoteCount = Number(result?.deleted || 0)
+        const notFound = result?.notFound || []
+        const missing = result?.missing || []
+        // 服务端确认不存在的会话同样按"已删除"处理，避免侧栏卡死（不计入失败）。
+        deletedRemoteCount = Number(result?.deleted || 0) + notFound.length + missing.length
         connection.value = 'online'
       } catch (error) {
         // 兼容尚未升级批量接口的旧服务端，桌面客户端仍可退回逐条删除。
@@ -401,8 +417,9 @@ export function useAgentConsole() {
             try {
               await deleteSessionRecord(id)
               deletedRemoteCount += 1
-            } catch {
-              failedRemoteIds.add(id)
+            } catch (innerError) {
+              if (innerError?.status !== 404) failedRemoteIds.add(id)
+              else deletedRemoteCount += 1
             }
           }
         } else {
@@ -477,25 +494,32 @@ export function useAgentConsole() {
   }
 
   async function refreshServerModel() {
+    // 优先调用公开的 /api/models：所有登录用户（含非 admin）都能拿到已启用模型目录；
+    // 403/旧版本后端再回退到 admin 专属的 /api/model-management。
+    let configured = null
     try {
-      const snapshot = await getModelManagement()
-      const configured = Array.isArray(snapshot?.models) ? snapshot.models : []
-      models.value = configured
-        .filter(model => model.enabled)
-        .map(model => ({
-          key: model.id,
-          id: model.id,
-          vendorModelId: model.modelId,
-          name: model.modelId,
-          modelType: model.modelType,
-          provider: model.providerName,
-          providerType: model.providerType
-        }))
-      if (!models.value.some(model => model.key === selectedModelKey.value)) {
-        selectedModelKey.value = ''
+      configured = await getModelCatalog()
+    } catch (catalogError) {
+      try {
+        const snapshot = await getModelManagement()
+        configured = Array.isArray(snapshot?.models) ? snapshot.models : []
+      } catch {
+        configured = []
       }
-    } catch {
-      models.value = []
+    }
+    if (!Array.isArray(configured)) configured = []
+    models.value = configured
+      .filter(model => model?.id)
+      .map(model => ({
+        key: model.id,
+        id: model.id,
+        vendorModelId: model.modelId,
+        name: model.modelId,
+        modelType: model.modelType,
+        provider: model.providerName,
+        providerType: model.providerType
+      }))
+    if (!models.value.some(model => model.key === selectedModelKey.value)) {
       selectedModelKey.value = ''
     }
   }
@@ -817,9 +841,10 @@ export function useAgentConsole() {
       // 恢复监控时旧缓存可能缺少运行边界；从当前位置起算，避免混入上一轮的操作分组
       if (!session.runBoundary) session.runBoundary = session.messages.length
       let retryCount = 0
-      while (session.activeRunId === runId) {
+      while (!disposed && session.activeRunId === runId) {
         try {
-          const snapshot = await getAgentRun(runId)
+          const snapshot = await getAgentRun(runId, streamAbortController.signal)
+          if (disposed) return null
           connection.value = 'online'
           applyRunSnapshot(session, snapshot)
           if (TERMINAL_STATUSES.has(snapshot.state.status)
@@ -831,12 +856,17 @@ export function useAgentConsole() {
           const finalSnapshot = await streamAgentRun(
             runId,
             session.lastSequence || 0,
-            packet => handleBackgroundEvent(session, runId, packet)
+            packet => {
+              if (!disposed) handleBackgroundEvent(session, runId, packet)
+            },
+            streamAbortController.signal
           )
+          if (disposed) return null
           connection.value = 'online'
           finalizeRun(session, finalSnapshot)
           return finalSnapshot
         } catch (error) {
+          if (disposed || error?.name === 'AbortError') return null
           if (error?.status === 404) {
             await recoverMissingRun(session, runId)
             return null
@@ -1050,9 +1080,13 @@ export function useAgentConsole() {
   }
 
   onMounted(async () => {
+    // 旧缓存没有账号归属，不将它分配给任何后续登录用户。
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
+    localStorage.removeItem(LEGACY_ACTIVE_SESSION_KEY)
+    if (!owner) return
     void refreshServerModel()
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+      const stored = JSON.parse(localStorage.getItem(storageKey) || '[]')
       // 旧版本会持久化空白任务；升级后直接丢弃，避免继续污染任务目录。
       sessions.value = Array.isArray(stored) ? stored.filter(session => !isUnsavedDraft(session)) : []
       sessions.value.forEach(session => {
@@ -1067,7 +1101,7 @@ export function useAgentConsole() {
       sessions.value = []
     }
 
-    const preferredSessionId = localStorage.getItem(ACTIVE_SESSION_KEY)
+    const preferredSessionId = localStorage.getItem(activeSessionKey)
     const cachedInitial = sessions.value.find(session => session.id === preferredSessionId)
       || sessions.value[0]
     if (cachedInitial) activateSession(cachedInitial)
@@ -1083,6 +1117,19 @@ export function useAgentConsole() {
       createSession()
     }
   })
+
+  function dispose() {
+    if (disposed) return
+    disposed = true
+    streamAbortController.abort()
+    pipelineTimers.forEach(timer => window.clearTimeout(timer))
+    pipelineTimers.clear()
+    sessions.value = []
+    currentSessionId.value = ''
+    sessionId.value = ''
+  }
+
+  onUnmounted(dispose)
 
   return {
     sessions,
@@ -1122,6 +1169,7 @@ export function useAgentConsole() {
     retryMessage,
     cancelCurrentRun,
     resolveApproval,
-    clearTranscript
+    clearTranscript,
+    dispose
   }
 }

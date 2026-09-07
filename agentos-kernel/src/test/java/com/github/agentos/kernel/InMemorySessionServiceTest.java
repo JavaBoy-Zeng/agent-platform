@@ -48,13 +48,33 @@ class InMemorySessionServiceTest {
     }
 
     @Test
-    void deleteRemovesSessionSnapshot() {
+    void softDeleteHidesSessionAndPermanentlyReservesItsId() {
         InMemorySessionService service = new InMemorySessionService();
         service.getOrCreate("session-1", "user-1");
 
         assertThat(service.delete("session-1")).isTrue();
         assertThat(service.delete("session-1")).isFalse();
         assertThat(service.count()).isZero();
+        assertThat(service.find("session-1")).isEmpty();
+        assertThatThrownBy(() -> service.getOrCreate("session-1", "user-1"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.getOrCreate("session-1", "user-2"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.applyDelta("session-1", Map.of("step", 2L)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void ownershipBoundMutationsCannotChangeForeignSession() {
+        InMemorySessionService service = new InMemorySessionService();
+        service.getOrCreate("session-1", "user-1");
+
+        assertThatThrownBy(() -> service.getOrCreate("session-1", "user-2"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(service.applyDeltaByUser(
+                "session-1", "user-2", Map.of("title", "stolen"))).isEmpty();
+        assertThat(service.deleteByUser("session-1", "user-2")).isFalse();
+        assertThat(service.findByUser("session-1", "user-1")).isPresent();
     }
 
     @Test

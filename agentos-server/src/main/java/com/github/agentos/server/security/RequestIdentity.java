@@ -26,6 +26,16 @@ public record RequestIdentity(String teamId, String userId, Set<String> roles) {
         return roles.contains(MEMORY_ADMIN);
     }
 
+    /**
+     * 是否具有 ADMIN 角色：以用户库实时角色为准（与 /api/auth/me 口径一致），
+     * 角色授予/回收立即生效，不依赖令牌 claims 的有效期；库中无此用户时回退令牌角色。
+     */
+    public boolean isAdmin(UserStore userStore) {
+        return userStore.findByUsername(userId)
+                .map(UserAccount::isAdmin)
+                .orElse(roles.contains(UserAccount.ROLE_ADMIN));
+    }
+
     public static RequestIdentity from(HttpServletRequest request) {
         Object value = request.getAttribute(REQUEST_ATTRIBUTE);
         if (value instanceof RequestIdentity identity) return identity;

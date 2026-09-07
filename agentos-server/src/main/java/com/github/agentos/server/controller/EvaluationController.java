@@ -3,6 +3,8 @@ package com.github.agentos.server.controller;
 import com.github.agentos.kernel.eval.EvalCase;
 import com.github.agentos.kernel.eval.EvaluationResult;
 import com.github.agentos.server.eval.EvaluationService;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,9 +25,12 @@ import java.util.List;
 public class EvaluationController {
 
     private final EvaluationService evaluationService;
+    private final SessionAuthorization authorization;
 
-    public EvaluationController(EvaluationService evaluationService) {
+    public EvaluationController(
+            EvaluationService evaluationService, SessionAuthorization authorization) {
         this.evaluationService = evaluationService;
+        this.authorization = authorization;
     }
 
     /**
@@ -37,7 +42,12 @@ public class EvaluationController {
      */
     @PostMapping("/{invocationId}")
     public ResponseEntity<EvaluationResult> evaluate(
-            @PathVariable String invocationId, @RequestBody EvalCaseRequest request) {
+            @PathVariable String invocationId,
+            @RequestBody EvalCaseRequest request,
+            HttpServletRequest httpRequest) {
+        String sessionId = evaluationService.sessionId(invocationId).orElse(null);
+        if (sessionId == null) return ResponseEntity.notFound().build();
+        authorization.requireOwned(sessionId, httpRequest);
         return evaluationService.evaluate(invocationId, request.toCase())
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());

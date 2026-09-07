@@ -241,7 +241,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         25. 严格区分 run_command 与 execute_code：
             - 用户要求执行命令、查看宿主机目录/网络状态、运行 curl、构建或测试时，
               必须使用 run_command；
-            - execute_code 仅用于执行独立、自包含的 Python/Shell/Java 代码片段；
+            - execute_code 仅用于执行独立、自包含的 Python/Shell/Java/JavaScript/Go 代码片段；
             - execute_code 是 Docker 沙箱时没有网络且无法访问宿主机文件，禁止用它执行
               curl、获取服务器 IP 或其他依赖宿主机/网络状态的命令。
 

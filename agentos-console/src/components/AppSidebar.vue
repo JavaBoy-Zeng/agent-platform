@@ -28,6 +28,7 @@ const shortcutLabel = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgentData?.plat
   ? '⌘N'
   : 'Ctrl+N'
 const user = ref(getAuthUser())
+const isAdmin = computed(() => (user.value?.roles || []).some(role => String(role).toUpperCase() === 'ADMIN'))
 const drawerOpen = ref(false)
 let dialogReturnFocus = null
 
@@ -43,7 +44,7 @@ const icons = {
   automations: 'M12 3v3m0 12v3M3 12h3m12 0h3M6.3 6.3l2.1 2.1m7.2 7.2 2.1 2.1m0-11.4-2.1 2.1m-7.2 7.2-2.1 2.1M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z'
 }
 
-const managementGroups = [
+const managementGroups = computed(() => [
   { label: { zh: '运行', en: 'Runtime' }, items: [
     ['/agents', { zh: '智能体', en: 'Agents' }, 'agents'], ['/runs', { zh: '运行记录', en: 'Runs' }, 'runs'],
     ['/sessions', { zh: '会话', en: 'Sessions' }, 'sessions'], ['/automations', { zh: '自动化', en: 'Automations' }, 'automations'],
@@ -51,14 +52,15 @@ const managementGroups = [
   ] },
   { label: { zh: '能力', en: 'Capabilities' }, items: [
     ['/tools', { zh: '工具', en: 'Tools' }, 'tools'], ['/mcp', { zh: 'MCP', en: 'MCP' }, 'mcp'],
-    ['/skills', { zh: '技能', en: 'Skills' }, 'skills'], ['/models', { zh: '模型', en: 'Models' }, 'models']
+    ['/skills', { zh: '技能', en: 'Skills' }, 'skills'],
+    ...(isAdmin.value ? [['/models', { zh: '模型', en: 'Models' }, 'models']] : [])
   ] },
   { label: { zh: '观察', en: 'Observability' }, items: [
     ['/memory', { zh: '记忆', en: 'Memory' }, 'memory'], ['/plans', { zh: '计划', en: 'Plans' }, 'plans'],
     ['/traces', { zh: '追踪', en: 'Traces' }, 'traces'], ['/artifacts', { zh: '产物', en: 'Artifacts' }, 'artifacts'],
     ['/evals', { zh: '评估', en: 'Evals' }, 'evals']
   ] }
-]
+])
 
 const filteredSessions = computed(() => {
   const normalized = query.value.trim().toLowerCase()

@@ -14,13 +14,22 @@ import java.util.Objects;
  * @param createdAt 创建时间
  * @param lastActiveAt 最近活跃时间
  * @param state 当前结构化状态
+ * @param deletedAt 软删除时间；未删除时为 null
  */
 public record Session(
         String sessionId,
         String userId,
         Instant createdAt,
         Instant lastActiveAt,
-        SessionState state) {
+        SessionState state,
+        Instant deletedAt) {
+
+    /** 兼容未显式传入软删除时间的现有调用。 */
+    public Session(
+            String sessionId, String userId, Instant createdAt,
+            Instant lastActiveAt, SessionState state) {
+        this(sessionId, userId, createdAt, lastActiveAt, state, null);
+    }
 
     /** 创建并校验会话。 */
     public Session {
@@ -34,17 +43,28 @@ public record Session(
     /** 以当前时间创建新会话。 */
     public static Session create(String sessionId, String userId) {
         Instant now = Instant.now();
-        return new Session(sessionId, userId, now, now, SessionState.empty());
+        return new Session(sessionId, userId, now, now, SessionState.empty(), null);
     }
 
     /** 返回替换状态后的新会话。 */
     public Session withState(SessionState newState) {
-        return new Session(sessionId, userId, createdAt, lastActiveAt, newState);
+        return new Session(sessionId, userId, createdAt, lastActiveAt, newState, deletedAt);
     }
 
     /** 返回刷新活跃时间后的新会话。 */
     public Session touch(Instant time) {
-        return new Session(sessionId, userId, createdAt, time, state);
+        return new Session(sessionId, userId, createdAt, time, state, deletedAt);
+    }
+
+    /** 返回保留原始归属的软删除墓碑。 */
+    public Session softDelete(Instant time) {
+        return new Session(sessionId, userId, createdAt, lastActiveAt, state,
+                Objects.requireNonNull(time, "deletedAt must not be null"));
+    }
+
+    /** 会话是否已软删除。 */
+    public boolean deleted() {
+        return deletedAt != null;
     }
 
     private static String requireText(String value, String field) {

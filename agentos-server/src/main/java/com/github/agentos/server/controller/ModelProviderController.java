@@ -6,7 +6,7 @@ import com.github.agentos.server.model.ModelProviderService.ManagementSnapshot;
 import com.github.agentos.server.model.ModelProviderService.ProviderView;
 import com.github.agentos.server.model.ModelProviderService.SaveProviderRequest;
 import com.github.agentos.server.security.RequestIdentity;
-import com.github.agentos.server.security.UserAccount;
+import com.github.agentos.server.security.UserStore;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,10 +28,13 @@ import java.util.List;
 public class ModelProviderController {
 
     private final ModelProviderService service;
+    private final UserStore userStore;
     private final boolean authEnabled;
 
-    public ModelProviderController(ModelProviderService service, boolean authEnabled) {
+    public ModelProviderController(
+            ModelProviderService service, UserStore userStore, boolean authEnabled) {
         this.service = service;
+        this.userStore = userStore;
         this.authEnabled = authEnabled;
     }
 
@@ -76,7 +79,11 @@ public class ModelProviderController {
     }
 
     private void requireAdmin(HttpServletRequest request) {
-        if (authEnabled && !RequestIdentity.from(request).roles().contains(UserAccount.ROLE_ADMIN)) {
+        if (!authEnabled) {
+            return;
+        }
+        // 以用户库实时角色为准：授权/回收在本次请求立即生效（与 /api/auth/me 口径一致）。
+        if (!RequestIdentity.from(request).isAdmin(userStore)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "需要 ADMIN 角色");
         }
     }

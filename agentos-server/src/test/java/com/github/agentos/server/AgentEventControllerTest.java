@@ -30,7 +30,7 @@ class AgentEventControllerTest {
         store.append(event("e3", "sess-1", "inv-1", AgentEventType.AGENT_COMPLETED, 20));
         store.append(event("e4", "sess-1", "inv-2", AgentEventType.AGENT_STARTED, 30));
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new AgentEventController(store)).build();
+        MockMvc mvc = mvc(store, "sess-1");
 
         mvc.perform(get("/api/events").param("sessionId", "sess-1"))
                 .andExpect(status().isOk())
@@ -49,7 +49,7 @@ class AgentEventControllerTest {
         store.append(event("e1", "sess-1", "inv-1", AgentEventType.AGENT_STARTED, 0));
         store.append(event("e2", "sess-1", "inv-1", AgentEventType.TOOL_CALL_COMPLETED, 5));
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new AgentEventController(store)).build();
+        MockMvc mvc = mvc(store, "sess-1");
 
         mvc.perform(get("/api/events")
                         .param("sessionId", "sess-1")
@@ -64,7 +64,7 @@ class AgentEventControllerTest {
         AgentEventStore store = new InMemoryAgentEventStore();
         store.append(event("e1", "sess-1", "inv-1", AgentEventType.AGENT_STARTED, 0));
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new AgentEventController(store)).build();
+        MockMvc mvc = mvc(store, "sess-1");
 
         mvc.perform(get("/api/events")
                         .param("sessionId", "sess-1")
@@ -81,7 +81,7 @@ class AgentEventControllerTest {
                 AgentEventType.HUMAN_ACTION_REQUIRED, "需要审批",
                 Map.of("pendingActionId", "pa-1"), EventActions.approval()));
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new AgentEventController(store)).build();
+        MockMvc mvc = mvc(store, "sess-1");
 
         mvc.perform(get("/api/events/{invocationId}", "inv-1"))
                 .andExpect(status().isOk())
@@ -95,8 +95,7 @@ class AgentEventControllerTest {
 
     @Test
     void queryByInvocationId_unknownReturns404() throws Exception {
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(
-                new AgentEventController(new InMemoryAgentEventStore())).build();
+        MockMvc mvc = mvc(new InMemoryAgentEventStore());
 
         mvc.perform(get("/api/events/{invocationId}", "missing"))
                 .andExpect(status().isNotFound());
@@ -108,5 +107,10 @@ class AgentEventControllerTest {
         return new DefaultAgentEvent(
                 eventId, sessionId, invocationId, "main-agent",
                 BASE.plusMillis(offsetMillis), type, "message", Map.of());
+    }
+
+    private static MockMvc mvc(AgentEventStore store, String... ownedSessions) {
+        return MockMvcBuilders.standaloneSetup(new AgentEventController(
+                store, TestSessionAuthorizations.owned(ownedSessions))).build();
     }
 }

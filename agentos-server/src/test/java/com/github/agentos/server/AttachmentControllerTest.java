@@ -28,7 +28,8 @@ class AttachmentControllerTest {
     @BeforeEach
     void setUp() {
         mvc = MockMvcBuilders.standaloneSetup(
-                new AttachmentController(new RootedFileAccessPolicy(root))).build();
+                new AttachmentController(
+                        new RootedFileAccessPolicy(root), TestSessionAuthorizations.owned())).build();
     }
 
     @Test

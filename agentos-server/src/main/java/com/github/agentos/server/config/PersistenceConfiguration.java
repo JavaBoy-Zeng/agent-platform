@@ -12,8 +12,10 @@ import com.github.agentos.server.persistence.mybatis.CheckpointMapper;
 import com.github.agentos.server.persistence.mybatis.ContinuationMapper;
 import com.github.agentos.server.persistence.mybatis.MybatisRuntimeStores;
 import com.github.agentos.server.persistence.mybatis.SessionMapper;
+import com.github.agentos.server.persistence.mybatis.SettingsMapper;
 import com.github.agentos.server.persistence.mybatis.UsageMapper;
 import com.github.agentos.server.persistence.mybatis.UserMapper;
+import com.github.agentos.server.settings.SettingsService;
 import com.github.agentos.server.usage.UsageStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -114,6 +116,18 @@ public class PersistenceConfiguration {
         }
         requireMemory(mode);
         return new com.github.agentos.server.security.InMemoryUserStore();
+    }
+
+    /** 全局运行时配置（key/value）。 */
+    @Bean
+    SettingsService settingsService(
+            @Value("${agentos.persistence.mode:memory}") String mode,
+            ObjectProvider<SettingsMapper> mapper) {
+        if (isPostgresql(mode)) {
+            return new MybatisRuntimeStores.Settings(mapper.getObject());
+        }
+        requireMemory(mode);
+        return new SettingsService.InMemorySettingsService();
     }
 
     private static boolean isPostgresql(String mode) {

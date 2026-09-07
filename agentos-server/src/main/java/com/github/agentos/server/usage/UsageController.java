@@ -1,5 +1,7 @@
 package com.github.agentos.server.usage;
 
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,15 +15,19 @@ import java.util.Map;
 public class UsageController {
 
     private final UsageRecorder recorder;
+    private final SessionAuthorization authorization;
 
     /** 创建用量查询接口。 */
-    public UsageController(UsageRecorder recorder) {
+    public UsageController(UsageRecorder recorder, SessionAuthorization authorization) {
         this.recorder = recorder;
+        this.authorization = authorization;
     }
 
     /** 返回指定会话的累计模型用量。 */
     @GetMapping("/{sessionId}")
-    public Map<String, Object> sessionUsage(@PathVariable String sessionId) {
+    public Map<String, Object> sessionUsage(
+            @PathVariable String sessionId, HttpServletRequest request) {
+        authorization.requireOwned(sessionId, request);
         UsageStore.SessionUsage usage = recorder.summary(sessionId);
         return Map.of(
                 "sessionId", sessionId,

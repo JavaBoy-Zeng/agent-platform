@@ -1,8 +1,11 @@
 package com.github.agentos.server;
 
 import com.github.agentos.kernel.Artifact;
+import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.kernel.LocalArtifactService;
 import com.github.agentos.server.controller.ArtifactController;
+import com.github.agentos.server.security.RequestIdentity;
+import com.github.agentos.server.security.SessionAuthorization;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.test.web.servlet.MockMvc;
@@ -10,6 +13,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.Set;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -30,7 +34,7 @@ class ArtifactControllerTest {
         byte[] bytes = "# 产物".getBytes(StandardCharsets.UTF_8);
         Artifact artifact = service.save(
                 "session-1", "invocation-1", "报告.md", "text/markdown", bytes).orElseThrow();
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ArtifactController(service)).build();
+        MockMvc mvc = mvc(service, "session-1");
 
         mvc.perform(get("/api/artifacts").param("sessionId", "session-1"))
                 .andExpect(status().isOk())
@@ -62,7 +66,7 @@ class ArtifactControllerTest {
     @Test
     void returnsEmptyListForSessionWithoutArtifacts() throws Exception {
         LocalArtifactService service = new LocalArtifactService(directory);
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ArtifactController(service)).build();
+        MockMvc mvc = mvc(service, "empty-session");
 
         mvc.perform(get("/api/artifacts").param("sessionId", "empty-session"))
                 .andExpect(status().isOk())
@@ -72,9 +76,42 @@ class ArtifactControllerTest {
     @Test
     void downloadUnknownArtifactReturns404() throws Exception {
         LocalArtifactService service = new LocalArtifactService(directory);
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ArtifactController(service)).build();
+        MockMvc mvc = mvc(service);
 
         mvc.perform(get("/api/artifacts/{artifactId}", "missing"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void artifactIdCannotBypassOwnershipAndSoftDeletedSessionsStayInaccessible() throws Exception {
+        LocalArtifactService artifacts = new LocalArtifactService(directory);
+        Artifact artifact = artifacts.save(
+                "session-1", "invocation-1", "private.txt", "text/plain", new byte[]{1})
+                .orElseThrow();
+        InMemorySessionService sessions = new InMemorySessionService();
+        sessions.getOrCreate("session-1", "demo");
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ArtifactController(
+                artifacts, new SessionAuthorization(sessions))).build();
+
+        mvc.perform(get("/api/artifacts/{artifactId}", artifact.artifactId())
+                        .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
+                                new RequestIdentity("default-team", "admin", Set.of("ADMIN"))))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/artifacts/{artifactId}", artifact.artifactId())
+                        .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
+                                new RequestIdentity("default-team", "admin", Set.of("ADMIN"))))
+                .andExpect(status().isNotFound());
+        assertThat(artifacts.metadata(artifact.artifactId())).isPresent();
+
+        assertThat(sessions.deleteByUser("session-1", "demo")).isTrue();
+        mvc.perform(get("/api/artifacts/{artifactId}", artifact.artifactId())
+                        .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
+                                new RequestIdentity("default-team", "demo", Set.of())))
+                .andExpect(status().isNotFound());
+    }
+
+    private static MockMvc mvc(LocalArtifactService service, String... ownedSessions) {
+        return MockMvcBuilders.standaloneSetup(new ArtifactController(
+                service, TestSessionAuthorizations.owned(ownedSessions))).build();
     }
 }

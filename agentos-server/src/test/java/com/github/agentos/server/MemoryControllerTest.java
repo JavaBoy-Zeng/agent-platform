@@ -4,9 +4,11 @@ import com.github.agentos.memory.CompletedTurn;
 import com.github.agentos.memory.AtomicMemory;
 import com.github.agentos.memory.MemoryScope;
 import com.github.agentos.memory.MemoryService;
+import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.server.controller.MemoryController;
 import com.github.agentos.server.handler.AgentExceptionHandler;
 import com.github.agentos.server.security.RequestIdentity;
+import com.github.agentos.server.security.SessionAuthorization;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -40,7 +42,8 @@ class MemoryControllerTest {
             if (!memoryService.awaitIdle(Duration.ofSeconds(2))) {
                 throw new AssertionError("memory pipeline did not become idle");
             }
-            MockMvc mockMvc = standaloneSetup(new MemoryController(memoryService))
+            MockMvc mockMvc = standaloneSetup(new MemoryController(
+                            memoryService, TestSessionAuthorizations.owned("session-1")))
                     .setControllerAdvice(new AgentExceptionHandler())
                     .build();
 
@@ -64,7 +67,8 @@ class MemoryControllerTest {
     @Test
     void rejectsRecentLimitOutsideTheSupportedRange() throws Exception {
         try (MemoryService memoryService = MemoryService.inMemory()) {
-            MockMvc mockMvc = standaloneSetup(new MemoryController(memoryService))
+            MockMvc mockMvc = standaloneSetup(new MemoryController(
+                            memoryService, TestSessionAuthorizations.owned("session-1")))
                     .setControllerAdvice(new AgentExceptionHandler())
                     .build();
 
@@ -79,7 +83,8 @@ class MemoryControllerTest {
     @Test
     void managesMemoryLifecycleWithRequestBoundIdentity() throws Exception {
         try (MemoryService memoryService = MemoryService.inMemory()) {
-            MockMvc mockMvc = standaloneSetup(new MemoryController(memoryService))
+            MockMvc mockMvc = standaloneSetup(new MemoryController(
+                            memoryService, TestSessionAuthorizations.ownedBy("user-a")))
                     .setControllerAdvice(new AgentExceptionHandler())
                     .build();
             RequestIdentity identity = new RequestIdentity("team-a", "user-a", Set.of());
@@ -145,7 +150,11 @@ class MemoryControllerTest {
         MemoryScope ownerScope = new MemoryScope("team-a", "user-a", "agent", "session", "");
         try (MemoryService memoryService = MemoryService.inMemory()) {
             AtomicMemory memory = memoryService.rememberFact(ownerScope, "private fact");
-            MockMvc mockMvc = standaloneSetup(new MemoryController(memoryService))
+            InMemorySessionService sessions = new InMemorySessionService();
+            sessions.getOrCreate("session", "user-a");
+            sessions.getOrCreate("admin-session", "admin");
+            MockMvc mockMvc = standaloneSetup(new MemoryController(
+                            memoryService, new SessionAuthorization(sessions)))
                     .setControllerAdvice(new AgentExceptionHandler())
                     .build();
 
@@ -159,7 +168,7 @@ class MemoryControllerTest {
                             .param("userId", "user-a")
                             .param("agentId", "agent")
                             .param("sessionId", "session"))
-                    .andExpect(status().isForbidden());
+                    .andExpect(status().isNotFound());
 
             RequestIdentity admin = new RequestIdentity(
                     "operations", "admin", Set.of(RequestIdentity.MEMORY_ADMIN));
@@ -168,8 +177,9 @@ class MemoryControllerTest {
                             .param("teamId", "team-a")
                             .param("userId", "user-a")
                             .param("agentId", "agent")
-                            .param("sessionId", "session"))
+                            .param("sessionId", "admin-session"))
                     .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.counts.l0").value(0))
                     .andExpect(jsonPath("$.counts.l1").value(1));
         }
     }

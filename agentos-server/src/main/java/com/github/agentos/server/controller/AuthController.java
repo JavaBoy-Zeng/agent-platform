@@ -8,7 +8,9 @@ import com.github.agentos.server.security.UserAccount;
 import com.github.agentos.server.security.UserStore;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,6 +37,7 @@ import java.util.Set;
 public class AuthController {
 
     private static final int MIN_PASSWORD_LENGTH = 8;
+    private static final int MAX_USERNAME_LENGTH = 128;
 
     private final UserStore userStore;
     private final PasswordHasher passwordHasher;
@@ -118,18 +121,21 @@ public class AuthController {
     /** 用户列表（仅 ADMIN）。 */
     @GetMapping("/users")
     List<Map<String, Object>> users(HttpServletRequest request) {
-        requireAdmin(request);
+        requireAdmin(request, userStore);
         return userStore.list().stream().map(this::userView).toList();
     }
 
     /** 新建用户（仅 ADMIN）。 */
     @PostMapping("/users")
     Map<String, Object> createUser(@RequestBody CreateUserRequest request, HttpServletRequest httpRequest) {
-        requireAdmin(httpRequest);
+        requireAdmin(httpRequest, userStore);
         String username = request.username() == null ? "" : request.username().trim();
         String password = request.password() == null ? "" : request.password();
         if (username.isEmpty()) {
             throw new BadRequestException("用户名不能为空");
+        }
+        if (username.length() > MAX_USERNAME_LENGTH) {
+            throw new BadRequestException("用户名不能超过 " + MAX_USERNAME_LENGTH + " 个字符");
         }
         if (password.length() < MIN_PASSWORD_LENGTH) {
             throw new BadRequestException("密码至少 " + MIN_PASSWORD_LENGTH + " 位");
@@ -155,7 +161,7 @@ public class AuthController {
             @RequestBody UpdateRolesRequest request,
             HttpServletRequest httpRequest) {
         RequestIdentity identity = RequestIdentity.from(httpRequest);
-        requireAdmin(httpRequest);
+        requireAdmin(httpRequest, userStore);
         String target = username == null ? "" : username.trim();
         UserAccount account = userStore.findByUsername(target)
                 .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
@@ -186,7 +192,7 @@ public class AuthController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void deleteUser(@PathVariable String username, HttpServletRequest request) {
         RequestIdentity identity = RequestIdentity.from(request);
-        requireAdmin(request);
+        requireAdmin(request, userStore);
         String target = username == null ? "" : username.trim();
         if (target.equals(identity.userId())) {
             throw new BadRequestException("不能删除当前登录用户");
@@ -209,8 +215,10 @@ public class AuthController {
         return view;
     }
 
-    private static void requireAdmin(HttpServletRequest request) {
-        if (!RequestIdentity.from(request).roles().contains(UserAccount.ROLE_ADMIN)) {
+    private static void requireAdmin(HttpServletRequest request, UserStore userStore) {
+        // 以用户库实时角色为准（与 /api/auth/me 一致）：角色变更立即生效，
+        // 不依赖最长 30 天有效期的令牌 claims。
+        if (!RequestIdentity.from(request).isAdmin(userStore)) {
             throw new org.springframework.web.server.ResponseStatusException(
                     HttpStatus.FORBIDDEN, "需要 ADMIN 角色");
         }
@@ -218,6 +226,15 @@ public class AuthController {
 
     private static String clientAddress(HttpServletRequest request) {
         return request.getRemoteAddr() == null ? "unknown" : request.getRemoteAddr();
+    }
+
+    /** 向客户端返回可直接展示的表单校验详情。 */
+    @ExceptionHandler(BadRequestException.class)
+    ProblemDetail handleBadRequest(BadRequestException exception) {
+        ProblemDetail detail = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, exception.getMessage());
+        detail.setTitle("Invalid authentication request");
+        return detail;
     }
 
     /** 登录请求体。 */

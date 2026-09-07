@@ -153,6 +153,23 @@ class AuthControllerTest {
     }
 
     @Test
+    void userManagementHonorsStoredRolesOverStaleTokenClaims() throws Exception {
+        // 授予 alice ADMIN 后，其旧令牌（claims 仍为 USER）立即获得管理权限。
+        userStore.updateRoles("alice", Set.of("ADMIN", "USER"));
+        mvc.perform(get("/api/auth/users")
+                        .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
+                                identity("alice", Set.of("USER"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2));
+        // 回收后，仍带 ADMIN claims 的旧令牌立即失效。
+        userStore.updateRoles("alice", Set.of("USER"));
+        mvc.perform(get("/api/auth/users")
+                        .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
+                                identity("alice", Set.of("ADMIN"))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void createUserValidatesAndRejectsDuplicates() throws Exception {
         mvc.perform(post("/api/auth/users")
                         .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
@@ -172,7 +189,16 @@ class AuthControllerTest {
                                 identity("admin", Set.of("ADMIN")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"carl\",\"password\":\"short\"}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("密码至少 8 位"));
+
+        mvc.perform(post("/api/auth/users")
+                        .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,
+                                identity("admin", Set.of("ADMIN")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"   \",\"password\":\"valid-pass-123\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("用户名不能为空"));
 
         mvc.perform(post("/api/auth/users")
                         .requestAttr(RequestIdentity.REQUEST_ATTRIBUTE,

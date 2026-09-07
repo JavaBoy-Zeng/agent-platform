@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** SQLite 会话服务测试：验证状态快照跨实例（重启）可见。 */
 class SqliteSessionServiceTest {
@@ -53,15 +54,15 @@ class SqliteSessionServiceTest {
     }
 
     @Test
-    void getOrCreateKeepsExistingSessionUnchanged() {
+    void getOrCreateRejectsExistingForeignSession() {
         SqliteSessionService service = service(tempDir.resolve("sessions.sqlite"));
         service.getOrCreate("session-1", "user-1");
         service.applyDelta("session-1", Map.of("turnCount", 5L));
 
-        Session session = service.getOrCreate("session-1", "user-2");
-
-        assertThat(session.userId()).isEqualTo("user-1");
-        assertThat(session.state().longValue("turnCount", 0)).isEqualTo(5L);
+        assertThatThrownBy(() -> service.getOrCreate("session-1", "user-2"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(service.findByUser("session-1", "user-1").orElseThrow()
+                .state().longValue("turnCount", 0)).isEqualTo(5L);
     }
 
     @Test
@@ -103,12 +104,32 @@ class SqliteSessionServiceTest {
     }
 
     @Test
-    void deleteRemovesPersistedSessionSnapshot() {
+    void softDeleteHidesPersistedSessionAndPermanentlyReservesItsId() {
         SqliteSessionService service = service(tempDir.resolve("sessions.sqlite"));
         service.getOrCreate("session-1", "user-1");
 
         assertThat(service.delete("session-1")).isTrue();
         assertThat(service.delete("session-1")).isFalse();
         assertThat(service.find("session-1")).isEmpty();
+        assertThat(service.count()).isZero();
+        assertThatThrownBy(() -> service.getOrCreate("session-1", "user-1"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.getOrCreate("session-1", "user-2"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.applyDelta("session-1", Map.of("step", 2L)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void ownerBoundDeleteAndUpdateAreAtomic() {
+        SqliteSessionService service = service(tempDir.resolve("sessions.sqlite"));
+        service.getOrCreate("session-1", "user-1");
+
+        assertThat(service.applyDeltaByUser(
+                "session-1", "user-2", Map.of("title", "stolen"))).isEmpty();
+        assertThat(service.deleteByUser("session-1", "user-2")).isFalse();
+        assertThat(service.findByUser("session-1", "user-1")).isPresent();
+        assertThat(service.deleteByUser("session-1", "user-1")).isTrue();
+        assertThat(service.findByUser("session-1", "user-1")).isEmpty();
     }
 }

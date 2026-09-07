@@ -62,11 +62,11 @@ describe('desktop workspace state', () => {
     expect(workspace.currentWorkspaces.value.map(item => item.id)).toEqual(['workspace-1'])
     expect(workspace.workspaceIdsForSession('task-1')).toEqual(['workspace-1'])
     expect(workspace.workspacesForSession('task-1').map(item => item.id)).toEqual(['workspace-1'])
-    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v2'))).toEqual({ 'task-1': ['workspace-1'] })
+    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v3.alice'))).toEqual({ 'task-1': ['workspace-1'] })
     expect(workspace.clearWorkspace()).toBe(false)
     expect(workspace.bindWorkspace('workspace-2')).toBe(false)
     expect(workspace.currentWorkspace.value?.id).toBe('workspace-1')
-    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v2'))).toEqual({ 'task-1': ['workspace-1'] })
+    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v3.alice'))).toEqual({ 'task-1': ['workspace-1'] })
     await expect(workspace.uploadAttachments()).resolves.toEqual([
       { name: 'brief.pdf', relativePath: 'brief.pdf', size: 42 }
     ])
@@ -154,12 +154,12 @@ describe('desktop workspace state', () => {
 
     expect(picked?.id).toBe('workspace-3')
     expect(workspace.currentWorkspace.value).toBeNull()
-    expect(localStorage.getItem('agentos.session-workspaces.v2')).toBeNull()
+    expect(localStorage.getItem('agentos.session-workspaces.v3.alice')).toBeNull()
     wrapper.unmount()
     await flushPromises()
   })
 
-  it('migrates legacy single-workspace associations into the extensible collection format', async () => {
+  it('clears legacy workspace associations with unknown ownership', async () => {
     localStorage.setItem('agentos.session-workspaces.v1', JSON.stringify({
       'legacy-task': 'workspace-legacy'
     }))
@@ -186,11 +186,9 @@ describe('desktop workspace state', () => {
     const wrapper = mount(Harness)
     await flushPromises()
 
-    expect(workspace.currentWorkspace.value?.id).toBe('workspace-legacy')
-    expect(workspace.currentWorkspaceIds.value).toEqual(['workspace-legacy'])
-    expect(JSON.parse(localStorage.getItem('agentos.session-workspaces.v2'))).toEqual({
-      'legacy-task': ['workspace-legacy']
-    })
+    expect(workspace.currentWorkspace.value).toBeNull()
+    expect(workspace.currentWorkspaceIds.value).toEqual([])
+    expect(localStorage.getItem('agentos.session-workspaces.v3.alice')).toBeNull()
     expect(localStorage.getItem('agentos.session-workspaces.v1')).toBeNull()
     wrapper.unmount()
     await flushPromises()

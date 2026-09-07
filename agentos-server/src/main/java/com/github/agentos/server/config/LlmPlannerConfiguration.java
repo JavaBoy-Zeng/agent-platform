@@ -8,6 +8,7 @@ import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.PlanValidator;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.ModelProviderService;
+import com.github.agentos.server.model.NonAdminCallLimiter;
 import com.github.agentos.server.model.RoutingModelClients;
 import com.github.agentos.tool.builtin.file.access.FileAccessPolicy;
 import com.github.agentos.tool.runtime.ToolRegistry;
@@ -57,13 +58,17 @@ public class LlmPlannerConfiguration {
             ModelProviderService providers,
             ObjectMapper objectMapper,
             com.github.agentos.planner.ModelUsageListener usageListener,
-            FileAccessPolicy fileAccessPolicy) {
+            FileAccessPolicy fileAccessPolicy,
+            com.github.agentos.kernel.SessionService sessionService,
+            com.github.agentos.server.security.UserStore userStore,
+            NonAdminCallLimiter nonAdminCallLimiter) {
         // Provider 与模型由 planner 路由在每次调用时解析；连接超时、请求超时等网络参数
         // 继续继承 agentos.model.* 的默认配置。
         // allowedRoot() 限定模型生成文件读写路径的根目录；没有单一根目录时传 null。
         return new RoutingModelClients.Planner(
                 providers, objectMapper, usageListener, properties,
-                fileAccessPolicy.allowedRoot().orElse(null));
+                fileAccessPolicy.allowedRoot().orElse(null),
+                sessionService, userStore, nonAdminCallLimiter);
     }
 
     /**

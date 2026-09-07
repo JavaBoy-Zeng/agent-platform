@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.agentos
+**/target
+**/node_modules
+**/dist
+agentos-console
+agentos-desktop
+docs
+scripts
+*.iml
+*.log
+.DS_Store
+.env

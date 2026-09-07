@@ -330,11 +330,12 @@ public final class AgentRunner {
                     invocation.finish(executed);
                     if (executed.status() == AgentState.Status.WAITING) {
                         saveCheckpoint(invocationContext, request, invocation);
+                        persistWaitingState(request.sessionId(), executed);
                     } else {
                         checkpointStore.delete(invocation.invocationId());
                     }
                     publishTerminal(invocationContext, executed, terminalDelta(
-                            request, context.userId(), executed.status()));
+                            request, context.userId(), executed));
                     return executed;
                 } catch (RuntimeException exception) {
                     String message = exception.getMessage() == null
@@ -350,14 +351,14 @@ public final class AgentRunner {
                         AgentState cancelled = running.cancel(cancelReason);
                         invocation.finish(cancelled);
                         publishTerminal(invocationContext, cancelled, terminalDelta(
-                                request, context.userId(), cancelled.status()));
+                                request, context.userId(), cancelled));
                         return cancelled;
                     }
                     plugins.onRunError(request, invocationContext, exception);
                     AgentState failed = running.fail(message);
                     invocation.fail(exception);
                     publishTerminal(invocationContext, failed, terminalDelta(
-                            request, context.userId(), failed.status()));
+                            request, context.userId(), failed));
                     return failed;
                 }
             });
@@ -393,7 +394,39 @@ public final class AgentRunner {
      * @return 状态存在时返回包含状态的 {@link Optional}，否则返回空值
      */
     public Optional<AgentState> state(String sessionId) {
-        return Optional.ofNullable(states.get(sessionId));
+        AgentState runtimeState = states.get(sessionId);
+        if (runtimeState != null) {
+            return Optional.of(runtimeState);
+        }
+        try {
+            return sessionService.find(sessionId).map(AgentRunner::restoreState);
+        } catch (RuntimeException ignored) {
+            // 状态查询的持久化回退不可用时保持原有“未找到”语义。
+            return Optional.empty();
+        }
+    }
+
+    /** 确保会话由当前可信用户创建或持有；归属冲突时返回 false。 */
+    public boolean ensureSessionOwner(String sessionId, String userId) {
+        try {
+            return sessionService.getOrCreate(sessionId, userId).userId().equals(userId);
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
+    }
+
+    /** 判断指定会话是否属于当前可信用户。 */
+    public boolean ownsSession(String sessionId, String userId) {
+        try {
+            return sessionService.findByUser(sessionId, userId).isPresent();
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    /** 仅向会话所属用户返回运行状态，避免内存态绕过持久化层归属校验。 */
+    public Optional<AgentState> state(String sessionId, String userId) {
+        return ownsSession(sessionId, userId) ? state(sessionId) : Optional.empty();
     }
 
     /** 按 Invocation 标识查询运行记录。 */
@@ -468,7 +501,8 @@ public final class AgentRunner {
             checkpointStore.delete(invocationId);
             publishTerminal(context, rejected, java.util.Map.of(
                     "lastObjective", checkpoint.objective(),
-                    "lastStatus", rejected.status().name()));
+                    "lastStatus", rejected.status().name(),
+                    "agentState", stateSnapshot(rejected)));
             plugins.afterRun(request, context, rejected);
             retainTerminalInvocation(invocation, rejected);
             return rejected;
@@ -489,10 +523,11 @@ public final class AgentRunner {
                 invocation.finish(resumed);
                 if (resumed.status() == AgentState.Status.WAITING) {
                     saveCheckpoint(context, request, invocation);
+                    persistWaitingState(checkpoint.sessionId(), resumed);
                 } else {
                     checkpointStore.delete(invocationId);
                     publishTerminal(context, resumed, terminalDelta(
-                            request, checkpoint.userId(), resumed.status()));
+                            request, checkpoint.userId(), resumed));
                 }
                 return resumed;
             });
@@ -667,10 +702,11 @@ public final class AgentRunner {
      * 会话服务属于 Runner 的观察面，读取失败时降级为不含轮次的增量。</p>
      */
     private java.util.Map<String, Object> terminalDelta(
-            AgentRequest request, String userId, AgentState.Status status) {
+            AgentRequest request, String userId, AgentState state) {
         java.util.Map<String, Object> delta = new java.util.LinkedHashMap<>();
         delta.put("lastObjective", request.objective());
-        delta.put("lastStatus", status.name());
+        delta.put("lastStatus", state.status().name());
+        delta.put("agentState", stateSnapshot(state));
         try {
             long turnCount = sessionService.getOrCreate(request.sessionId(), userId)
                     .state().longValue("turnCount", 0) + 1;
@@ -679,6 +715,80 @@ public final class AgentRunner {
             // 会话状态不可用不影响运行结果本身。
         }
         return delta;
+    }
+
+    /** 持久化完整运行快照，使状态接口在服务重启后仍可恢复响应。 */
+    private static java.util.Map<String, Object> stateSnapshot(AgentState state) {
+        java.util.Map<String, Object> snapshot = new java.util.LinkedHashMap<>();
+        snapshot.put("status", state.status().name());
+        snapshot.put("iteration", state.iteration());
+        snapshot.put("output", state.output());
+        snapshot.put("error", state.error());
+        snapshot.put("reasoning", state.reasoning());
+        snapshot.put("updatedAt", state.updatedAt().toString());
+        return java.util.Map.copyOf(snapshot);
+    }
+
+    /** WAITING 不发布终态事件，单独保存快照但不增加已完成轮次。 */
+    private void persistWaitingState(String sessionId, AgentState state) {
+        try {
+            sessionService.applyDelta(
+                    sessionId, java.util.Map.of("agentState", stateSnapshot(state)));
+        } catch (RuntimeException ignored) {
+            // 会话存储属于观察面，写入失败不应中断等待审批的运行。
+        }
+    }
+
+    /** 兼容新完整快照与历史版本仅含 lastStatus/turnCount 的会话记录。 */
+    private static AgentState restoreState(Session session) {
+        SessionState sessionState = session.state();
+        Object stored = sessionState.value("agentState");
+        java.util.Map<?, ?> snapshot = stored instanceof java.util.Map<?, ?> map
+                ? map : java.util.Map.of();
+        AgentState.Status status = parseStatus(textValue(
+                snapshot.get("status"), sessionState.stringValue("lastStatus", "READY")));
+        int iteration = nonNegativeInt(
+                snapshot.get("iteration"), sessionState.longValue("turnCount", 0));
+        String output = textValue(snapshot.get("output"), "");
+        String error = textValue(snapshot.get("error"), "");
+        String reasoning = textValue(snapshot.get("reasoning"), "");
+        Instant updatedAt = parseInstant(
+                textValue(snapshot.get("updatedAt"), ""), session.lastActiveAt());
+        return new AgentState(status, iteration, output, error, reasoning, updatedAt);
+    }
+
+    private static AgentState.Status parseStatus(String value) {
+        try {
+            return AgentState.Status.valueOf(value);
+        } catch (IllegalArgumentException | NullPointerException ignored) {
+            return AgentState.Status.READY;
+        }
+    }
+
+    private static int nonNegativeInt(Object value, long fallback) {
+        long parsed = fallback;
+        if (value instanceof Number number) {
+            parsed = number.longValue();
+        } else if (value != null) {
+            try {
+                parsed = Long.parseLong(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                parsed = fallback;
+            }
+        }
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0, parsed));
+    }
+
+    private static String textValue(Object value, String fallback) {
+        return value == null ? fallback : String.valueOf(value);
+    }
+
+    private static Instant parseInstant(String value, Instant fallback) {
+        try {
+            return Instant.parse(value);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private void publish(AgentEvent event) {

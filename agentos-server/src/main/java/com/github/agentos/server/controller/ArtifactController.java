@@ -3,6 +3,8 @@ package com.github.agentos.server.controller;
 import com.github.agentos.kernel.Artifact;
 import com.github.agentos.kernel.ArtifactContent;
 import com.github.agentos.kernel.ArtifactService;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -29,15 +31,20 @@ import java.util.Map;
 public class ArtifactController {
 
     private final ArtifactService artifactService;
+    private final SessionAuthorization authorization;
 
     /** 创建产物接口。 */
-    public ArtifactController(ArtifactService artifactService) {
+    public ArtifactController(
+            ArtifactService artifactService, SessionAuthorization authorization) {
         this.artifactService = artifactService;
+        this.authorization = authorization;
     }
 
     /** 列出指定会话的全部产物，按登记时间倒序。 */
     @GetMapping
-    public List<Map<String, Object>> list(@RequestParam String sessionId) {
+    public List<Map<String, Object>> list(
+            @RequestParam String sessionId, HttpServletRequest request) {
+        authorization.requireOwned(sessionId, request);
         return artifactService.list(sessionId).stream()
                 .map(ArtifactController::view)
                 .toList();
@@ -45,15 +52,23 @@ public class ArtifactController {
 
     /** 按标识下载产物原始内容。 */
     @GetMapping("/{artifactId}")
-    public ResponseEntity<byte[]> download(@PathVariable String artifactId) {
-        return artifactService.load(artifactId)
-                .map(ArtifactController::downloadResponse)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+    public ResponseEntity<byte[]> download(
+            @PathVariable String artifactId, HttpServletRequest request) {
+        Artifact artifact = artifactService.metadata(artifactId).orElse(null);
+        if (artifact == null) return ResponseEntity.notFound().build();
+        authorization.requireOwned(artifact.sessionId(), request);
+        ArtifactContent content = artifactService.load(artifactId).orElse(null);
+        if (content == null) return ResponseEntity.notFound().build();
+        return downloadResponse(content);
     }
 
     /** 删除指定产物。 */
     @DeleteMapping("/{artifactId}")
-    public ResponseEntity<Map<String, Object>> delete(@PathVariable String artifactId) {
+    public ResponseEntity<Map<String, Object>> delete(
+            @PathVariable String artifactId, HttpServletRequest request) {
+        Artifact artifact = artifactService.metadata(artifactId).orElse(null);
+        if (artifact == null) return ResponseEntity.notFound().build();
+        authorization.requireOwned(artifact.sessionId(), request);
         if (!artifactService.delete(artifactId)) {
             return ResponseEntity.notFound().build();
         }

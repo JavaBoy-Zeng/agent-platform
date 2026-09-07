@@ -57,7 +57,12 @@ class RoutingModelClientsTest {
         defaults.setConnectTimeout(Duration.ofSeconds(2));
         defaults.setRequestTimeout(Duration.ofSeconds(2));
         ChatClient client = new RoutingModelClients.Chat(
-                providers, objectMapper, null, defaults);
+                providers, objectMapper, null, defaults,
+                new com.github.agentos.kernel.InMemorySessionService(),
+                new com.github.agentos.server.security.InMemoryUserStore(),
+                new NonAdminCallLimiter(
+                        new com.github.agentos.server.settings.SettingsService.InMemorySettingsService(),
+                        objectMapper));
 
         assertThat(client.chat("session-1", LlmRequest.of("hi").withModel(platformModelId)))
                 .isEqualTo("ok");

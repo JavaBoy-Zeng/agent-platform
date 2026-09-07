@@ -8,6 +8,9 @@ import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
+import com.github.agentos.server.security.RequestIdentity;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -34,16 +37,19 @@ public final class AgentEventStreamController {
     private final ExecutorService executor;
     private final AgentRunTaskRegistry taskRegistry;
     private final SessionHistoryService sessionHistoryService;
+    private final SessionAuthorization authorization;
 
     /** 创建领域事件 SSE 控制器。 */
     public AgentEventStreamController(
             AgentRunner runner, ExecutorService executor,
             AgentRunTaskRegistry taskRegistry,
-            SessionHistoryService sessionHistoryService) {
+            SessionHistoryService sessionHistoryService,
+            SessionAuthorization authorization) {
         this.runner = runner;
         this.executor = executor;
         this.taskRegistry = taskRegistry;
         this.sessionHistoryService = sessionHistoryService;
+        this.authorization = authorization;
     }
 
     /**
@@ -52,9 +58,11 @@ public final class AgentEventStreamController {
      */
     @PostMapping(value = "/runs/event-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
-            @RequestBody EventStreamRequest body, HttpServletResponse response) {
+            @RequestBody EventStreamRequest body,
+            HttpServletResponse response,
+            HttpServletRequest request) {
         disableEventStreamBuffering(response);
-        EventStreamInvocation invocation = normalize(body);
+        EventStreamInvocation invocation = normalize(body, request);
         SseEmitter emitter = new SseEmitter(0L);
         AtomicBoolean connected = new AtomicBoolean(true);
         Runnable disconnect = () -> connected.set(false);
@@ -123,18 +131,19 @@ public final class AgentEventStreamController {
         }
     }
 
-    private EventStreamInvocation normalize(EventStreamRequest body) {
+    private EventStreamInvocation normalize(
+            EventStreamRequest body, HttpServletRequest request) {
         if (body == null || body.input() == null || body.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
         }
         String sessionId = textOr(body.sessionId(), UUID.randomUUID().toString());
         String agentId = textOr(body.agentId(), "main-agent");
-        String teamId = textOr(body.teamId(), "default-team");
-        String userId = textOr(body.userId(), "default-user");
+        RequestIdentity identity = RequestIdentity.from(request);
+        authorization.claim(sessionId, request);
         return new EventStreamInvocation(
                 sessionHistoryService.withHistory(new AgentRequest(sessionId, body.input(),
                         body.attributes() == null ? Map.of() : body.attributes())),
-                new InvocationContext(teamId, userId, agentId,
+                new InvocationContext(identity.teamId(), identity.userId(), agentId,
                         body.taskId() == null ? "" : body.taskId()));
     }
 

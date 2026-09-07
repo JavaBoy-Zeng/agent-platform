@@ -47,4 +47,10 @@ public class EvaluationService {
         }
         return Optional.of(evaluator.evaluate(evalCase, invocationId, events));
     }
+
+    /** 返回 Invocation 所属会话，供 REST 层在评估前执行归属校验。 */
+    public Optional<String> sessionId(String invocationId) {
+        List<AgentEvent> events = eventStore.findByInvocationId(invocationId);
+        return events.isEmpty() ? Optional.empty() : Optional.of(events.getFirst().sessionId());
+    }
 }

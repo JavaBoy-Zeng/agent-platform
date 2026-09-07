@@ -40,13 +40,17 @@ public final class SqliteSessionService implements SessionService {
     public Session getOrCreate(String sessionId, String userId) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         Objects.requireNonNull(userId, "userId must not be null");
-        return select(sessionId).orElseGet(() -> insert(sessionId, userId));
+        Session session = selectAny(sessionId).orElseGet(() -> insert(sessionId, userId));
+        if (session.deleted() || !session.userId().equals(userId)) {
+            throw new IllegalArgumentException("session does not belong to current user");
+        }
+        return session;
     }
 
     @Override
     public Optional<Session> find(String sessionId) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
-        return select(sessionId);
+        return selectAny(sessionId).filter(session -> !session.deleted());
     }
 
     @Override
@@ -64,8 +68,9 @@ public final class SqliteSessionService implements SessionService {
         }
         try (Connection connection = SqliteSupport.open(dataSource);
                 PreparedStatement statement = connection.prepareStatement(
-                        "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms "
-                                + "FROM agent_sessions ORDER BY last_active_at_ms DESC "
+                        "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms, deleted_at_ms "
+                                + "FROM agent_sessions WHERE deleted_at_ms IS NULL "
+                                + "ORDER BY last_active_at_ms DESC "
                                 + "LIMIT ? OFFSET ?")) {
             statement.setInt(1, limit);
             statement.setInt(2, offset);
@@ -85,7 +90,7 @@ public final class SqliteSessionService implements SessionService {
     public long count() {
         try (Connection connection = SqliteSupport.open(dataSource);
                 PreparedStatement statement = connection.prepareStatement(
-                        "SELECT COUNT(*) FROM agent_sessions");
+                        "SELECT COUNT(*) FROM agent_sessions WHERE deleted_at_ms IS NULL");
                 ResultSet result = statement.executeQuery()) {
             return result.next() ? result.getLong(1) : 0;
         } catch (SQLException exception) {
@@ -94,12 +99,65 @@ public final class SqliteSessionService implements SessionService {
     }
 
     @Override
+    public List<Session> recentByUser(String userId, int offset, int limit) {
+        if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
+        if (limit < 1) throw new IllegalArgumentException("limit must be positive");
+        try (Connection connection = SqliteSupport.open(dataSource);
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms, deleted_at_ms "
+                                + "FROM agent_sessions WHERE user_id = ? AND deleted_at_ms IS NULL "
+                                + "ORDER BY last_active_at_ms DESC LIMIT ? OFFSET ?")) {
+            statement.setString(1, userId);
+            statement.setInt(2, limit);
+            statement.setInt(3, offset);
+            try (ResultSet result = statement.executeQuery()) {
+                List<Session> sessions = new java.util.ArrayList<>();
+                while (result.next()) sessions.add(mapRow(result));
+                return List.copyOf(sessions);
+            }
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("listing sessions for user " + userId, exception);
+        }
+    }
+
+    @Override
+    public long countByUser(String userId) {
+        try (Connection connection = SqliteSupport.open(dataSource);
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM agent_sessions WHERE user_id = ? AND deleted_at_ms IS NULL")) {
+            statement.setString(1, userId);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? result.getLong(1) : 0;
+            }
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("counting sessions for user " + userId, exception);
+        }
+    }
+
+    @Override
+    public boolean deleteByUser(String sessionId, String userId) {
+        try (Connection connection = SqliteSupport.open(dataSource);
+                PreparedStatement statement = connection.prepareStatement(
+                        "UPDATE agent_sessions SET deleted_at_ms = ? "
+                                + "WHERE session_id = ? AND user_id = ? AND deleted_at_ms IS NULL")) {
+            statement.setLong(1, Instant.now().toEpochMilli());
+            statement.setString(2, sessionId);
+            statement.setString(3, userId);
+            return statement.executeUpdate() > 0;
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("deleting owned session " + sessionId, exception);
+        }
+    }
+
+    @Override
     public boolean delete(String sessionId) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         try (Connection connection = SqliteSupport.open(dataSource);
                 PreparedStatement statement = connection.prepareStatement(
-                        "DELETE FROM agent_sessions WHERE session_id = ?")) {
-            statement.setString(1, sessionId);
+                        "UPDATE agent_sessions SET deleted_at_ms = ? "
+                                + "WHERE session_id = ? AND deleted_at_ms IS NULL")) {
+            statement.setLong(1, Instant.now().toEpochMilli());
+            statement.setString(2, sessionId);
             return statement.executeUpdate() > 0;
         } catch (SQLException exception) {
             throw SqliteSupport.failure("deleting session " + sessionId, exception);
@@ -112,8 +170,9 @@ public final class SqliteSessionService implements SessionService {
         try (Connection connection = SqliteSupport.open(dataSource)) {
             connection.setAutoCommit(false);
             try {
-                Session current = selectOn(connection, sessionId)
+                Session current = selectAnyOn(connection, sessionId)
                         .orElseGet(() -> Session.create(sessionId, "unknown-user"));
+                if (current.deleted()) throw new IllegalArgumentException("session has been deleted");
                 Session updated = current
                         .withState(current.state().withDelta(delta))
                         .touch(Instant.now());
@@ -129,18 +188,44 @@ public final class SqliteSessionService implements SessionService {
         }
     }
 
-    private Optional<Session> select(String sessionId) {
+    @Override
+    public Optional<Session> applyDeltaByUser(
+            String sessionId, String userId, Map<String, Object> delta) {
+        Objects.requireNonNull(sessionId, "sessionId must not be null");
+        Objects.requireNonNull(userId, "userId must not be null");
         try (Connection connection = SqliteSupport.open(dataSource)) {
-            return selectOn(connection, sessionId);
+            connection.setAutoCommit(false);
+            try {
+                Session current = selectAnyOn(connection, sessionId).orElse(null);
+                if (current == null || current.deleted() || !current.userId().equals(userId)) {
+                    connection.rollback();
+                    return Optional.empty();
+                }
+                Session updated = current.withState(current.state().withDelta(delta)).touch(Instant.now());
+                upsertOn(connection, updated);
+                connection.commit();
+                return Optional.of(updated);
+            } catch (RuntimeException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        } catch (SQLException exception) {
+            throw SqliteSupport.failure("applying owned session delta for " + sessionId, exception);
+        }
+    }
+
+    private Optional<Session> selectAny(String sessionId) {
+        try (Connection connection = SqliteSupport.open(dataSource)) {
+            return selectAnyOn(connection, sessionId);
         } catch (SQLException exception) {
             throw SqliteSupport.failure("querying session " + sessionId, exception);
         }
     }
 
-    private Optional<Session> selectOn(Connection connection, String sessionId)
+    private Optional<Session> selectAnyOn(Connection connection, String sessionId)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms "
+                "SELECT session_id, user_id, state, created_at_ms, last_active_at_ms, deleted_at_ms "
                         + "FROM agent_sessions WHERE session_id = ?")) {
             statement.setString(1, sessionId);
             try (ResultSet result = statement.executeQuery()) {
@@ -154,8 +239,8 @@ public final class SqliteSessionService implements SessionService {
         try (Connection connection = SqliteSupport.open(dataSource);
                 PreparedStatement statement = connection.prepareStatement(
                         "INSERT OR IGNORE INTO agent_sessions "
-                                + "(session_id, user_id, state, created_at_ms, last_active_at_ms) "
-                                + "VALUES (?, ?, ?, ?, ?)")) {
+                        + "(session_id, user_id, state, created_at_ms, last_active_at_ms, deleted_at_ms) "
+                                + "VALUES (?, ?, ?, ?, ?, NULL)")) {
             statement.setString(1, created.sessionId());
             statement.setString(2, created.userId());
             statement.setString(3, objectMapper.writeValueAsString(created.state().asMap()));
@@ -170,22 +255,24 @@ public final class SqliteSessionService implements SessionService {
                             + exception.getMessage(), exception);
         }
         // 并发创建时以库中既有记录为准。
-        return select(sessionId).orElse(created);
+        return selectAny(sessionId).orElse(created);
     }
 
     private void upsertOn(Connection connection, Session session) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "INSERT INTO agent_sessions "
-                        + "(session_id, user_id, state, created_at_ms, last_active_at_ms) "
-                        + "VALUES (?, ?, ?, ?, ?) "
+                        + "(session_id, user_id, state, created_at_ms, last_active_at_ms, deleted_at_ms) "
+                        + "VALUES (?, ?, ?, ?, ?, ?) "
                         + "ON CONFLICT(session_id) DO UPDATE SET "
-                        + "user_id = excluded.user_id, state = excluded.state, "
+                        + "state = excluded.state, "
                         + "last_active_at_ms = excluded.last_active_at_ms")) {
             statement.setString(1, session.sessionId());
             statement.setString(2, session.userId());
             statement.setString(3, objectMapper.writeValueAsString(session.state().asMap()));
             statement.setLong(4, session.createdAt().toEpochMilli());
             statement.setLong(5, session.lastActiveAt().toEpochMilli());
+            if (session.deletedAt() == null) statement.setNull(6, java.sql.Types.BIGINT);
+            else statement.setLong(6, session.deletedAt().toEpochMilli());
             statement.executeUpdate();
         } catch (JacksonException exception) {
             throw new IllegalStateException(
@@ -209,6 +296,12 @@ public final class SqliteSessionService implements SessionService {
                 result.getString(2),
                 Instant.ofEpochMilli(result.getLong(4)),
                 Instant.ofEpochMilli(result.getLong(5)),
-                SessionState.of(stateMap));
+                SessionState.of(stateMap),
+                nullableInstant(result, 6));
+    }
+
+    private static Instant nullableInstant(ResultSet result, int column) throws SQLException {
+        long value = result.getLong(column);
+        return result.wasNull() ? null : Instant.ofEpochMilli(value);
     }
 }

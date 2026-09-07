@@ -260,7 +260,7 @@ agentos:
     classpath-resources: "skills/report-writing/SKILL.md,skills/code-review/SKILL.md"
 ```
 
-`execute_code` 工具执行 Python/Shell/Java 代码片段，执行环境由
+`execute_code` 工具执行 Python/Shell/Java/JavaScript/Go 代码片段，执行环境由
 `agentos.tools.code-executor.mode` 决定：
 
 - `local`（默认）：宿主机直跑，HIGH 风险需 HITL 审批。

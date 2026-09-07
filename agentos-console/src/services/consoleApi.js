@@ -40,14 +40,35 @@ export const updateSessionPinned = (sessionId, pinned) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pinned })
   })
-export const deleteSessionRecord = (sessionId) =>
-  request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-export const deleteSessionRecords = (sessionIds) =>
-  request('/api/sessions/batch-delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionIds })
-  })
+/** 删除服务端会话：404 视为已删除（归属错位/已清理），不再阻塞本地侧栏清理。 */
+export const deleteSessionRecord = async (sessionId) => {
+  try {
+    return await request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+  } catch (error) {
+    if (error?.status === 404) return null
+    throw error
+  }
+}
+/**
+ * 批量删除：返回 { deleted, notFound, missing }。
+ * notFound 是服务端确认不存在的 id（按"已删除"处理，避免遗留卡死侧栏）；
+ * missing 仅表示本地认为存在但服务端侧未匹配成功。
+ */
+export const deleteSessionRecords = async (sessionIds) => {
+  try {
+    const result = await request('/api/sessions/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionIds })
+    })
+    return { ...result, missing: result.notFound || [] }
+  } catch (error) {
+    if (error?.status === 404 || error?.status === 405) {
+      return { deleted: 0, notFound: [], missing: [...sessionIds] }
+    }
+    throw error
+  }
+}
 export const getUsage = (sessionId) => request(`/api/usage/${encodeURIComponent(sessionId)}`)
 export const getTraces = (sessionId) => request(`/api/traces?sessionId=${encodeURIComponent(sessionId)}`)
 export const getArtifacts = (sessionId) => request(`/api/artifacts?sessionId=${encodeURIComponent(sessionId)}`)
@@ -55,6 +76,9 @@ export const deleteArtifact = (artifactId) => request(`/api/artifacts/${encodeUR
 export const getAgentRuns = () => request('/api/agent-runs')
 
 export const getModelManagement = () => request('/api/model-management')
+
+/** 所有登录用户可读：仅返回已启用模型目录（不含 provider 凭据）。 */
+export const getModelCatalog = () => request('/api/models')
 export const createModelProvider = (provider) =>
   request('/api/model-management/providers', {
     method: 'POST',

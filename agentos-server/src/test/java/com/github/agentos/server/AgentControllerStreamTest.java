@@ -13,6 +13,7 @@ import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.InMemoryAgentEventStore;
 import com.github.agentos.kernel.InMemoryCheckpointStore;
+import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.kernel.PendingActionType;
@@ -39,6 +40,35 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class AgentControllerStreamTest {
+
+    @Test
+    void stateEndpointRestoresPersistedStateAfterRunnerRestart() throws Exception {
+        InMemorySessionService sessions = new InMemorySessionService();
+        AgentLoop loop = (request, context, running) -> running.complete("persisted answer");
+        AgentRunner firstRunner = new AgentRunner(
+                loop, AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+        firstRunner.run(
+                AgentRequest.of("persisted-session", "hello"),
+                InvocationContext.of("main-agent"));
+        AgentRunner restartedRunner = new AgentRunner(
+                loop, AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
+                    new AgentController(
+                            restartedRunner, executor, new AgentRunTaskRegistry(),
+                            historyService())).build();
+
+            mockMvc.perform(get("/api/agents/persisted-session/state"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("\"status\":\"COMPLETED\"")))
+                    .andExpect(content().string(containsString("\"output\":\"persisted answer\"")));
+            mockMvc.perform(get("/api/agents/missing-session/state"))
+                    .andExpect(status().isNotFound());
+        }
+    }
 
     @Test
     void streamsRuntimeEventsAndFinalState() throws Exception {

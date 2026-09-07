@@ -54,6 +54,11 @@ public interface ArtifactService {
     /** 按标识加载产物内容；不存在时返回空。 */
     Optional<ArtifactContent> load(String artifactId);
 
+    /** 按标识读取产物元数据；用于在加载内容前完成访问控制。 */
+    default Optional<Artifact> metadata(String artifactId) {
+        return load(artifactId).map(ArtifactContent::artifact);
+    }
+
     /** 列出指定会话的全部产物，按登记时间倒序。 */
     List<Artifact> list(String sessionId);
 

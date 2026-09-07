@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { useAgentConsole } from './useAgentConsole.js'
 
 const api = vi.hoisted(() => ({
+  getModelCatalog: vi.fn(async () => []),
   getModelManagement: vi.fn(async () => ({ providers: [], models: [] })),
   getSessionPage: vi.fn(async () => ({ items: [], total: 0, hasMore: false })),
   getAgentState: vi.fn(async () => null),
@@ -27,6 +28,7 @@ vi.mock('../services/agentApi.js', () => ({
 vi.mock('../services/consoleApi.js', () => ({
   deleteSessionRecord: vi.fn(),
   deleteSessionRecords: vi.fn(),
+  getModelCatalog: (...args) => api.getModelCatalog(...args),
   getModelManagement: (...args) => api.getModelManagement(...args),
   getUsage: vi.fn(),
   getSessionEvents: vi.fn(),
@@ -35,11 +37,11 @@ vi.mock('../services/consoleApi.js', () => ({
   updateSessionTitle: vi.fn()
 }))
 
-function mountConsole() {
+function mountConsole(ownerId = 'alice') {
   let consoleState
   const Harness = defineComponent({
     setup() {
-      consoleState = useAgentConsole()
+      consoleState = useAgentConsole(ownerId)
       return () => h('div')
     }
   })
@@ -48,13 +50,21 @@ function mountConsole() {
 }
 
 describe('agent console drafts', () => {
-  it('removes legacy blank tasks and reuses one transient draft', async () => {
+  it('removes unowned legacy data and reuses one transient draft from the account cache', async () => {
     localStorage.setItem('agentos.console.sessions.v1', JSON.stringify([
+      { id: 'foreign-task', title: '旧共享任务', serverBacked: true, messages: [{ role: 'user', content: 'secret' }] }
+    ]))
+    localStorage.setItem('agentos.console.sessions.v2.alice', JSON.stringify([
       { id: 'draft-1', title: '未命名任务', state: null, messages: [] },
       { id: 'draft-2', title: '未命名任务', state: null, messages: [] },
       { id: 'task-1', title: '正式任务', serverBacked: true, state: null, messages: [] }
     ]))
-    localStorage.setItem('agentos.console.active-session.v1', 'draft-2')
+    localStorage.setItem('agentos.console.active-session.v2.alice', 'draft-2')
+    api.getSessionPage.mockResolvedValueOnce({
+      items: [{ sessionId: 'task-1', state: { displayTitle: '正式任务' } }],
+      total: 1,
+      hasMore: false
+    })
     const harness = mountConsole()
     await flushPromises()
 
@@ -66,21 +76,19 @@ describe('agent console drafts', () => {
     expect(secondDraft.id).toBe(firstDraft.id)
     expect(harness.consoleState.sessions.value).toHaveLength(2)
     expect(harness.consoleState.currentSessionDraft.value).toBe(true)
-    expect(JSON.parse(localStorage.getItem('agentos.console.sessions.v1'))).toEqual([
+    expect(localStorage.getItem('agentos.console.sessions.v1')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('agentos.console.sessions.v2.alice'))).toEqual([
       expect.objectContaining({ id: 'task-1' })
     ])
-    expect(localStorage.getItem('agentos.console.active-session.v1')).toBeNull()
+    expect(localStorage.getItem('agentos.console.active-session.v2.alice')).toBeNull()
     harness.wrapper.unmount()
   })
 
   it('loads enabled configured models without selecting a default', async () => {
-    api.getModelManagement.mockResolvedValueOnce({
-      providers: [],
-      models: [{
+    api.getModelCatalog.mockResolvedValueOnce([{
         id: 'model-deepseek', modelId: 'deepseek-v4-pro', modelType: 'BUILT_IN',
         providerName: 'DeepSeek', providerType: 'DEEPSEEK', enabled: true
-      }]
-    })
+      }])
     const harness = mountConsole()
     await flushPromises()
 
@@ -105,13 +113,10 @@ describe('agent console drafts', () => {
   })
 
   it('sends only the selected platform model id with the current task', async () => {
-    api.getModelManagement.mockResolvedValueOnce({
-      providers: [],
-      models: [{
+    api.getModelCatalog.mockResolvedValueOnce([{
         id: 'model-deepseek', modelId: 'deepseek-v4-pro', modelType: 'BUILT_IN',
         providerName: 'DeepSeek', providerType: 'DEEPSEEK', enabled: true
-      }]
-    })
+      }])
     api.createAgentRun.mockRejectedValueOnce(new Error('stop after request capture'))
     const harness = mountConsole()
     await flushPromises()
@@ -151,8 +156,35 @@ describe('agent console drafts', () => {
 
     expect(api.updateSessionPinned).toHaveBeenCalledWith('session-pinned', false)
     expect(session.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem('agentos.console.sessions.v1'))[0]).toEqual(
+    expect(JSON.parse(localStorage.getItem('agentos.console.sessions.v2.alice'))[0]).toEqual(
       expect.objectContaining({ id: 'session-pinned', pinned: false }))
     harness.wrapper.unmount()
+  })
+
+  it('keeps demo and admin transcript caches isolated', async () => {
+    localStorage.setItem('agentos.console.sessions.v2.demo', JSON.stringify([
+      { id: 'demo-task', title: 'demo', serverBacked: true, messages: [{ role: 'user', content: 'demo secret' }] }
+    ]))
+    localStorage.setItem('agentos.console.sessions.v2.admin', JSON.stringify([
+      { id: 'admin-task', title: 'admin', serverBacked: true, messages: [{ role: 'user', content: 'admin secret' }] }
+    ]))
+
+    api.getSessionPage.mockResolvedValueOnce({
+      items: [{ sessionId: 'demo-task', state: { displayTitle: 'demo' } }], total: 1, hasMore: false
+    })
+    const demo = mountConsole('demo')
+    await flushPromises()
+    expect(demo.consoleState.sessions.value.map(item => item.id)).toContain('demo-task')
+    expect(demo.consoleState.sessions.value.map(item => item.id)).not.toContain('admin-task')
+    demo.wrapper.unmount()
+
+    api.getSessionPage.mockResolvedValueOnce({
+      items: [{ sessionId: 'admin-task', state: { displayTitle: 'admin' } }], total: 1, hasMore: false
+    })
+    const admin = mountConsole('admin')
+    await flushPromises()
+    expect(admin.consoleState.sessions.value.map(item => item.id)).toContain('admin-task')
+    expect(admin.consoleState.sessions.value.map(item => item.id)).not.toContain('demo-task')
+    admin.wrapper.unmount()
   })
 })

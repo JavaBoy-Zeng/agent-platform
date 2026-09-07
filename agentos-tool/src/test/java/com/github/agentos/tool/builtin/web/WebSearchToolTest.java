@@ -28,7 +28,7 @@ class WebSearchToolTest {
 
     @BeforeEach
     void startServer() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/search", exchange -> {
             byte[] body = """
                     {"results":[
@@ -55,7 +55,7 @@ class WebSearchToolTest {
             exchange.close();
         });
         server.start();
-        base = "http://localhost:" + server.getAddress().getPort();
+        base = "http://127.0.0.1:" + server.getAddress().getPort();
         tool = new WebSearchTool(
                 java.net.http.HttpClient.newHttpClient(), new ObjectMapper(), base + "/search",
                 "test-key", Duration.ofSeconds(5));

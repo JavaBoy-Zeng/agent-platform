@@ -54,7 +54,8 @@ public final class PersistenceRows {
             @TableField("user_id") String userId,
             @TableField("state_payload") String statePayload,
             @TableField("created_at") Instant createdAt,
-            @TableField("last_active_at") Instant lastActiveAt) {
+            @TableField("last_active_at") Instant lastActiveAt,
+            @TableField("deleted_at") Instant deletedAt) {
     }
 
     @TableName("users")
@@ -63,6 +64,14 @@ public final class PersistenceRows {
             @TableField("password_hash") String passwordHash,
             String roles,
             @TableField("created_at") Instant createdAt) {
+    }
+
+    @TableName("settings")
+    public record SettingRow(
+            @TableId("setting_key") String settingKey,
+            String settingValue,
+            @TableField("updated_at") Instant updatedAt,
+            @TableField("updated_by") String updatedBy) {
     }
 
     @TableName("memory_records")

@@ -30,7 +30,7 @@ class TraceControllerTest {
         store.append(new Span("inv-1", "s1", "s0", "model-call", Span.Kind.MODEL,
                 t1, t2, Span.Status.OK, Map.of("model", "gpt-4"), Map.of()));
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new TraceController(store)).build();
+        MockMvc mvc = mvc(store, "sess-1");
 
         mvc.perform(get("/api/traces/{invocationId}", "inv-1"))
                 .andExpect(status().isOk())
@@ -48,7 +48,7 @@ class TraceControllerTest {
     @Test
     void queryByInvocationId_unknownReturns404() throws Exception {
         TraceStore store = new InMemoryTraceStore();
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new TraceController(store)).build();
+        MockMvc mvc = mvc(store);
 
         mvc.perform(get("/api/traces/{invocationId}", "missing"))
                 .andExpect(status().isNotFound());
@@ -65,7 +65,7 @@ class TraceControllerTest {
                 now, now, Span.Status.OK,
                 Map.of("sessionId", "sess-1", "agentId", "b"), Map.of()));
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new TraceController(store)).build();
+        MockMvc mvc = mvc(store, "sess-1");
 
         mvc.perform(get("/api/traces").param("sessionId", "sess-1"))
                 .andExpect(status().isOk())
@@ -77,10 +77,15 @@ class TraceControllerTest {
     @Test
     void queryBySessionId_emptyReturnsEmptyArray() throws Exception {
         TraceStore store = new InMemoryTraceStore();
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(new TraceController(store)).build();
+        MockMvc mvc = mvc(store, "empty");
 
         mvc.perform(get("/api/traces").param("sessionId", "empty"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    private static MockMvc mvc(TraceStore store, String... ownedSessions) {
+        return MockMvcBuilders.standaloneSetup(new TraceController(
+                store, TestSessionAuthorizations.owned(ownedSessions))).build();
     }
 }

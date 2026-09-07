@@ -7,6 +7,7 @@ import com.github.agentos.memory.MemoryService;
 import com.github.agentos.memory.ProfileMemory;
 import com.github.agentos.memory.ScenarioMemory;
 import com.github.agentos.server.security.RequestIdentity;
+import com.github.agentos.server.security.SessionAuthorization;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -36,14 +37,16 @@ public class MemoryController {
     private static final int MAX_RECENT_LIMIT = 100;
 
     private final MemoryService memoryService;
+    private final SessionAuthorization authorization;
 
     /**
      * 创建记忆管理控制器。
      *
      * @param memoryService 统一记忆服务
      */
-    public MemoryController(MemoryService memoryService) {
+    public MemoryController(MemoryService memoryService, SessionAuthorization authorization) {
         this.memoryService = memoryService;
+        this.authorization = authorization;
     }
 
     /**
@@ -75,9 +78,15 @@ public class MemoryController {
             throw new IllegalArgumentException("recentLimit must be between 1 and " + MAX_RECENT_LIMIT);
         }
 
+        // MEMORY_ADMIN 可管理 L1-L3，但 L0 对话始终仅开放给会话所有者。
+        authorization.requireOwned(sessionId, request);
+
+        RequestIdentity identity = RequestIdentity.from(request);
         MemoryScope scope = boundScope(
-                RequestIdentity.from(request), teamId, userId, agentId, sessionId, taskId);
-        List<CompletedTurn> recentTurns = memoryService.recentTurns(scope, recentLimit);
+                identity, teamId, userId, agentId, sessionId, taskId);
+        MemoryScope l0Scope = new MemoryScope(
+                identity.teamId(), identity.userId(), agentId, sessionId, taskId);
+        List<CompletedTurn> recentTurns = memoryService.recentTurns(l0Scope, recentLimit);
         List<AtomicMemory> atomicMemories = memoryService.atomicMemories(scope, includeInactive);
         List<ScenarioMemory> scenarios = memoryService.scenarios(scope);
         ProfileMemory profile = memoryService.profile(scope);
@@ -95,6 +104,7 @@ public class MemoryController {
     public ResponseEntity<AtomicMemory> createFact(
             HttpServletRequest request, @RequestBody CreateFactRequest body) {
         RequestIdentity identity = RequestIdentity.from(request);
+        authorization.claim(body.sessionId(), request);
         MemoryScope scope = boundScope(identity, null, null,
                 body.agentId(), body.sessionId(), body.taskId());
         Duration ttl = body.ttlSeconds() == null ? null : Duration.ofSeconds(body.ttlSeconds());

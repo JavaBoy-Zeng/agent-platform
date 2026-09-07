@@ -31,7 +31,7 @@ class WeatherToolTest {
 
     @BeforeEach
     void startServer() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 
         server.createContext("/geocode", exchange -> {
             byte[] body = """
@@ -98,7 +98,7 @@ class WeatherToolTest {
         });
 
         server.start();
-        String base = "http://localhost:" + server.getAddress().getPort();
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
         tool = new WeatherTool(
                 HttpClient.newHttpClient(),
                 new tools.jackson.databind.ObjectMapper(),

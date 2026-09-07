@@ -22,6 +22,8 @@ class DockerSandboxExecutorTest {
         assertThat(executor.supports(CodeLanguage.PYTHON)).isTrue();
         assertThat(executor.supports(CodeLanguage.SHELL)).isTrue();
         assertThat(executor.supports(CodeLanguage.JAVA)).isTrue();
+        assertThat(executor.supports(CodeLanguage.JAVASCRIPT)).isTrue();
+        assertThat(executor.supports(CodeLanguage.GO)).isTrue();
     }
 
     @Test
@@ -44,11 +46,19 @@ class DockerSandboxExecutorTest {
                 CodeLanguage.SHELL, tempDir, "script.sh");
         List<String> java = executor.containerCommand(
                 CodeLanguage.JAVA, tempDir, "Main.java");
+        List<String> javascript = executor.containerCommand(
+                CodeLanguage.JAVASCRIPT, tempDir, "main.js");
+        List<String> go = executor.containerCommand(
+                CodeLanguage.GO, tempDir, "main.go");
 
         assertThat(shell).contains("alpine:3.20");
         assertThat(shell).containsSubsequence("/bin/sh", "/sandbox/script.sh");
         assertThat(java).contains("eclipse-temurin:21-jdk-alpine");
         assertThat(java).containsSubsequence("java", "/sandbox/Main.java");
+        assertThat(javascript).contains("node:22-alpine");
+        assertThat(javascript).containsSubsequence("node", "/sandbox/main.js");
+        assertThat(go).contains("golang:1.25-alpine");
+        assertThat(go).containsSubsequence("go", "run", "/sandbox/main.go");
     }
 
     @Test

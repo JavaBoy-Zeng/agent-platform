@@ -36,7 +36,8 @@ class AgentEventStreamControllerTest {
                             new AgentRunner(loop), executor, new AgentRunTaskRegistry(),
                             new SessionHistoryService(
                                     new com.github.agentos.kernel.InMemoryAgentEventStore(),
-                                    5, 400))).build();
+                                    5, 400),
+                            TestSessionAuthorizations.owned())).build();
             MvcResult started = mvc.perform(post("/api/agents/runs/event-stream")
                             .contentType(MediaType.APPLICATION_JSON)
                             .accept(MediaType.TEXT_EVENT_STREAM)

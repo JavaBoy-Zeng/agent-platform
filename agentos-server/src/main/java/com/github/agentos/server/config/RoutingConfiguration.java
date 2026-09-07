@@ -13,6 +13,7 @@ import com.github.agentos.planner.ChatClient;
 import com.github.agentos.server.model.ModelClientProperties;
 import com.github.agentos.server.model.OpenAiCompatibleChatClient;
 import com.github.agentos.server.model.ModelProviderService;
+import com.github.agentos.server.model.NonAdminCallLimiter;
 import com.github.agentos.server.model.RoutingModelClients;
 import com.github.agentos.server.catalog.SystemCatalogAgent;
 import org.springframework.beans.factory.annotation.Value;
@@ -60,9 +61,13 @@ public class RoutingConfiguration {
             ModelClientProperties properties,
             ModelProviderService providers,
             ObjectMapper objectMapper,
-            com.github.agentos.planner.ModelUsageListener usageListener) {
+            com.github.agentos.planner.ModelUsageListener usageListener,
+            com.github.agentos.kernel.SessionService sessionService,
+            com.github.agentos.server.security.UserStore userStore,
+            NonAdminCallLimiter nonAdminCallLimiter) {
         return new RoutingModelClients.Chat(
-                providers, objectMapper, usageListener, properties);
+                providers, objectMapper, usageListener, properties,
+                sessionService, userStore, nonAdminCallLimiter);
     }
 
     /**

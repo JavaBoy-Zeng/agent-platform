@@ -90,11 +90,15 @@ public final class AgentRunCoordinator {
         Objects.requireNonNull(completionListener, "completionListener must not be null");
         makeRoomForRun();
         String runId = UUID.randomUUID().toString();
-        AgentState initialState = runner.state(request.sessionId())
+        if (!runner.ensureSessionOwner(request.sessionId(), context.userId())) {
+            throw new SessionAccessDeniedException(request.sessionId());
+        }
+        AgentState initialState = runner.state(request.sessionId(), context.userId())
                 .orElseGet(AgentState::ready)
                 .startNextIteration();
         ManagedRun run = new ManagedRun(
-                runId, request.sessionId(), initialState, maxEventsPerRun, completionListener);
+                runId, request.sessionId(), context.userId(), initialState,
+                maxEventsPerRun, completionListener);
         runs.put(runId, run);
 
         boolean started;
@@ -134,6 +138,13 @@ public final class AgentRunCoordinator {
         return Optional.of(run.snapshot(currentInvocation(run)));
     }
 
+    /** 仅向后台运行所属用户返回快照。 */
+    public Optional<RunSnapshot> find(String runId, String userId) {
+        ManagedRun run = runs.get(requireText(runId, "runId"));
+        if (run == null || !run.userId().equals(userId)) return Optional.empty();
+        return Optional.of(run.snapshot(currentInvocation(run)));
+    }
+
     /**
      * 列出当前进程内保留的全部后台运行，按创建时间倒序。
      *
@@ -144,6 +155,15 @@ public final class AgentRunCoordinator {
                 .map(run -> run.snapshot(currentInvocation(run)))
                 .sorted(java.util.Comparator.comparing(
                         RunSnapshot::createdAt).reversed())
+                .toList();
+    }
+
+    /** 列出指定用户创建的后台运行。 */
+    public List<RunSnapshot> list(String userId) {
+        return runs.values().stream()
+                .filter(run -> run.userId().equals(userId))
+                .map(run -> run.snapshot(currentInvocation(run)))
+                .sorted(java.util.Comparator.comparing(RunSnapshot::createdAt).reversed())
                 .toList();
     }
 
@@ -168,6 +188,13 @@ public final class AgentRunCoordinator {
         return Optional.of(emitter);
     }
 
+    /** 仅允许后台运行所属用户订阅事件。 */
+    public Optional<SseEmitter> stream(String runId, long afterSequence, String userId) {
+        ManagedRun run = runs.get(requireText(runId, "runId"));
+        if (run == null || !run.userId().equals(userId)) return Optional.empty();
+        return stream(runId, afterSequence);
+    }
+
     /**
      * 显式请求取消指定 run，不受页面连接状态影响。
      *
@@ -185,6 +212,13 @@ public final class AgentRunCoordinator {
                 && taskRegistry.cancel(run.sessionId());
         return Optional.of(new CancelResult(
                 tokenCancelled || interruptRequested, run.snapshot(currentInvocation(run))));
+    }
+
+    /** 仅允许后台运行所属用户取消任务。 */
+    public Optional<CancelResult> cancel(String runId, String userId) {
+        ManagedRun run = runs.get(requireText(runId, "runId"));
+        if (run == null || !run.userId().equals(userId)) return Optional.empty();
+        return cancel(runId);
     }
 
     private void execute(ManagedRun run, AgentRequest request, InvocationContext context) {
@@ -265,6 +299,13 @@ public final class AgentRunCoordinator {
         }
     }
 
+    /** 请求复用了其他用户持有的会话标识。 */
+    public static final class SessionAccessDeniedException extends RuntimeException {
+        public SessionAccessDeniedException(String sessionId) {
+            super("session not found: " + sessionId);
+        }
+    }
+
     /**
      * 单次后台运行的进程内可变状态，负责事件留存、SSE 订阅和终态收口。
      *
@@ -281,6 +322,8 @@ public final class AgentRunCoordinator {
          * Agent 会话标识，同时也是任务注册表中的并发互斥键。
          */
         private final String sessionId;
+        /** 创建该运行的可信用户标识。 */
+        private final String userId;
         /**
          * 当前运行最多保留的事件数量；超出后淘汰最早事件。
          */
@@ -330,11 +373,13 @@ public final class AgentRunCoordinator {
         ManagedRun(
                 String runId,
                 String sessionId,
+                String userId,
                 AgentState initialState,
                 int maxEvents,
                 Consumer<RunSnapshot> completionListener) {
             this.runId = runId;
             this.sessionId = sessionId;
+            this.userId = userId;
             this.state = initialState;
             this.maxEvents = maxEvents;
             this.updatedAt = createdAt;
@@ -433,6 +478,10 @@ public final class AgentRunCoordinator {
 
         String sessionId() {
             return sessionId;
+        }
+
+        String userId() {
+            return userId;
         }
 
         Instant createdAt() {

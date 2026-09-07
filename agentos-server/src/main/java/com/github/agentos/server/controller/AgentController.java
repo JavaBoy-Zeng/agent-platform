@@ -16,6 +16,8 @@ import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.ChatEventMapper;
+import com.github.agentos.server.security.RequestIdentity;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
@@ -75,8 +77,9 @@ public class AgentController {
      * @throws IllegalArgumentException 当用户输入为空时抛出
      */
     @PostMapping("/runs")
-    public ResponseEntity<RunResponse> run(@RequestBody RunRequest request) {
-        RunInvocation invocation = normalize(request);
+    public ResponseEntity<RunResponse> run(
+            @RequestBody RunRequest request, HttpServletRequest httpRequest) {
+        RunInvocation invocation = normalize(request, RequestIdentity.from(httpRequest));
         AgentRunner.AgentRunResult result = runner.runDetailed(
                 invocation.request(),
                 invocation.context(),
@@ -95,9 +98,11 @@ public class AgentController {
      */
     @PostMapping(value = "/runs/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
-            @RequestBody RunRequest request, HttpServletResponse response) {
+            @RequestBody RunRequest request,
+            HttpServletResponse response,
+            HttpServletRequest httpRequest) {
         disableEventStreamBuffering(response);
-        RunInvocation invocation = normalize(request);
+        RunInvocation invocation = normalize(request, RequestIdentity.from(httpRequest));
         SseEmitter emitter = new SseEmitter(0L);
         AtomicBoolean connected = new AtomicBoolean(true);
         Runnable disconnect = () -> connected.set(false);
@@ -146,12 +151,15 @@ public class AgentController {
 
     /** 请求停止指定会话的流式运行，并中断其虚拟线程或平台线程。 */
     @PostMapping("/{sessionId}/stop")
-    public ResponseEntity<StopResponse> stop(@PathVariable String sessionId) {
+    public ResponseEntity<StopResponse> stop(
+            @PathVariable String sessionId, HttpServletRequest request) {
+        String userId = RequestIdentity.from(request).userId();
+        requireOwnedSession(sessionId, userId);
         boolean interruptRequested = taskRegistry.cancel(sessionId);
         StopResponse response = new StopResponse(
                 sessionId,
                 interruptRequested,
-                runner.state(sessionId).orElse(null));
+                runner.state(sessionId, userId).orElse(null));
         return ResponseEntity.status(
                         interruptRequested ? HttpStatus.ACCEPTED : HttpStatus.OK)
                 .body(response);
@@ -183,7 +191,7 @@ public class AgentController {
         }
     }
 
-    private RunInvocation normalize(RunRequest request) {
+    private RunInvocation normalize(RunRequest request, RequestIdentity identity) {
         if (request == null || request.input() == null || request.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
         }
@@ -193,13 +201,10 @@ public class AgentController {
         String agentId = request.agentId() == null || request.agentId().isBlank()
                 ? "main-agent"
                 : request.agentId();
-        String teamId = request.teamId() == null || request.teamId().isBlank()
-                ? "default-team"
-                : request.teamId();
-        String userId = request.userId() == null || request.userId().isBlank()
-                ? "default-user"
-                : request.userId();
+        String teamId = identity.teamId();
+        String userId = identity.userId();
         String taskId = request.taskId() == null ? "" : request.taskId();
+        requireOwnedOrNewSession(sessionId, userId);
         // 会话历史由统一注入点补齐：直答路径展开为原生多轮消息，规划路径随 attributes 下传。
         AgentRequest agentRequest = sessionHistoryService.withHistory(new AgentRequest(
                 sessionId, request.input(),
@@ -216,15 +221,18 @@ public class AgentController {
      * @return 状态存在时返回 HTTP 200，否则返回 HTTP 404
      */
     @GetMapping("/{sessionId}/state")
-    public ResponseEntity<AgentState> state(@PathVariable String sessionId) {
-        return runner.state(sessionId)
+    public ResponseEntity<AgentState> state(
+            @PathVariable String sessionId, HttpServletRequest request) {
+        return runner.state(sessionId, RequestIdentity.from(request).userId())
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /** 查询会话当前等待处理的外部动作。 */
     @GetMapping("/{sessionId}/pending-action")
-    public ResponseEntity<PendingActionResponse> pendingAction(@PathVariable String sessionId) {
+    public ResponseEntity<PendingActionResponse> pendingAction(
+            @PathVariable String sessionId, HttpServletRequest request) {
+        requireOwnedSession(sessionId, RequestIdentity.from(request).userId());
         return runner.latestInvocation(sessionId)
                 .filter(invocation -> invocation.status() == AgentRunStatus.WAITING
                         && invocation.pendingAction() != null)
@@ -237,9 +245,10 @@ public class AgentController {
     @PostMapping("/invocations/{invocationId}/resolution")
     public ResponseEntity<RunResponse> resolve(
             @PathVariable String invocationId,
-            @RequestBody ResolutionRequest request) {
-        if (request == null || request.pendingActionId() == null
-                || request.pendingActionId().isBlank()) {
+            @RequestBody ResolutionRequest body,
+            HttpServletRequest request) {
+        if (body == null || body.pendingActionId() == null
+                || body.pendingActionId().isBlank()) {
             throw new IllegalArgumentException("pendingActionId must not be blank");
         }
         // 进程重启后 invocation 内存态可能丢失；checkpoint 仍在说明该调用确实处于 WAITING。
@@ -256,9 +265,10 @@ public class AgentController {
         }
         String sessionId = invocation != null
                 ? invocation.sessionId() : checkpoint.sessionId();
+        requireOwnedSession(sessionId, RequestIdentity.from(request).userId());
         AgentState state = runner.resume(invocationId, new PendingActionResolution(
-                request.pendingActionId(), request.approved(),
-                request.data() == null ? Map.of() : request.data()));
+                body.pendingActionId(), body.approved(),
+                body.data() == null ? Map.of() : body.data()));
         return ResponseEntity.ok(resolvedResponse(sessionId, invocationId, state));
     }
 
@@ -283,6 +293,18 @@ public class AgentController {
                 state,
                 state.status() == AgentState.Status.WAITING && invocation != null
                         ? invocation.pendingAction() : null);
+    }
+
+    private void requireOwnedOrNewSession(String sessionId, String userId) {
+        if (!runner.ensureSessionOwner(sessionId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "session not found");
+        }
+    }
+
+    private void requireOwnedSession(String sessionId, String userId) {
+        if (!runner.ownsSession(sessionId, userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "session not found");
+        }
     }
 
     /**

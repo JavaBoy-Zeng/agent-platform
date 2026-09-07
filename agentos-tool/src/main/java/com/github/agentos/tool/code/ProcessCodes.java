@@ -45,6 +45,8 @@ final class ProcessCodes {
             case PYTHON -> "main.py";
             case SHELL -> windows ? "script.cmd" : "script.sh";
             case JAVA -> "Main.java";
+            case JAVASCRIPT -> "main.js";
+            case GO -> "main.go";
         };
     }
 

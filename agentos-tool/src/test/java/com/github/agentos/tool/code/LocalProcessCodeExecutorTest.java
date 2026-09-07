@@ -18,6 +18,8 @@ class LocalProcessCodeExecutorTest {
         assertThat(executor.isAvailable()).isTrue();
         assertThat(executor.supports(CodeLanguage.PYTHON)).isTrue();
         assertThat(executor.supports(CodeLanguage.JAVA)).isTrue();
+        assertThat(executor.supports(CodeLanguage.JAVASCRIPT)).isTrue();
+        assertThat(executor.supports(CodeLanguage.GO)).isTrue();
     }
 
     @Test
@@ -73,6 +75,12 @@ class LocalProcessCodeExecutorTest {
         assertThat(LocalProcessCodeExecutor.commandFor(
                 CodeLanguage.JAVA, java.nio.file.Path.of("/tmp/Main.java"), false))
                 .containsExactly("java", "Main.java");
+        assertThat(LocalProcessCodeExecutor.commandFor(
+                CodeLanguage.JAVASCRIPT, java.nio.file.Path.of("/tmp/main.js"), false))
+                .containsExactly("node", "/tmp/main.js");
+        assertThat(LocalProcessCodeExecutor.commandFor(
+                CodeLanguage.GO, java.nio.file.Path.of("/tmp/main.go"), false))
+                .containsExactly("go", "run", "/tmp/main.go");
     }
 
     /**
@@ -100,6 +108,8 @@ class LocalProcessCodeExecutorTest {
         assertThat(ProcessCodes.sourceFileName(CodeLanguage.SHELL, true)).isEqualTo("script.cmd");
         assertThat(ProcessCodes.sourceFileName(CodeLanguage.PYTHON, true)).isEqualTo("main.py");
         assertThat(ProcessCodes.sourceFileName(CodeLanguage.JAVA, true)).isEqualTo("Main.java");
+        assertThat(ProcessCodes.sourceFileName(CodeLanguage.JAVASCRIPT, true)).isEqualTo("main.js");
+        assertThat(ProcessCodes.sourceFileName(CodeLanguage.GO, true)).isEqualTo("main.go");
     }
 
     /** 在真实宿主机上跑通一次 shell 执行，覆盖平台分支的实际可用性。 */

@@ -30,7 +30,7 @@ class BrowserSearchToolTest {
 
     @BeforeEach
     void startServer() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/search", exchange -> {
             lastRequestQuery.set(exchange.getRequestURI().toString());
             byte[] body = """
@@ -58,7 +58,7 @@ class BrowserSearchToolTest {
             exchange.close();
         });
         server.start();
-        base = "http://localhost:" + server.getAddress().getPort();
+        base = "http://127.0.0.1:" + server.getAddress().getPort();
         tool = new BrowserSearchTool(
                 java.net.http.HttpClient.newHttpClient(), new ObjectMapper(), base + "/search",
                 Duration.ofSeconds(5));
@@ -128,7 +128,7 @@ class BrowserSearchToolTest {
     void reportsConnectionFailureWithoutNullMessage() {
         BrowserSearchTool deadTool = new BrowserSearchTool(
                 java.net.http.HttpClient.newHttpClient(), new ObjectMapper(),
-                "http://localhost:1/search", Duration.ofSeconds(5));
+                "http://127.0.0.1:1/search", Duration.ofSeconds(5));
 
         ToolResult result = deadTool.execute(ToolContexts.testContext(deadTool),
                 new ToolCall("browser_search", Map.of("query", "agent")));

@@ -52,7 +52,7 @@
 | `web_crawl` | 通过 Firecrawl 创建并轮询网站遍历任务，返回有界的多页 Markdown 正文。 |
 | `git_commit` | 本地 Git 提交；仓库必须位于文件根目录内，且仅允许开启宿主机进程时注册。 |
 | `load_skill` | 把注册表中的某项技能完整指令按需注入对话上下文，技能正文不常驻提示词。 |
-| `execute_code` | 执行 Python/Shell/Java 代码片段；严格模式只允许 Docker 沙箱，本地执行被拒绝。 |
+| `execute_code` | 执行 Python/Shell/Java/JavaScript/Go 代码片段；严格模式只允许 Docker 沙箱，本地执行被拒绝。 |
 | `echo` | 仅用于调用链测试，不承担最终回答。 |
 | `today` | 返回当前日期与星期，用于日期类问答。 |
 | `weather` | 查询外部天气接口。 |

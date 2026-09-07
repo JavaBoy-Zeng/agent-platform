@@ -27,7 +27,7 @@ class WebFetchToolTest {
 
     @BeforeEach
     void startServer() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/html", exchange -> {
             byte[] body = """
                     <html><head><style>.x{color:red}</style><script>alert(1)</script></head>
@@ -72,7 +72,7 @@ class WebFetchToolTest {
             exchange.close();
         });
         server.start();
-        base = "http://localhost:" + server.getAddress().getPort();
+        base = "http://127.0.0.1:" + server.getAddress().getPort();
         tool = new WebFetchTool(
                 java.net.http.HttpClient.newHttpClient(), Duration.ofSeconds(5), 12000);
     }

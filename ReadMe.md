@@ -117,6 +117,40 @@ RoutingAgentLoop（agent·routing）三级路由
 
 ## 启动
 
+### Docker Compose
+
+Compose 会启动 PostgreSQL、Spring Boot 服务、Vue/Nginx 控制台和一个独立的
+Docker-in-Docker 沙箱。沙箱启动时会预拉取 Python 3.12、POSIX Shell、Java 21、
+Node.js 22 和 Go 1.25 镜像；`execute_code` 每次在禁网、限 CPU/内存的一次性容器中执行代码，
+不会挂载或控制宿主机 Docker socket。
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少配置 AGENTOS_MODEL_API_KEY
+docker compose up -d --build
+docker compose ps
+```
+
+控制台访问 `http://localhost:5173`，后端健康检查访问
+`http://localhost:8080/api/health`。首次启动会下载 Maven/npm 依赖及五个运行时镜像，
+耗时取决于网络；后续启动复用命名卷中的数据库与沙箱镜像缓存。
+
+```bash
+# 查看日志
+docker compose logs -f server console
+
+# 停止服务（保留数据与运行时镜像）
+docker compose down
+
+# 连同 PostgreSQL、工作区和沙箱镜像一起清理
+docker compose down -v
+```
+
+`sandbox-docker` 需要 `privileged` 来运行嵌套 Docker daemon，但它与宿主 daemon 隔离；
+其 2375 端口只存在于 Compose 内部网络且不会发布到宿主机。
+
+### 本地启动
+
 ```bash
 mvn clean test
 mvn -pl agentos-server -am spring-boot:run

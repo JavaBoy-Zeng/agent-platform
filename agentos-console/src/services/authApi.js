@@ -12,7 +12,9 @@ async function readBody(response) {
 }
 
 function errorDetail(body, fallback, status) {
-  const message = typeof body === 'string' ? body : body?.error || body?.detail
+  const message = typeof body === 'string'
+    ? body
+    : body?.detail || body?.message || body?.error
   return new AgentApiError(message || fallback, status)
 }
 

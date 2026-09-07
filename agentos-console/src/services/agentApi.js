@@ -127,10 +127,10 @@ export async function createAgentRun(payload) {
 }
 
 /** 查询后台运行快照。 */
-export async function getAgentRun(runId) {
+export async function getAgentRun(runId, signal) {
   const response = await fetch(
     apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}`),
-    { headers: authHeaders() }
+    { headers: authHeaders(), signal }
   )
   const body = await readBody(response)
   if (!response.ok) {
@@ -160,11 +160,13 @@ export async function uploadSessionAttachments(sessionId, files) {
 }
 
 /** 从指定序号之后补播事件，并继续订阅实时事件。 */
-export async function streamAgentRun(runId, afterSequence = 0, onEvent = () => {}) {
+export async function streamAgentRun(
+  runId, afterSequence = 0, onEvent = () => {}, signal
+) {
   const query = new URLSearchParams({ after: String(Math.max(0, afterSequence || 0)) })
   const response = await fetch(
     apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}/events?${query}`),
-    { headers: { Accept: 'text/event-stream', ...authHeaders() } }
+    { headers: { Accept: 'text/event-stream', ...authHeaders() }, signal }
   )
   if (!response.ok) {
     const body = await readBody(response)

@@ -39,7 +39,9 @@ public final class DockerSandboxExecutor implements CodeExecutor {
         this(Map.of(
                 CodeLanguage.PYTHON, "python:3.12-slim",
                 CodeLanguage.SHELL, "alpine:3.20",
-                CodeLanguage.JAVA, "eclipse-temurin:21-jdk-alpine"),
+                CodeLanguage.JAVA, "eclipse-temurin:21-jdk-alpine",
+                CodeLanguage.JAVASCRIPT, "node:22-alpine",
+                CodeLanguage.GO, "golang:1.25-alpine"),
                 "256m", "0.5", defaultTimeoutSeconds, maxOutputChars);
     }
 
@@ -144,6 +146,8 @@ public final class DockerSandboxExecutor implements CodeExecutor {
             case PYTHON -> List.of("python3", mountedSource);
             case SHELL -> List.of("/bin/sh", mountedSource);
             case JAVA -> List.of("java", mountedSource);
+            case JAVASCRIPT -> List.of("node", mountedSource);
+            case GO -> List.of("go", "run", mountedSource);
         };
     }
 

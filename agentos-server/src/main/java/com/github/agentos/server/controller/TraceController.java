@@ -3,6 +3,8 @@ package com.github.agentos.server.controller;
 import com.github.agentos.kernel.trace.Span;
 import com.github.agentos.kernel.trace.Trace;
 import com.github.agentos.kernel.trace.TraceStore;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -24,24 +26,31 @@ import java.util.Map;
 public class TraceController {
 
     private final TraceStore traceStore;
+    private final SessionAuthorization authorization;
 
-    public TraceController(TraceStore traceStore) {
+    public TraceController(TraceStore traceStore, SessionAuthorization authorization) {
         this.traceStore = traceStore;
+        this.authorization = authorization;
     }
 
     /** 按 invocationId 查询单条 Trace 的全部 Span。 */
     @GetMapping("/{invocationId}")
-    public ResponseEntity<TraceView> trace(@PathVariable String invocationId) {
+    public ResponseEntity<TraceView> trace(
+            @PathVariable String invocationId, HttpServletRequest request) {
         List<Span> spans = traceStore.findByTraceId(invocationId);
         if (spans.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-        return ResponseEntity.ok(TraceView.from(Trace.fromSpans(spans)));
+        Trace trace = Trace.fromSpans(spans);
+        authorization.requireOwned(trace.sessionId(), request);
+        return ResponseEntity.ok(TraceView.from(trace));
     }
 
     /** 按 sessionId 查询该会话下全部 Trace，分组返回。 */
     @GetMapping
-    public List<TraceView> traces(@RequestParam String sessionId) {
+    public List<TraceView> traces(
+            @RequestParam String sessionId, HttpServletRequest request) {
+        authorization.requireOwned(sessionId, request);
         List<Span> spans = traceStore.findBySessionId(sessionId);
         return groupByTrace(spans).stream()
                 .map(Trace::fromSpans)

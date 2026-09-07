@@ -1,6 +1,8 @@
 package com.github.agentos.server.controller;
 
 import com.github.agentos.tool.builtin.file.access.RootedFileAccessPolicy;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -34,18 +36,23 @@ public final class AttachmentController {
     private static final Pattern SAFE_SESSION_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
 
     private final RootedFileAccessPolicy fileAccessPolicy;
+    private final SessionAuthorization authorization;
 
     /** 创建附件上传控制器。 */
-    public AttachmentController(RootedFileAccessPolicy fileAccessPolicy) {
+    public AttachmentController(
+            RootedFileAccessPolicy fileAccessPolicy, SessionAuthorization authorization) {
         this.fileAccessPolicy = fileAccessPolicy;
+        this.authorization = authorization;
     }
 
     /** 上传附件到会话目录，返回可被 file_read 工具读取的相对路径列表。 */
     @PostMapping
     public List<AttachmentView> upload(
             @RequestParam("sessionId") String sessionId,
-            @RequestParam("files") List<MultipartFile> files) {
+            @RequestParam("files") List<MultipartFile> files,
+            HttpServletRequest request) {
         String session = requireSafeSessionId(sessionId);
+        authorization.claim(session, request);
         if (files == null || files.isEmpty()) {
             throw badRequest("files must not be empty");
         }

@@ -50,6 +50,42 @@ class AgentRunnerSessionStateTest {
     }
 
     @Test
+    void restoresFullAgentStateFromPersistedSessionAfterRestart() {
+        InMemorySessionService sessions = new InMemorySessionService();
+        AgentRunner firstRunner = new AgentRunner(
+                (request, context, running) -> running.complete("最终答案", "推理摘要"),
+                AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+
+        AgentState completed = firstRunner.run(
+                AgentRequest.of("session-1", "问题"), InvocationContext.of("main-agent"));
+        AgentRunner restartedRunner = new AgentRunner(
+                (request, context, running) -> running.complete("unused"),
+                AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+
+        assertThat(restartedRunner.state("session-1")).contains(completed);
+        assertThat(restartedRunner.state("missing-session")).isEmpty();
+    }
+
+    @Test
+    void restoresLegacySessionStateWithoutFullSnapshot() {
+        InMemorySessionService sessions = new InMemorySessionService();
+        sessions.getOrCreate("legacy-session", "user-1");
+        sessions.applyDelta("legacy-session", Map.of(
+                "lastStatus", "COMPLETED", "turnCount", 3));
+        AgentRunner restartedRunner = new AgentRunner(
+                (request, context, running) -> running.complete("unused"),
+                AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+
+        AgentState restored = restartedRunner.state("legacy-session").orElseThrow();
+        assertThat(restored.status()).isEqualTo(AgentState.Status.COMPLETED);
+        assertThat(restored.iteration()).isEqualTo(3);
+        assertThat(restored.output()).isEmpty();
+    }
+
+    @Test
     void waitingRunDoesNotCountTurn() {
         InMemorySessionService sessions = new InMemorySessionService();
         AgentRunner runner = new AgentRunner(
@@ -67,6 +103,13 @@ class AgentRunnerSessionStateTest {
         Session session = sessions.find("session-1").orElseThrow();
         assertThat(session.state().value("turnCount")).isNull();
         assertThat(session.state().value("lastStatus")).isNull();
+
+        AgentRunner restartedRunner = new AgentRunner(
+                (request, context, running) -> running.complete("unused"),
+                AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
+                new InMemoryCheckpointStore(), sessions);
+        assertThat(restartedRunner.state("session-1")).hasValueSatisfying(state ->
+                assertThat(state.status()).isEqualTo(AgentState.Status.WAITING));
     }
 
     @Test

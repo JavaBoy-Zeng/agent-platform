@@ -10,3 +10,5 @@ node_modulse
 .agentos/
 application.yml
 !agentos-server/src/test/resources/application.yml
+.env
+!.env.example

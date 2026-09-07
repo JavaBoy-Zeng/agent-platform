@@ -19,6 +19,11 @@ public interface SessionService {
     /** 查找指定会话。 */
     Optional<Session> find(String sessionId);
 
+    /** 仅当会话属于指定用户时返回快照。 */
+    default Optional<Session> findByUser(String sessionId, String userId) {
+        return find(sessionId).filter(session -> session.userId().equals(userId));
+    }
+
     /**
      * 按最后活跃时间倒序返回会话快照。
      *
@@ -51,9 +56,42 @@ public interface SessionService {
         return recent(Integer.MAX_VALUE).size();
     }
 
+    /** 按最后活跃时间倒序分页返回指定用户的会话。 */
+    default List<Session> recentByUser(String userId, int offset, int limit) {
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must not be negative");
+        }
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        return recent(Integer.MAX_VALUE).stream()
+                .filter(session -> session.userId().equals(userId))
+                .skip(offset)
+                .limit(limit)
+                .toList();
+    }
+
+    /** 返回指定用户保存的会话总数。 */
+    default long countByUser(String userId) {
+        return recent(Integer.MAX_VALUE).stream()
+                .filter(session -> session.userId().equals(userId))
+                .count();
+    }
+
     /** 删除指定会话快照；不存在时返回 false。 */
     default boolean delete(String sessionId) {
         return false;
+    }
+
+    /** 仅删除属于指定用户的会话；不存在或归属不匹配时返回 false。 */
+    default boolean deleteByUser(String sessionId, String userId) {
+        return findByUser(sessionId, userId).isPresent() && delete(sessionId);
+    }
+
+    /** 仅对指定用户持有的未删除会话原子合并状态。 */
+    default Optional<Session> applyDeltaByUser(
+            String sessionId, String userId, Map<String, Object> delta) {
+        return findByUser(sessionId, userId).map(ignored -> applyDelta(sessionId, delta));
     }
 
     /**

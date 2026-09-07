@@ -39,9 +39,9 @@ public final class CodeExecutionTool implements AgentTool {
     @Override
     public String description() {
         return "执行独立、自包含的代码片段并返回标准输出、标准错误与退出码。"
-                + "仅用于运行用户提供或为用户生成的 Python/Shell/Java 代码片段；"
+                + "仅用于运行用户提供或为用户生成的 Python/Shell/Java/JavaScript/Go 代码片段；"
                 + "宿主机命令、服务器文件/目录、构建、测试、curl 和网络查询必须使用 run_command，"
-                + "不得使用本工具代替。支持语言: python、shell、java"
+                + "不得使用本工具代替。支持语言: python、shell、java、javascript、go"
                 + "（Java 需定义 public class Main 并提供 main 方法）。当前执行环境: "
                 + (executor.isSandboxed()
                         ? "Docker 沙箱（网络隔离、内存与 CPU 受限、源码只读挂载）；"
@@ -54,7 +54,7 @@ public final class CodeExecutionTool implements AgentTool {
         return List.of(
                 new ToolParameter(
                         "language", ToolParameter.ValueType.STRING,
-                        "代码语言: python / shell / java", true),
+                        "代码语言: python / shell / java / javascript / go", true),
                 new ToolParameter(
                         "code", ToolParameter.ValueType.STRING,
                         "要执行的完整代码。shell 代码需匹配执行环境的脚本方言（"

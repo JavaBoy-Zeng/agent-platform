@@ -4,6 +4,8 @@ import com.github.agentos.kernel.AgentEvent;
 import com.github.agentos.kernel.AgentEventStore;
 import com.github.agentos.kernel.AgentEventType;
 import com.github.agentos.kernel.EventActions;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,10 +32,13 @@ import java.util.Objects;
 public final class AgentEventController {
 
     private final AgentEventStore eventStore;
+    private final SessionAuthorization authorization;
 
     /** 创建领域事件查询接口。 */
-    public AgentEventController(AgentEventStore eventStore) {
+    public AgentEventController(AgentEventStore eventStore, SessionAuthorization authorization) {
         this.eventStore = Objects.requireNonNull(eventStore, "eventStore must not be null");
+        this.authorization = Objects.requireNonNull(
+                authorization, "authorization must not be null");
     }
 
     /**
@@ -45,7 +50,9 @@ public final class AgentEventController {
     @GetMapping
     public List<InvocationTrace> bySession(
             @RequestParam String sessionId,
-            @RequestParam(required = false) String type) {
+            @RequestParam(required = false) String type,
+            HttpServletRequest request) {
+        authorization.requireOwned(sessionId, request);
         AgentEventType filter = parseType(type);
         Map<String, List<AgentEvent>> grouped = new LinkedHashMap<>();
         for (AgentEvent event : eventStore.findBySessionId(sessionId)) {
@@ -65,11 +72,13 @@ public final class AgentEventController {
 
     /** 按 Invocation 返回单次执行的完整事件轨迹；无记录时返回 404。 */
     @GetMapping("/{invocationId}")
-    public ResponseEntity<InvocationTrace> byInvocation(@PathVariable String invocationId) {
+    public ResponseEntity<InvocationTrace> byInvocation(
+            @PathVariable String invocationId, HttpServletRequest request) {
         List<AgentEvent> events = eventStore.findByInvocationId(invocationId);
         if (events.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
+        authorization.requireOwned(events.getFirst().sessionId(), request);
         return ResponseEntity.ok(InvocationTrace.of(events.getFirst().sessionId(), events));
     }
 

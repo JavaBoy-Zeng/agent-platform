@@ -7,12 +7,18 @@ import { getServerHealth } from '../services/agentApi.js'
 import {
   changePassword, createUser, deleteUser, listUsers, updateUserRoles
 } from '../services/authApi.js'
+import {
+  getNonAdminCallLimit, updateNonAdminCallLimit
+} from '../services/adminApi.js'
+import AppSelect from '../components/AppSelect.vue'
 
 const { t } = useLocale()
 const router = useRouter()
 const theme = inject('theme')
 const selectedTheme = theme.theme
 const roleOptions = ['ADMIN', 'MEMORY_ADMIN', 'WORKSPACE']
+const MIN_PASSWORD_LENGTH = 8
+const MAX_USERNAME_LENGTH = 128
 
 const serverUrl = ref(getServerUrl())
 const probeState = ref('idle')
@@ -43,7 +49,66 @@ let dialogReturnFocus = null
 onMounted(async () => {
   if (!isAdmin.value) return
   await refreshUsers()
+  await refreshNonAdminLimit()
 })
+
+const nonAdminLimit = ref({ enabled: false, maxCalls: 0, windowSeconds: 0 })
+const nonAdminLimitState = ref('idle')
+const nonAdminLimitMessage = ref('')
+const WINDOW_PRESETS = [
+  { value: 300, label: '5 分钟' },
+  { value: 1800, label: '30 分钟' },
+  { value: 3600, label: '1 小时' },
+  { value: 86400, label: '24 小时' }
+]
+const MAX_CALLS_PRESETS = [
+  { value: 5, label: '5 次' },
+  { value: 10, label: '10 次' },
+  { value: 20, label: '20 次' },
+  { value: 50, label: '50 次' },
+  { value: 100, label: '100 次' }
+]
+
+async function refreshNonAdminLimit() {
+  nonAdminLimitState.value = 'testing'
+  try {
+    const value = await getNonAdminCallLimit()
+    nonAdminLimit.value = {
+      enabled: !!value?.enabled,
+      maxCalls: Number(value?.maxCalls) || 0,
+      windowSeconds: Number(value?.windowSeconds) || 0
+    }
+    nonAdminLimitState.value = 'ok'
+    nonAdminLimitMessage.value = ''
+  } catch (error) {
+    nonAdminLimitState.value = 'failed'
+    nonAdminLimitMessage.value = error?.message || t('无法读取非管理员调用限频')
+  }
+}
+
+async function submitNonAdminLimit() {
+  nonAdminLimitMessage.value = ''
+  nonAdminLimitState.value = 'testing'
+  try {
+    const value = await updateNonAdminCallLimit({
+      enabled: nonAdminLimit.value.enabled,
+      maxCalls: nonAdminLimit.value.enabled ? Number(nonAdminLimit.value.maxCalls) : 0,
+      windowSeconds: nonAdminLimit.value.enabled ? Number(nonAdminLimit.value.windowSeconds) : 0
+    })
+    nonAdminLimit.value = {
+      enabled: !!value?.enabled,
+      maxCalls: Number(value?.maxCalls) || 0,
+      windowSeconds: Number(value?.windowSeconds) || 0
+    }
+    nonAdminLimitState.value = 'ok'
+    nonAdminLimitMessage.value = nonAdminLimit.value.enabled
+      ? t('已启用限频')
+      : t('已关闭限频，非管理员调用不再受限制')
+  } catch (error) {
+    nonAdminLimitState.value = 'failed'
+    nonAdminLimitMessage.value = error?.message || t('更新失败')
+  }
+}
 
 async function saveAndProbe() {
   setServerUrl(serverUrl.value)
@@ -109,9 +174,25 @@ async function refreshUsers() {
 async function submitCreateUser() {
   usersMessage.value = ''
   const { username, password, roles } = newUserForm.value
+  const normalizedUsername = username.trim()
+  if (!normalizedUsername) {
+    usersState.value = 'failed'
+    usersMessage.value = t('用户名不能为空')
+    return
+  }
+  if (normalizedUsername.length > MAX_USERNAME_LENGTH) {
+    usersState.value = 'failed'
+    usersMessage.value = t('用户名不能超过 128 个字符')
+    return
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    usersState.value = 'failed'
+    usersMessage.value = t('密码至少 8 位')
+    return
+  }
   usersState.value = 'testing'
   try {
-    await createUser(username.trim(), password, roles)
+    await createUser(normalizedUsername, password, roles)
     newUserForm.value = { username: '', password: '', roles: ['USER'] }
     usersMessage.value = t('用户已创建')
     await refreshUsers()
@@ -281,6 +362,43 @@ function formatDate(iso) {
 
     <section v-if="isAdmin" class="panel-body">
       <header class="section-head">
+        <h2>{{ t('非管理员调用限频') }}</h2>
+        <button class="ghost" type="button" @click="refreshNonAdminLimit">{{ t('刷新数据') }}</button>
+      </header>
+
+      <form class="stack-form" @submit.prevent="submitNonAdminLimit">
+        <span class="field-label">{{ t('限频设置') }}</span>
+        <div class="row">
+          <label class="check">
+            <input type="checkbox" v-model="nonAdminLimit.enabled">
+            {{ t('启用限频') }}
+          </label>
+          <AppSelect
+            :model-value="nonAdminLimit.maxCalls"
+            :options="MAX_CALLS_PRESETS"
+            :disabled="!nonAdminLimit.enabled"
+            :placeholder="t('选择最大调用次数')"
+            :aria-label="t('最大调用次数')"
+            @update:model-value="value => nonAdminLimit.maxCalls = value"
+          />
+          <AppSelect
+            :model-value="nonAdminLimit.windowSeconds"
+            :options="WINDOW_PRESETS"
+            :disabled="!nonAdminLimit.enabled"
+            :placeholder="t('选择时间窗口')"
+            :aria-label="t('时间窗口')"
+            @update:model-value="value => nonAdminLimit.windowSeconds = value"
+          />
+          <button type="submit" :disabled="nonAdminLimitState === 'testing'">{{ t('保存') }}</button>
+        </div>
+        <p v-if="nonAdminLimitMessage" :class="['probe', nonAdminLimitState === 'ok' ? 'ok' : 'bad']">
+          {{ nonAdminLimitMessage }}
+        </p>
+      </form>
+    </section>
+
+    <section v-if="isAdmin" class="panel-body">
+      <header class="section-head">
         <h2>{{ t('用户管理') }}</h2>
         <button class="ghost" type="button" @click="refreshUsers">{{ t('刷新数据') }}</button>
       </header>
@@ -317,6 +435,8 @@ function formatDate(iso) {
             v-model="newUserForm.username"
             type="text"
             :placeholder="t('用户名')"
+            required
+            :maxlength="MAX_USERNAME_LENGTH"
             spellcheck="false"
             autocomplete="off"
           >
@@ -324,6 +444,8 @@ function formatDate(iso) {
             v-model="newUserForm.password"
             type="password"
             :placeholder="t('新密码')"
+            required
+            :minlength="MIN_PASSWORD_LENGTH"
             autocomplete="new-password"
           >
           <div class="role-editor new-user-roles" role="group" :aria-label="t('角色')">

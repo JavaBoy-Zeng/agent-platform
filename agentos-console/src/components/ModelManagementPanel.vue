@@ -115,10 +115,17 @@ async function load() {
       models: Array.isArray(value?.models) ? value.models : []
     }
   } catch (cause) {
-    error.value = cause.message || '模型配置读取失败'
+    error.value = explainManagementError(cause, '模型配置读取失败')
   } finally {
     loading.value = false
   }
+}
+
+function explainManagementError(cause, fallback) {
+  if (cause?.status === 403) {
+    return '当前账号缺少 ADMIN 角色，无法管理模型配置。请联系管理员在「用户管理」中授予 ADMIN 角色。'
+  }
+  return cause?.message || fallback
 }
 
 function blankForm() {
@@ -304,7 +311,7 @@ async function saveProvider() {
     await destroyEditor()
     await load()
   } catch (cause) {
-    error.value = cause.message || '保存失败'
+    error.value = explainManagementError(cause, '保存失败')
   } finally {
     busy.value = ''
   }
@@ -318,7 +325,7 @@ async function testProvider(provider) {
     toast.value = `${result.message} · ${result.latencyMs} ms`
     await load()
   } catch (cause) {
-    error.value = cause.message || '连接测试失败'
+    error.value = explainManagementError(cause, '连接测试失败')
   } finally {
     busy.value = ''
   }
@@ -342,7 +349,7 @@ async function toggleProvider(provider) {
     })
     await load()
   } catch (cause) {
-    error.value = cause.message || '状态更新失败'
+    error.value = explainManagementError(cause, '状态更新失败')
   } finally {
     busy.value = ''
   }
@@ -357,7 +364,7 @@ async function confirmDelete() {
     toast.value = '模型配置已删除'
     await load()
   } catch (cause) {
-    error.value = cause.message || '删除失败'
+    error.value = explainManagementError(cause, '删除失败')
   } finally {
     busy.value = ''
   }

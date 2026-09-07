@@ -15,6 +15,7 @@ import com.github.agentos.kernel.SessionService;
 import com.github.agentos.kernel.SessionState;
 import com.github.agentos.server.security.UserAccount;
 import com.github.agentos.server.security.UserStore;
+import com.github.agentos.server.settings.SettingsService;
 import com.github.agentos.server.usage.UsageStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -220,16 +221,27 @@ public final class MybatisRuntimeStores {
             String id = requireText(sessionId, "sessionId");
             String owner = requireText(userId, "userId");
             PersistenceRows.SessionRow existing = mapper.selectById(id);
-            if (existing != null) return toSession(existing);
+            if (existing != null) {
+                Session session = toSession(existing);
+                if (session.deleted() || !session.userId().equals(owner)) {
+                    throw new IllegalArgumentException("session does not belong to current user");
+                }
+                return session;
+            }
             Session created = Session.create(id, owner);
             mapper.insertIfAbsent(toRow(created));
-            return toSession(mapper.selectById(id));
+            Session stored = toSession(mapper.selectById(id));
+            if (stored.deleted() || !stored.userId().equals(owner)) {
+                throw new IllegalArgumentException("session does not belong to current user");
+            }
+            return stored;
         }
 
         @Override
         public Optional<Session> find(String sessionId) {
             return Optional.ofNullable(mapper.selectById(requireText(sessionId, "sessionId")))
-                    .map(this::toSession);
+                    .map(this::toSession)
+                    .filter(session -> !session.deleted());
         }
 
         @Override
@@ -242,19 +254,52 @@ public final class MybatisRuntimeStores {
             if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
             if (limit < 1) throw new IllegalArgumentException("limit must be positive");
             return mapper.selectList(new QueryWrapper<PersistenceRows.SessionRow>()
-                            .orderByDesc("last_active_at")
-                            .last("LIMIT " + limit + " OFFSET " + offset))
+                    .isNull("deleted_at")
+                    .orderByDesc("last_active_at")
+                    .last("LIMIT " + limit + " OFFSET " + offset))
                     .stream().map(this::toSession).toList();
         }
 
         @Override
         public long count() {
-            return mapper.selectCount(null);
+            return mapper.selectCount(new QueryWrapper<PersistenceRows.SessionRow>()
+                    .isNull("deleted_at"));
+        }
+
+        @Override
+        public List<Session> recentByUser(String userId, int offset, int limit) {
+            if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
+            if (limit < 1) throw new IllegalArgumentException("limit must be positive");
+            return mapper.selectList(new QueryWrapper<PersistenceRows.SessionRow>()
+                    .eq("user_id", requireText(userId, "userId"))
+                    .isNull("deleted_at")
+                    .orderByDesc("last_active_at")
+                    .last("LIMIT " + limit + " OFFSET " + offset))
+                    .stream().map(this::toSession).toList();
+        }
+
+        @Override
+        public long countByUser(String userId) {
+            return mapper.selectCount(new QueryWrapper<PersistenceRows.SessionRow>()
+                    .eq("user_id", requireText(userId, "userId"))
+                    .isNull("deleted_at"));
+        }
+
+        @Override
+        public boolean deleteByUser(String sessionId, String userId) {
+            return mapper.update(null, new UpdateWrapper<PersistenceRows.SessionRow>()
+                    .set("deleted_at", Instant.now())
+                    .eq("session_id", requireText(sessionId, "sessionId"))
+                    .eq("user_id", requireText(userId, "userId"))
+                    .isNull("deleted_at")) > 0;
         }
 
         @Override
         public boolean delete(String sessionId) {
-            return mapper.deleteById(requireText(sessionId, "sessionId")) > 0;
+            return mapper.update(null, new UpdateWrapper<PersistenceRows.SessionRow>()
+                    .set("deleted_at", Instant.now())
+                    .eq("session_id", requireText(sessionId, "sessionId"))
+                    .isNull("deleted_at")) > 0;
         }
 
         @Override
@@ -268,9 +313,25 @@ public final class MybatisRuntimeStores {
                 locked = mapper.selectForUpdate(id);
             }
             Session current = toSession(locked);
+            if (current.deleted()) throw new IllegalArgumentException("session has been deleted");
             Session updated = current.withState(current.state().withDelta(delta)).touch(Instant.now());
             mapper.updateById(toRow(updated));
             return updated;
+        }
+
+        @Override
+        @Transactional
+        public Optional<Session> applyDeltaByUser(
+                String sessionId, String userId, Map<String, Object> delta) {
+            String id = requireText(sessionId, "sessionId");
+            String owner = requireText(userId, "userId");
+            PersistenceRows.SessionRow locked = mapper.selectForUpdate(id);
+            if (locked == null) return Optional.empty();
+            Session current = toSession(locked);
+            if (current.deleted() || !current.userId().equals(owner)) return Optional.empty();
+            Session updated = current.withState(current.state().withDelta(delta)).touch(Instant.now());
+            mapper.updateById(toRow(updated));
+            return Optional.of(updated);
         }
 
         private PersistenceRows.SessionRow toRow(Session session) {
@@ -278,7 +339,7 @@ public final class MybatisRuntimeStores {
                 return new PersistenceRows.SessionRow(
                         session.sessionId(), session.userId(),
                         objectMapper.writeValueAsString(session.state().asMap()),
-                        session.createdAt(), session.lastActiveAt());
+                        session.createdAt(), session.lastActiveAt(), session.deletedAt());
             } catch (JacksonException exception) {
                 throw encodeFailure("session " + session.sessionId(), exception);
             }
@@ -289,7 +350,7 @@ public final class MybatisRuntimeStores {
                 Map<String, Object> state = objectMapper.readValue(
                         row.statePayload(), new TypeReference<Map<String, Object>>() { });
                 return new Session(row.sessionId(), row.userId(), row.createdAt(),
-                        row.lastActiveAt(), SessionState.of(state));
+                        row.lastActiveAt(), SessionState.of(state), row.deletedAt());
             } catch (JacksonException exception) {
                 throw decodeFailure("session " + row.sessionId(), exception);
             }
@@ -400,5 +461,40 @@ public final class MybatisRuntimeStores {
         return new IllegalStateException(
                 "PostgreSQL persistence failed while decoding " + target + ": "
                         + exception.getMessage(), exception);
+    }
+
+    /** settings 表读写。 */
+    public static final class Settings implements SettingsService {
+        private final SettingsMapper mapper;
+
+        public Settings(SettingsMapper mapper) {
+            this.mapper = mapper;
+        }
+
+        @Override
+        public Optional<String> read(String key) {
+            String id = requireText(key, "settingKey");
+            PersistenceRows.SettingRow row = mapper.selectById(id);
+            return row == null ? Optional.empty() : Optional.of(row.settingValue());
+        }
+
+        @Override
+        public void write(String key, String value, String updatedBy) {
+            String id = requireText(key, "settingKey");
+            String text = value == null ? "" : value;
+            String by = updatedBy == null ? "" : updatedBy;
+            try {
+                mapper.insert(new PersistenceRows.SettingRow(id, text, Instant.now(), by));
+            } catch (DuplicateKeyException exception) {
+                mapper.updateById(new PersistenceRows.SettingRow(id, text, Instant.now(), by));
+            }
+        }
+
+        private static String requireText(String value, String field) {
+            if (value == null || value.isBlank()) {
+                throw new IllegalArgumentException(field + " must not be blank");
+            }
+            return value.trim();
+        }
     }
 }

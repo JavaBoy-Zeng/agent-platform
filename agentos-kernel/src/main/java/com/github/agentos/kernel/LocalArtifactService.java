@@ -97,6 +97,16 @@ public final class LocalArtifactService implements ArtifactService {
         }
     }
 
+    /** 只读取元数据，不提前加载可能较大的产物正文。 */
+    @Override
+    public Optional<Artifact> metadata(String artifactId) {
+        Path directory = artifactDirectory(artifactId);
+        if (directory == null || !Files.isDirectory(directory)) {
+            return Optional.empty();
+        }
+        return readMetadata(directory);
+    }
+
     /** 列出指定会话的全部产物，按登记时间倒序。 */
     @Override
     public List<Artifact> list(String sessionId) {

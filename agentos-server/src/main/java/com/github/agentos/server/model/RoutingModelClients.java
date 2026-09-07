@@ -1,11 +1,15 @@
 package com.github.agentos.server.model;
 
+import com.github.agentos.kernel.SessionService;
 import com.github.agentos.planner.ChatClient;
 import com.github.agentos.planner.ModelClient;
 import com.github.agentos.planner.ModelPlan;
 import com.github.agentos.planner.ModelUsageListener;
 import com.github.agentos.planner.PlanningRequest;
 import com.github.agentos.planner.flow.LlmRequest;
+import com.github.agentos.server.security.UserAccount;
+import com.github.agentos.server.security.UserStore;
+import com.github.agentos.server.model.NonAdminCallLimiter.Decision;
 import tools.jackson.databind.ObjectMapper;
 
 import java.net.http.HttpClient;
@@ -25,29 +29,60 @@ public final class RoutingModelClients {
         private final ModelUsageListener usageListener;
         private final ModelClientProperties defaults;
         private final Path allowedRoot;
+        private final SessionService sessionService;
+        private final UserStore userStore;
+        private final NonAdminCallLimiter limiter;
 
         public Planner(
                 ModelProviderService providers,
                 ObjectMapper objectMapper,
                 ModelUsageListener usageListener,
                 ModelClientProperties defaults,
-                Path allowedRoot) {
+                Path allowedRoot,
+                SessionService sessionService,
+                UserStore userStore,
+                NonAdminCallLimiter limiter) {
             this.providers = Objects.requireNonNull(providers);
             this.objectMapper = Objects.requireNonNull(objectMapper);
             this.usageListener = usageListener;
             this.defaults = Objects.requireNonNull(defaults);
             this.allowedRoot = allowedRoot;
+            this.sessionService = sessionService;
+            this.userStore = userStore;
+            this.limiter = limiter;
         }
 
         @Override
         public ModelPlan generatePlan(PlanningRequest request) {
             Object modelId = request.agentRequest().attributes().get("modelId");
+            enforceLimit(request.agentRequest().sessionId());
             ModelClientProperties properties = properties(
                     providers.resolve(text(modelId)),
                     defaults);
             return new OpenAiCompatibleModelClient(
                     httpClient(properties), objectMapper, properties, usageListener, allowedRoot)
                     .generatePlan(request);
+        }
+
+        /**
+         * 触发非管理员调用限频。会话用户具备 ADMIN 角色时直接放行。
+         * 拒绝时抛出 {@link NonAdminCallRateLimitException}（建议上层转 HTTP 429）。
+         */
+        private void enforceLimit(String sessionId) {
+            if (sessionService == null || userStore == null || limiter == null) return;
+            if (sessionId == null || sessionId.isBlank()) return;
+            String userId = sessionService.find(sessionId)
+                    .map(com.github.agentos.kernel.Session::userId)
+                    .orElse(null);
+            if (userId == null || userId.isBlank()) return;
+            boolean admin = userStore.findByUsername(userId)
+                    .map(UserAccount::isAdmin)
+                    .orElse(false);
+            if (admin) return;
+            Decision decision = limiter.check(userId);
+            if (!decision.allowed()) {
+                throw new NonAdminCallRateLimitException(decision.reason(), decision.retryAfterMillis());
+            }
         }
     }
 
@@ -56,26 +91,37 @@ public final class RoutingModelClients {
         private final ObjectMapper objectMapper;
         private final ModelUsageListener usageListener;
         private final ModelClientProperties defaults;
+        private final SessionService sessionService;
+        private final UserStore userStore;
+        private final NonAdminCallLimiter limiter;
 
         public Chat(
                 ModelProviderService providers,
                 ObjectMapper objectMapper,
                 ModelUsageListener usageListener,
-                ModelClientProperties defaults) {
+                ModelClientProperties defaults,
+                SessionService sessionService,
+                UserStore userStore,
+                NonAdminCallLimiter limiter) {
             this.providers = Objects.requireNonNull(providers);
             this.objectMapper = Objects.requireNonNull(objectMapper);
             this.usageListener = usageListener;
             this.defaults = Objects.requireNonNull(defaults);
+            this.sessionService = sessionService;
+            this.userStore = userStore;
+            this.limiter = limiter;
         }
 
         @Override
         public String chat(String sessionId, LlmRequest request) {
+            enforceLimit(sessionId);
             RoutedChat routed = route(request);
             return routed.client().chat(sessionId, routed.request());
         }
 
         @Override
         public ChatResponse chatDetails(String sessionId, LlmRequest request) {
+            enforceLimit(sessionId);
             RoutedChat routed = route(request);
             return routed.client().chatDetails(sessionId, routed.request());
         }
@@ -83,6 +129,7 @@ public final class RoutingModelClients {
         @Override
         public ChatResponse chatStream(
                 String sessionId, LlmRequest request, Consumer<String> onDelta) {
+            enforceLimit(sessionId);
             RoutedChat routed = route(request);
             return routed.client().chatStream(sessionId, routed.request(), onDelta);
         }
@@ -90,8 +137,30 @@ public final class RoutingModelClients {
         @Override
         public ToolCallResponse chatWithTools(
                 String sessionId, LlmRequest request, Consumer<String> onDelta) {
+            enforceLimit(sessionId);
             RoutedChat routed = route(request);
             return routed.client().chatWithTools(sessionId, routed.request(), onDelta);
+        }
+
+        /**
+         * 触发非管理员调用限频。会话用户具备 ADMIN 角色时直接放行。
+         * 拒绝时抛出 {@link NonAdminCallRateLimitException}（建议上层转 HTTP 429）。
+         */
+        private void enforceLimit(String sessionId) {
+            if (sessionService == null || userStore == null || limiter == null) return;
+            if (sessionId == null || sessionId.isBlank()) return;
+            String userId = sessionService.find(sessionId)
+                    .map(com.github.agentos.kernel.Session::userId)
+                    .orElse(null);
+            if (userId == null || userId.isBlank()) return;
+            boolean admin = userStore.findByUsername(userId)
+                    .map(UserAccount::isAdmin)
+                    .orElse(false);
+            if (admin) return;
+            Decision decision = limiter.check(userId);
+            if (!decision.allowed()) {
+                throw new NonAdminCallRateLimitException(decision.reason(), decision.retryAfterMillis());
+            }
         }
 
         private RoutedChat route(LlmRequest request) {

@@ -4,6 +4,9 @@ import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.run.AgentRunCoordinator;
+import com.github.agentos.server.security.RequestIdentity;
+import com.github.agentos.server.security.SessionAuthorization;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -31,19 +34,23 @@ public final class BackgroundAgentRunController {
 
     private final AgentRunCoordinator coordinator;
     private final SessionHistoryService sessionHistoryService;
+    private final SessionAuthorization authorization;
 
     /** 创建后台运行控制器。 */
     public BackgroundAgentRunController(
-            AgentRunCoordinator coordinator, SessionHistoryService sessionHistoryService) {
+            AgentRunCoordinator coordinator,
+            SessionHistoryService sessionHistoryService,
+            SessionAuthorization authorization) {
         this.coordinator = coordinator;
         this.sessionHistoryService = sessionHistoryService;
+        this.authorization = authorization;
     }
 
     /** 创建与 HTTP 连接生命周期无关的后台运行。 */
     @PostMapping
     public ResponseEntity<AgentRunCoordinator.RunSnapshot> start(
-            @RequestBody StartRunRequest body) {
-        RunInvocation invocation = normalize(body);
+            @RequestBody StartRunRequest body, HttpServletRequest request) {
+        RunInvocation invocation = normalize(body, request);
         try {
             AgentRunCoordinator.RunSnapshot run = coordinator.start(
                     invocation.request(), invocation.context());
@@ -55,19 +62,22 @@ public final class BackgroundAgentRunController {
         } catch (AgentRunCoordinator.RunCapacityExceededException exception) {
             throw new ResponseStatusException(
                     HttpStatus.TOO_MANY_REQUESTS, exception.getMessage());
+        } catch (AgentRunCoordinator.SessionAccessDeniedException exception) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "session not found");
         }
     }
 
     /** 列出进程内保留的全部后台运行，按创建时间倒序。 */
     @GetMapping
-    public List<AgentRunCoordinator.RunSnapshot> list() {
-        return coordinator.list();
+    public List<AgentRunCoordinator.RunSnapshot> list(HttpServletRequest request) {
+        return coordinator.list(RequestIdentity.from(request).userId());
     }
 
     /** 查询运行状态、最终结果和当前事件游标。 */
     @GetMapping("/{runId}")
-    public ResponseEntity<AgentRunCoordinator.RunSnapshot> get(@PathVariable String runId) {
-        return coordinator.find(runId)
+    public ResponseEntity<AgentRunCoordinator.RunSnapshot> get(
+            @PathVariable String runId, HttpServletRequest request) {
+        return coordinator.find(runId, RequestIdentity.from(request).userId())
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
@@ -78,10 +88,12 @@ public final class BackgroundAgentRunController {
             @PathVariable String runId,
             @RequestParam(name = "after", defaultValue = "0") long after,
             @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId,
-            HttpServletResponse response) {
+            HttpServletResponse response,
+            HttpServletRequest request) {
         disableEventStreamBuffering(response);
         long cursor = Math.max(after, parseLastEventId(lastEventId));
-        return coordinator.stream(runId, cursor).orElseThrow(() ->
+        return coordinator.stream(
+                runId, cursor, RequestIdentity.from(request).userId()).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "run not found: " + runId));
     }
 
@@ -92,18 +104,22 @@ public final class BackgroundAgentRunController {
 
     /** 只有显式调用该接口才会取消后台任务。 */
     @PostMapping("/{runId}/cancel")
-    public ResponseEntity<AgentRunCoordinator.CancelResult> cancel(@PathVariable String runId) {
-        AgentRunCoordinator.CancelResult result = coordinator.cancel(runId).orElseThrow(() ->
+    public ResponseEntity<AgentRunCoordinator.CancelResult> cancel(
+            @PathVariable String runId, HttpServletRequest request) {
+        AgentRunCoordinator.CancelResult result = coordinator.cancel(
+                runId, RequestIdentity.from(request).userId()).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "run not found: " + runId));
         return ResponseEntity.status(
                 result.interruptRequested() ? HttpStatus.ACCEPTED : HttpStatus.OK).body(result);
     }
 
-    private RunInvocation normalize(StartRunRequest body) {
+    private RunInvocation normalize(StartRunRequest body, HttpServletRequest httpRequest) {
         if (body == null || body.input() == null || body.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
         }
         String sessionId = textOr(body.sessionId(), UUID.randomUUID().toString());
+        RequestIdentity identity = RequestIdentity.from(httpRequest);
+        authorization.claim(sessionId, httpRequest);
         // 后台运行是控制台唯一的运行入口，必须在这里注入会话历史，否则每轮都是新对话。
         AgentRequest request = sessionHistoryService.withHistory(new AgentRequest(
                 sessionId, body.input(),
@@ -111,8 +127,8 @@ public final class BackgroundAgentRunController {
         return new RunInvocation(
                 request,
                 new InvocationContext(
-                        textOr(body.teamId(), "default-team"),
-                        textOr(body.userId(), "default-user"),
+                        identity.teamId(),
+                        identity.userId(),
                         textOr(body.agentId(), "main-agent"),
                         body.taskId() == null ? "" : body.taskId()));
     }

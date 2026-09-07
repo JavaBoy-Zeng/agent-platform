@@ -123,7 +123,7 @@ public final class SystemCatalogAgent extends BaseAgent implements Agent, Routab
     private static String renderModels(CatalogSnapshot snapshot) {
         StringBuilder answer = new StringBuilder("当前 AgentOS 已启用模型：\n");
         snapshot.models().forEach(model -> answer.append("\n- `").append(model.modelId())
-                .append("`：").append(model.provider()).append("（").append(model.modelType())
+                .append("`：").append(model.providerName()).append("（").append(model.modelType())
                 .append("）"));
         return answer.toString();
     }

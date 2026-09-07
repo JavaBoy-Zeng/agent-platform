@@ -2,8 +2,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getAuthToken, getAuthUser, getServerUrl } from '../services/apiConfig.js'
 import { invokeDesktop, isDesktop } from '../services/desktopApi.js'
 
-const SESSION_WORKSPACES_KEY = 'agentos.session-workspaces.v2'
-const LEGACY_SESSION_WORKSPACE_KEY = 'agentos.session-workspaces.v1'
+const SESSION_WORKSPACES_KEY_PREFIX = 'agentos.session-workspaces.v3'
+const LEGACY_SESSION_WORKSPACE_KEYS = [
+  'agentos.session-workspaces.v1',
+  'agentos.session-workspaces.v2'
+]
 
 export const DEFAULT_WORKSPACE_POLICY = Object.freeze({
   maxDirectoriesPerTask: 1,
@@ -22,29 +25,31 @@ function normalizeAssociations(value) {
     .filter(([sessionId, workspaceIds]) => sessionId && workspaceIds.length))
 }
 
-function persistAssociations(associations) {
+function associationStorageKey(ownerId) {
+  return `${SESSION_WORKSPACES_KEY_PREFIX}.${encodeURIComponent(ownerId)}`
+}
+
+function persistAssociations(associations, ownerId) {
+  if (!ownerId) return
   try {
-    localStorage.setItem(SESSION_WORKSPACES_KEY, JSON.stringify(associations))
-    localStorage.removeItem(LEGACY_SESSION_WORKSPACE_KEY)
+    localStorage.setItem(associationStorageKey(ownerId), JSON.stringify(associations))
   } catch { /* local only */ }
 }
 
-function readAssociations() {
+function readAssociations(ownerId) {
   try {
-    const stored = localStorage.getItem(SESSION_WORKSPACES_KEY)
-    if (stored !== null) return normalizeAssociations(JSON.parse(stored))
-
-    const legacy = localStorage.getItem(LEGACY_SESSION_WORKSPACE_KEY)
-    if (legacy === null) return {}
-    const migrated = normalizeAssociations(JSON.parse(legacy))
-    persistAssociations(migrated)
-    return migrated
+    // 旧映射没有用户归属，安全优先：删除而不迁移。
+    LEGACY_SESSION_WORKSPACE_KEYS.forEach(key => localStorage.removeItem(key))
+    if (!ownerId) return {}
+    const stored = localStorage.getItem(associationStorageKey(ownerId))
+    return stored === null ? {} : normalizeAssociations(JSON.parse(stored))
   } catch {
     return {}
   }
 }
 
 export function useDesktopWorkspace(agentConsole, options = {}) {
+  const ownerId = String(options.ownerId || getAuthUser()?.username || '').trim()
   const requestedMaxDirectories = Number(options.workspacePolicy?.maxDirectoriesPerTask)
   const workspacePolicy = Object.freeze({
     maxDirectoriesPerTask: Number.isFinite(requestedMaxDirectories) && requestedMaxDirectories >= 1
@@ -56,7 +61,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
   const desktop = isDesktop()
   const grant = ref(null)
   const workspaces = ref([])
-  const associations = ref(readAssociations())
+  const associations = ref(readAssociations(ownerId))
   const authorizing = ref(false)
   const picking = ref(false)
   const contextLoading = ref(false)
@@ -133,7 +138,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
         [currentSessionId.value]: [normalizedWorkspaceId]
       }
       error.value = ''
-      persistAssociations(associations.value)
+      persistAssociations(associations.value, ownerId)
       return true
     }
     if (workspacePolicy.lockAfterFirstBinding && existing.length) {
@@ -149,7 +154,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
       [currentSessionId.value]: [...existing, normalizedWorkspaceId]
     }
     error.value = ''
-    persistAssociations(associations.value)
+    persistAssociations(associations.value, ownerId)
     return true
   }
 
@@ -182,7 +187,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
     else delete next[normalizedSessionId]
     associations.value = next
     error.value = ''
-    persistAssociations(next)
+    persistAssociations(next, ownerId)
     return true
   }
 
@@ -196,7 +201,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
     delete next[currentSessionId.value]
     associations.value = next
     error.value = ''
-    persistAssociations(next)
+    persistAssociations(next, ownerId)
     return true
   }
 
@@ -336,7 +341,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
       else delete next[key]
     })
     associations.value = next
-    persistAssociations(next)
+    persistAssociations(next, ownerId)
     await refreshWorkspaces()
   }
 
@@ -362,7 +367,8 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
   }
 
   function syncAuthorization(event) {
-    authUser.value = event?.detail ?? getAuthUser()
+    const nextUser = event?.detail ?? getAuthUser()
+    authUser.value = nextUser?.username === ownerId ? nextUser : null
     clearInterval(refreshTimer)
     refreshTimer = undefined
     if (available.value) {

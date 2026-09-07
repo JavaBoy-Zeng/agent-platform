@@ -32,7 +32,11 @@ class AgentRunnerConcurrencyTest {
 
         assertThat(runner.invocation(firstInvocation)).isEmpty();
         assertThat(runner.latestInvocation("retained-1")).isEmpty();
-        assertThat(runner.state("retained-1")).isEmpty();
+        // Invocation 和内存状态可以淘汰，但状态查询仍从持久化会话恢复。
+        assertThat(runner.state("retained-1")).hasValueSatisfying(state -> {
+            assertThat(state.status()).isEqualTo(AgentState.Status.COMPLETED);
+            assertThat(state.output()).isEqualTo("one");
+        });
         assertThat(runner.latestInvocation("retained-2")).isPresent();
         assertThat(runner.latestInvocation("retained-3")).isPresent();
     }

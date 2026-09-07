@@ -47,7 +47,8 @@ class AgentRunnerInvocationTest {
                 AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
                 new InMemoryCheckpointStore(), sessions, limits);
 
-        runner.run(AgentRequest.of("session-1", "test"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "test"),
+                InvocationContext.scoped("default-team", "unknown-user", "main-agent", ""));
 
         InvocationContext bound = contexts.getFirst();
         assertThat(bound.session()).isNotNull();

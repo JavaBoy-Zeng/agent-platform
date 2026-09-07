@@ -72,7 +72,7 @@ public final class RuntimeCatalogService {
                 .filter(ModelProviderService.ModelOptionView::enabled)
                 .map(model -> new ModelView(
                         model.id(), model.modelId(), model.providerName(),
-                        model.modelType()))
+                        model.providerType(), model.modelType()))
                 .toList();
     }
 
@@ -146,7 +146,7 @@ public final class RuntimeCatalogService {
     public record McpServerView(String name, String status, String transport) {
     }
 
-    public record ModelView(String id, String modelId, String provider, String modelType) {
+    public record ModelView(String id, String modelId, String providerName, String providerType, String modelType) {
     }
 
     private static String displayName(String id) {

@@ -81,7 +81,9 @@ final class SqliteSupport {
                     user_id TEXT NOT NULL,
                     state TEXT NOT NULL,
                     created_at_ms INTEGER NOT NULL,
-                    last_active_at_ms INTEGER NOT NULL
+                    last_active_at_ms INTEGER NOT NULL,
+                    -- 会话软删除时间（Unix 毫秒），空值表示未删除。
+                    deleted_at_ms INTEGER
                 )
                 """,
                 """
@@ -100,6 +102,9 @@ final class SqliteSupport {
                 statement.execute(sql);
             }
             upgradeLegacyEventTable(statement);
+            upgradeLegacySessionTable(statement);
+            statement.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_owner_active "
+                    + "ON agent_sessions(user_id, deleted_at_ms, last_active_at_ms DESC)");
         } catch (SQLException exception) {
             throw failure("initializing schema", exception);
         }
@@ -109,6 +114,16 @@ final class SqliteSupport {
     private static void upgradeLegacyEventTable(Statement statement) {
         try {
             statement.execute("ALTER TABLE agent_events ADD COLUMN actions TEXT NOT NULL DEFAULT '{}'");
+        } catch (SQLException ignored) {
+            // 列已存在或表为新建结构，无需升级。
+        }
+    }
+
+    /** 为旧库的 agent_sessions 补充软删除时间列。 */
+    private static void upgradeLegacySessionTable(Statement statement) {
+        try {
+            // SQLite 无法持久化字段注释；该列保存软删除时间（Unix 毫秒）。
+            statement.execute("ALTER TABLE agent_sessions ADD COLUMN deleted_at_ms INTEGER");
         } catch (SQLException ignored) {
             // 列已存在或表为新建结构，无需升级。
         }

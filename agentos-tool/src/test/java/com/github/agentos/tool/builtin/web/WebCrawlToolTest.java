@@ -34,7 +34,7 @@ class WebCrawlToolTest {
 
     @BeforeEach
     void startServer() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v2/crawl", exchange -> {
             String receivedBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -60,7 +60,7 @@ class WebCrawlToolTest {
                 exchange, 200,
                 "{\"status\":\"failed\",\"error\":\"crawl worker unavailable\"}"));
         server.start();
-        baseUrl = "http://localhost:" + server.getAddress().getPort();
+        baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
         tool = new WebCrawlTool(
                 HttpClient.newHttpClient(), new ObjectMapper(), baseUrl, "test-key",
                 Duration.ofSeconds(5), Duration.ofSeconds(2), Duration.ofMillis(1),

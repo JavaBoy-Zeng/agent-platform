@@ -110,7 +110,8 @@ class CodeExecutionToolTest {
                 "execute_code", Map.of("language", "cobol", "code", "x")));
 
         assertThat(result.success()).isFalse();
-        assertThat(result.error()).contains("unsupported language").contains("python/shell/java");
+        assertThat(result.error()).contains("unsupported language")
+                .contains("python/shell/java/javascript/go");
     }
 
     @Test
@@ -128,6 +129,8 @@ class CodeExecutionToolTest {
     void languageParsingAcceptsAliasesAndRejectsUnknown() {
         assertThat(CodeLanguage.parse("PYTHON")).isEqualTo(CodeLanguage.PYTHON);
         assertThat(CodeLanguage.parse(" shell ")).isEqualTo(CodeLanguage.SHELL);
+        assertThat(CodeLanguage.parse("node")).isEqualTo(CodeLanguage.JAVASCRIPT);
+        assertThat(CodeLanguage.parse("golang")).isEqualTo(CodeLanguage.GO);
         org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalArgumentException.class, () -> CodeLanguage.parse("ruby"));
     }
