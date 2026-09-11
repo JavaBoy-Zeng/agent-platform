@@ -2,7 +2,7 @@ package com.github.agentos.server.config;
 
 import com.github.agentos.agent.finalize.AgentFinalizer;
 import com.github.agentos.agent.finalize.ModelStreamingAgentFinalizer;
-import com.github.agentos.agent.loop.MainAgent;
+import com.github.agentos.agent.loop.PlanExecuteAgent;
 import com.github.agentos.agent.routing.RoutingAgentLoop;
 import com.github.agentos.hitl.ApprovalService;
 import com.github.agentos.hitl.ApprovalToolInterceptor;
@@ -19,8 +19,6 @@ import com.github.agentos.memory.MemoryModel;
 import com.github.agentos.memory.MemoryEmbedding;
 import com.github.agentos.memory.MemoryRecallPolicy;
 import com.github.agentos.memory.InMemoryMemoryStore;
-import com.github.agentos.memory.FileMemoryStore;
-import com.github.agentos.memory.SqliteMemoryStore;
 import com.github.agentos.memory.RuleBasedMemoryModel;
 import com.github.agentos.memory.HashingMemoryEmbedding;
 import com.github.agentos.memory.OpenAiCompatibleMemoryModel;
@@ -32,6 +30,7 @@ import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.AgentRunCoordinator;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.builtin.file.reader.FileReaderFactory;
+import com.github.agentos.tool.builtin.web.WebFetchTool;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolInterceptor;
 import com.github.agentos.tool.runtime.ToolRegistry;
@@ -52,8 +51,6 @@ import com.github.agentos.tool.builtin.git.GitCommitTool;
 import com.github.agentos.tool.builtin.shell.RunCommandTool;
 import com.github.agentos.tool.builtin.web.BrowserSearchTool;
 import com.github.agentos.tool.builtin.web.WebCrawlTool;
-import com.github.agentos.tool.builtin.web.WebMapTool;
-import com.github.agentos.tool.builtin.web.WebSearchTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
@@ -189,37 +186,23 @@ public class AgentOsConfiguration {
     }
 
 
-//    /** 创建网页抓取工具，限制响应大小并转为纯文本。 */
-//    @Bean
-//    WebFetchTool webFetchTool(
-//            @Value("${agentos.tools.web-fetch.timeout-seconds:20}") long timeoutSeconds,
-//            @Value("${agentos.tools.web-fetch.max-chars:12000}") int maxChars) {
-//        return new WebFetchTool(
-//                java.net.http.HttpClient.newBuilder().followRedirects(
-//                        java.net.http.HttpClient.Redirect.NORMAL).build(),
-//                java.time.Duration.ofSeconds(timeoutSeconds), maxChars);
-//    }
-
-    /** 仅在配置了搜索 API Key 时注册 Tavily 网页搜索工具。 */
+    /** 创建网页抓取工具，限制响应大小并转为纯文本。 */
     @Bean
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
-            "!'${agentos.tools.web-search.api-key:}'.isBlank()")
-    WebSearchTool webSearchTool(
-            tools.jackson.databind.ObjectMapper objectMapper,
-            @Value("${agentos.tools.web-search.endpoint:https://api.tavily.com/search}") String endpoint,
-            @Value("${agentos.tools.web-search.api-key:}") String apiKey,
-            @Value("${agentos.tools.web-search.timeout-seconds:20}") long timeoutSeconds) {
-        return new WebSearchTool(
-                java.net.http.HttpClient.newHttpClient(), objectMapper, endpoint,
-                apiKey, java.time.Duration.ofSeconds(timeoutSeconds));
+    WebFetchTool webFetchTool(
+            @Value("${agentos.tools.web-fetch.timeout-seconds:20}") long timeoutSeconds,
+            @Value("${agentos.tools.web-fetch.max-chars:12000}") int maxChars) {
+        return new WebFetchTool(
+                java.net.http.HttpClient.newBuilder().followRedirects(
+                        java.net.http.HttpClient.Redirect.NORMAL).build(),
+                java.time.Duration.ofSeconds(timeoutSeconds), maxChars);
     }
+
 
     /**
      * 注册 SearXNG 网页浏览器搜索工具，作为系统主要的网页搜索工具。
      *
      * <p>SearXNG 为自部署服务（镜像 {@code searxng/searxng:latest}），无需 API Key，
-     * 因此无条件注册；工具名 {@code browser_search} 与 Tavily 的
-     * {@code web_search} 互不冲突。</p>
+     * 因此无条件注册；工具名为 {@code browser_search}。</p>
      */
     @Bean
     BrowserSearchTool browserSearchTool(
@@ -247,7 +230,7 @@ public class AgentOsConfiguration {
             @Value("${agentos.tools.firecrawl.poll-interval-millis:1000}")
             long pollIntervalMillis,
             @Value("${agentos.tools.firecrawl.crawl-max-pages:100}") int maxPages,
-            @Value("${agentos.tools.firecrawl.crawl-max-output-chars:40000}")
+            @Value("${agentos.tools.firecrawl.crawl-max-output-chars:20000}")
             int maxOutputChars) {
         return new WebCrawlTool(
                 firecrawlHttpClient(), objectMapper, baseUrl, apiKey,
@@ -257,24 +240,6 @@ public class AgentOsConfiguration {
                 maxPages, maxOutputChars);
     }
 
-    /** 使用 Firecrawl 快速发现网站中的内部链接。 */
-    @Bean
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
-            "'${agentos.tools.firecrawl.enabled:false}' == 'true' || "
-                    + "!'${agentos.tools.firecrawl.api-key:}'.isBlank()")
-    WebMapTool webMapTool(
-            tools.jackson.databind.ObjectMapper objectMapper,
-            @Value("${agentos.tools.firecrawl.base-url:https://api.firecrawl.dev}") String baseUrl,
-            @Value("${agentos.tools.firecrawl.api-key:}") String apiKey,
-            @Value("${agentos.tools.firecrawl.request-timeout-seconds:30}")
-            long requestTimeoutSeconds,
-            @Value("${agentos.tools.firecrawl.map-max-links:500}") int maxLinks,
-            @Value("${agentos.tools.firecrawl.map-max-output-chars:30000}")
-            int maxOutputChars) {
-        return new WebMapTool(
-                firecrawlHttpClient(), objectMapper, baseUrl, apiKey,
-                java.time.Duration.ofSeconds(requestTimeoutSeconds), maxLinks, maxOutputChars);
-    }
 
     private static java.net.http.HttpClient firecrawlHttpClient() {
         return java.net.http.HttpClient.newBuilder()
@@ -290,11 +255,12 @@ public class AgentOsConfiguration {
      */
     @Bean
     ToolRegistry toolRegistry(List<AgentTool> tools) {
-        return new ToolRegistry(tools);
+        return new ToolRegistry(tools, java.util.Set.of("plan-execute-agent", "react-agent", "main-agent"));
     }
 
     /** 创建将 HITL 审批纳入工具生命周期的前置拦截器。 */
     @Bean
+    @org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
     ToolInterceptor approvalToolInterceptor(
             RiskPolicy riskPolicy, ApprovalService approvalService) {
         return new ApprovalToolInterceptor(riskPolicy, approvalService);
@@ -470,14 +436,11 @@ public class AgentOsConfiguration {
         return new DefaultObservationSummarizer(maxObservationChars, maxTotalChars);
     }
 
+
     /**
-     * 创建计划执行器。
-     *
-     * @param toolRegistry    工具注册表
-     * @param toolExecutor    工具执行器
-     * @param riskPolicy      风险策略
-     * @param approvalService 人工审批服务
-     * @return 计划执行器
+     * 创建计划执行器
+     * @param toolDispatcher
+     * @param failureClassifier
      */
     @Bean
     PlanExecutor planExecutor(
@@ -496,7 +459,7 @@ public class AgentOsConfiguration {
     }
 
     /**
-     * 创建默认主 Agent。
+     * 创建预先规划、委派执行与汇总结果的 Agent。
      *
      * @param agentPlanner   迭代式规划器
      * @param planExecutor   计划执行器
@@ -504,10 +467,10 @@ public class AgentOsConfiguration {
      * @param agentFinalizer 内部最终回答收口器
      * @param limits         单次运行累计预算
      * @param continuationStore 断点续跑状态存储；sqlite 模式下重启后审批仍可恢复
-     * @return 主 Agent
+     * @return 规划执行 Agent
      */
     @Bean
-    MainAgent mainAgent(
+    PlanExecuteAgent planExecuteAgent(
             AgentPlanner agentPlanner,
             PlanExecutor planExecutor,
             MemoryService memoryService,
@@ -515,7 +478,7 @@ public class AgentOsConfiguration {
             AgentExecutionLimits limits,
             ObservationSummarizer observationSummarizer,
             com.github.agentos.agent.loop.ContinuationStore continuationStore) {
-        return new MainAgent(
+        return new PlanExecuteAgent(
                 agentPlanner, planExecutor, memoryService, agentFinalizer, limits,
                 observationSummarizer, continuationStore);
     }
@@ -647,10 +610,11 @@ public class AgentOsConfiguration {
             AgentRunner runner,
             ExecutorService agentStreamExecutor,
             AgentRunTaskRegistry taskRegistry,
+            com.github.agentos.server.run.AgentRunStore agentRunStore,
             @Value("${agentos.runtime.retention.max-runs:1000}") int maxRetainedRuns,
             @Value("${agentos.runtime.retention.max-events-per-run:2000}") int maxEventsPerRun) {
         return new AgentRunCoordinator(
-                runner, agentStreamExecutor, taskRegistry,
+                runner, agentStreamExecutor, taskRegistry, agentRunStore,
                 maxRetainedRuns, maxEventsPerRun);
     }
 }

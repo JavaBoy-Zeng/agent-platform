@@ -14,10 +14,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 抓取网页并转为纯文本的工具。
@@ -28,6 +32,8 @@ import java.util.Objects;
 public final class WebFetchTool implements AgentTool {
 
     private static final long MAX_BYTES = 512 * 1024;
+    private static final Pattern CHARSET_PATTERN = Pattern.compile(
+            "(?i)(?:^|;)\\s*charset\\s*=\\s*[\\\"']?([^;\\s\\\"']+)");
 
     private final HttpClient httpClient;
     private final Duration requestTimeout;
@@ -37,6 +43,9 @@ public final class WebFetchTool implements AgentTool {
     public WebFetchTool(HttpClient httpClient, Duration requestTimeout, int maxOutputChars) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient must not be null");
         this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
+        if (requestTimeout.isZero() || requestTimeout.isNegative()) {
+            throw new IllegalArgumentException("requestTimeout must be positive");
+        }
         if (maxOutputChars <= 0) {
             throw new IllegalArgumentException("maxOutputChars must be positive");
         }
@@ -50,8 +59,9 @@ public final class WebFetchTool implements AgentTool {
 
     @Override
     public String description() {
-        return "抓取指定 URL 的网页内容并转为纯文本返回。适合读取文档、博客、API 响应等"
-                + "文本资源；不支持图片、视频等二进制内容，超长内容会被截断。";
+        return "读取一个明确的 http/https URL，并返回适合模型处理的文本。"
+                + "它只处理单页，不执行关键词搜索或站点遍历；动态渲染、登录或反爬页面"
+                + "可能无法获取，二进制和超长正文会被拒绝或截断。";
     }
 
     @Override
@@ -101,9 +111,17 @@ public final class WebFetchTool implements AgentTool {
         }
         byte[] body = bodyWithinLimit(response.body());
         String text = new String(body, charsetOf(contentType));
+        String extracted = htmlToText(text);
+        boolean truncated = response.body() != null && response.body().length > MAX_BYTES
+                || extracted.length() > maxOutputChars;
+        String output = truncate(extracted);
         return ToolResult.success(
-                truncate(htmlToText(text)),
-                "", java.util.Map.of("url", url, "chars", text.length()),
+                output,
+                "", Map.of(
+                        "url", url,
+                        "chars", output.length(),
+                        "downloadedBytes", response.body() == null ? 0 : response.body().length,
+                        "truncated", truncated),
                 com.github.agentos.tool.api.ToolActions.none());
     }
 
@@ -140,8 +158,16 @@ public final class WebFetchTool implements AgentTool {
         return ToolFailureType.NOT_FOUND;
     }
 
-    private static java.nio.charset.Charset charsetOf(String contentType) {
-        return StandardCharsets.UTF_8;
+    private static Charset charsetOf(String contentType) {
+        Matcher matcher = CHARSET_PATTERN.matcher(contentType);
+        if (!matcher.find()) {
+            return StandardCharsets.UTF_8;
+        }
+        try {
+            return Charset.forName(matcher.group(1));
+        } catch (IllegalArgumentException exception) {
+            return StandardCharsets.UTF_8;
+        }
     }
 
     /** 去除 script/style 块、标签与多余空白，并解码常见 HTML 实体。 */
@@ -172,11 +198,20 @@ public final class WebFetchTool implements AgentTool {
     }
 
     private static String requiredUrl(Object value) {
-        if (value instanceof String text) {
-            String trimmed = text.trim();
-            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                return trimmed;
-            }
+        if (!(value instanceof String text) || text.isBlank()) {
+            throw new IllegalArgumentException("url must be a valid http(s) URL");
+        }
+        String trimmed = text.trim();
+        URI uri;
+        try {
+            uri = URI.create(trimmed);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("url must be a valid http(s) URL", exception);
+        }
+        if (("http".equalsIgnoreCase(uri.getScheme())
+                || "https".equalsIgnoreCase(uri.getScheme()))
+                && uri.getHost() != null && uri.getUserInfo() == null) {
+            return trimmed;
         }
         throw new IllegalArgumentException("url must be a valid http(s) URL");
     }

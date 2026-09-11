@@ -37,7 +37,7 @@ class ConsoleCatalogControllerTest {
     @Test
     void catalogListsRegisteredAgentsAndMarksToolExposure() throws Exception {
         AgentRegistry registry = new InMemoryAgentRegistry(List.of(
-                agent("main-agent", "planning entry"),
+                agent("plan-execute-agent", "planning entry"),
                 agent("search-agent", "information retrieval")));
         ToolRegistry tools = new ToolRegistry(List.of(tool("search-agent"), tool("file_read")));
 
@@ -46,8 +46,8 @@ class ConsoleCatalogControllerTest {
         mvc.perform(get("/api/console/catalog"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.agents.length()").value(2))
-                .andExpect(jsonPath("$.agents[0].id").value("main-agent"))
-                .andExpect(jsonPath("$.agents[0].name").value("Main Agent"))
+                .andExpect(jsonPath("$.agents[0].id").value("plan-execute-agent"))
+                .andExpect(jsonPath("$.agents[0].name").value("Plan Execute Agent"))
                 .andExpect(jsonPath("$.agents[0].kind").value("planner"))
                 .andExpect(jsonPath("$.agents[0].exposedAsTool").value(false))
                 .andExpect(jsonPath("$.agents[1].id").value("search-agent"))
@@ -57,14 +57,14 @@ class ConsoleCatalogControllerTest {
     }
 
     @Test
-    void catalogFallsBackToMainAgentWhenRegistryIsEmpty() throws Exception {
+    void catalogFallsBackToPlanExecuteAgentWhenRegistryIsEmpty() throws Exception {
         MockMvc mvc = MockMvcBuilders.standaloneSetup(
                 controller(new InMemoryAgentRegistry(), new ToolRegistry(List.of()))).build();
 
         mvc.perform(get("/api/console/catalog"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.agents.length()").value(1))
-                .andExpect(jsonPath("$.agents[0].id").value("main-agent"));
+                .andExpect(jsonPath("$.agents[0].id").value("plan-execute-agent"));
     }
 
     @Test

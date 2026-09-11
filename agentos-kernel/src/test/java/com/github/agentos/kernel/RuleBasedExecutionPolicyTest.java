@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RuleBasedExecutionPolicyTest {
 
     private final RuleBasedExecutionPolicy policy = new RuleBasedExecutionPolicy();
-    private final InvocationContext context = InvocationContext.of("main-agent");
+    private final InvocationContext context = InvocationContext.of("plan-execute-agent");
 
     @Test
     void selectsDirectForPlainConversation() {

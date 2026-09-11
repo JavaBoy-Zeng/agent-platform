@@ -23,7 +23,7 @@
 | `AgentOsApplication` | 标注 `@SpringBootApplication` 的应用入口。 |
 | `AgentOsConfiguration` | 装配工具、记忆、审批、计划执行器、主 Agent、插件、产物存储和运行时。 |
 | `LlmPlannerConfiguration` | 装配 `LlmAgentPlanner` 和默认的 OpenAI-compatible `ModelClient` / `ChatClient`。 |
-| `RoutingConfiguration` | 装配三级意图路由（问候白名单 → 简单 QA → MainAgent）。 |
+| `RoutingConfiguration` | 装配三级意图路由（问候白名单 → 简单 QA → PlanExecuteAgent）。 |
 | `PersistenceConfiguration` | 按 `agentos.persistence.mode` 装配内存或 SQLite 持久化实现。 |
 | `SecurityConfiguration / ApiKeyAuthFilter` | `X-API-Key` 请求头鉴权；未配置密钥时本地开发自动关闭。 |
 | `AgentController` | 暴露 Agent 运行和状态查询 API。 |
@@ -45,15 +45,15 @@
 
 ```text
 AgentRunner
-    └── RoutingAgentLoop（问候白名单 / simple-qa-agent / MainAgent）
-        └── MainAgent
+    └── RoutingAgentLoop（问候白名单 / simple-qa-agent / PlanExecuteAgent）
+        └── PlanExecuteAgent
             ├── AgentPlanner
             │   └── LlmAgentPlanner ──► ModelClient（经 LlmFlow 组装请求）
             ├── PlanExecutor
             │   ├── FailureClassifier
             │   └── ToolDispatcher
             │       ├── ToolRegistry ──► directory_list / file_search / file_read / file_write /
-            │       │                  run_command / web_fetch / web_search / today /
+            │       │                  run_command / browser_search / web_fetch / web_crawl / today /
             │       │                  load_skill / execute_code / ...
             │       └── ApprovalToolInterceptor ──► RiskPolicy / ApprovalService
             ├── AgentFinalizer
@@ -76,7 +76,7 @@ POST /api/agents/runs
 Content-Type: application/json
 
 {
-  "agentId": "main-agent",
+  "agentId": "plan-execute-agent",
   "sessionId": "session-1",
   "input": "hello agentos",
   "attributes": {}
@@ -92,22 +92,6 @@ GET /api/agents/{sessionId}/state
 ```
 
 会话不存在时返回 `404 Not Found`。
-
-### 流式运行
-
-```http
-POST /api/agents/runs/stream
-Content-Type: application/json
-Accept: text/event-stream
-
-{"sessionId":"session-1","input":"阅读当前项目并总结功能"}
-```
-
-接口依次发送 `run_started`、`plan_created`、`tool_started`、`tool_finished`、
-`observation`、`decision`、可选的 `replan`、一个或多个 `output_delta`，最后发送
-`run_completed` 和 `state`。Planner 的模型响应仍采用完整结构化 JSON 校验；面向用户的
-模型回答由 `ChatClient.chatStream` 按上游 SSE 到达顺序直接转发，不做定长二次切片。
-短路回答和工具结果不是模型生成内容，会作为单个确定性 `output_delta` 返回。
 
 ### 可恢复的后台运行
 
@@ -125,14 +109,20 @@ Content-Type: application/json
 ```http
 GET  /api/agent-runs
 GET  /api/agent-runs/{runId}
-GET  /api/agent-runs/{runId}/events?after=42
+GET  /api/agent-runs/{runId}/events?afterSeq=42
+GET  /api/agent-runs/history?sessionId=session-1
 POST /api/agent-runs/{runId}/cancel
 ```
 
-列表按创建时间倒序返回进程内保留的全部运行，供管理面板展示执行台账；进程重启后清空。
-事件包含单调递增的 `sequence`，SSE 的 `id` 与该序号一致。断开事件连接不会取消任务；
+列表按创建时间倒序返回当前用户的持久化运行台账。事件统一使用 `AgentStreamEvent`，包含
+`schemaVersion`、全局唯一 `eventId` 和 Run 内单调递增 `seq`，SSE 的 `id` 与 `seq` 一致。
+`status` 和文本 delta 只实时发送，消息最终正文、工具生命周期、产物、用量与 Run 生命周期会持久化。
+断开事件连接不会取消任务；
 重新连接时传入最后成功处理的序号即可补播遗漏事件。`cancel` 触发协作式取消令牌，
 运行中的循环与工具在下一个检查点进入 `CANCELLED` 终态。
+
+旧的 `/api/agents/runs/stream` 与 `/api/agents/runs/event-stream` 已移除；客户端不得依赖模型厂商原始流格式。
+详见 [`AgentStreamEvent 流式协议`](../docs/AGENT_CONTROLLER_RUNS_STREAM_FLOW.md)。
 
 ### 查询与下载产物
 
@@ -165,7 +155,7 @@ Content-Type: application/json
 
 {
   "caseId": "search-then-answer",
-  "expectedToolSequence": ["web_search"],
+  "expectedToolSequence": ["browser_search"],
   "forbiddenTools": ["file_write"],
   "maxToolCalls": 5,
   "requiredResponseKeywords": ["结论"],
@@ -199,7 +189,7 @@ GET /api/console/agents/{agentId}
 `/api/console/agents/{agentId}` 返回单个 Agent 详情，额外包含 `subAgents`（编排 Agent 的
 子 Agent 标识）与 `tools`（YAML 配置化 Agent 声明的工具名）；未注册时返回 `404`。
 
-`kind` 取值：`planner`（main-agent）、`supervisor`、`direct`（simple-qa-agent）、
+`kind` 取值：`planner`（plan-execute-agent）、`supervisor`、`direct`（simple-qa-agent）、
 `workflow`（含子 Agent 的编排 Agent）、`specialist`，以及 YAML 配置化 Agent 自带的
 `specialist` / `sequential`。
 
@@ -234,7 +224,7 @@ GET /api/events/{invocationId}
 ### 查询记忆快照
 
 ```http
-GET /api/memories?sessionId=session-1&teamId=default-team&userId=default-user&agentId=main-agent&recentLimit=20
+GET /api/memories?sessionId=session-1&teamId=default-team&userId=default-user&agentId=plan-execute-agent&recentLimit=20
 ```
 
 `sessionId` 必填，用于限定 L0 最近对话；`teamId`、`userId` 和 `agentId` 省略时使用默认值。
@@ -375,9 +365,6 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 | `agentos.tools.run-command.max-output-chars` | `AGENTOS_RUN_COMMAND_MAX_OUTPUT_CHARS` | `20000` |
 | `agentos.tools.web-fetch.timeout-seconds` | `AGENTOS_WEB_FETCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.web-fetch.max-chars` | `AGENTOS_WEB_FETCH_MAX_CHARS` | `12000` |
-| `agentos.tools.web-search.endpoint` | `AGENTOS_WEB_SEARCH_ENDPOINT` | Tavily Search API |
-| `agentos.tools.web-search.api-key` | `AGENTOS_WEB_SEARCH_API_KEY` | 空，不注册 `web_search` |
-| `agentos.tools.web-search.timeout-seconds` | `AGENTOS_WEB_SEARCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.browser-search.endpoint` | `AGENTOS_BROWSER_SEARCH_ENDPOINT` | `http://localhost:8888/search`（SearXNG） |
 | `agentos.tools.browser-search.timeout-seconds` | `AGENTOS_BROWSER_SEARCH_TIMEOUT_SECONDS` | `20` |
 | `agentos.tools.code-executor.enabled` | `AGENTOS_CODE_EXECUTOR_ENABLED` | `false` |
@@ -428,10 +415,10 @@ OpenAI-compatible 服务可以留空。常用配置映射如下：
 3. 简单 QA（≤64 字符且不含任务信号词）派发到 `simple-qa-agent` 单次直答，
    不携带工具定义、不进入规划循环。
 4. 其余请求由 Supervisor 输出结构化的作用域、所需能力、目标 Agent 和置信度；
-   专家执行前必须通过能力与作用域接单校验，拒单或非法决策安全回退 MainAgent。
+   专家执行前必须通过能力与作用域接单校验，拒单或非法决策安全回退 PlanExecuteAgent。
 
 Supervisor 低于 `agentos.router.supervisor.min-confidence` 时不会直接派发：作用域歧义返回
-澄清问题，其余请求回退 MainAgent。只有执行前拒单会自动改派；工具调用开始后的失败按真实
+澄清问题，其余请求回退 PlanExecuteAgent。只有执行前拒单会自动改派；工具调用开始后的失败按真实
 执行失败处理，避免重复写文件、运行命令或触发其他副作用。
 
 路由分级阈值经 `agentos.router.*` 配置，规则细节见 [`agentos-agent`](../agentos-agent/ReadMe.md)。
@@ -456,8 +443,8 @@ Supervisor 低于 `agentos.router.supervisor.min-confidence` 时不会直接派�
 示例：
 
 ```text
-[agent-run] started sessionId=session-1 taskId= agentId=main-agent iteration=1
-[agent-memory] recalled sessionId=session-1 teamId=default-team userId=default-user agentId=main-agent taskId= l0Count=0 l1Count=3 l2Count=1 l3Count=1 degraded=false durationMs=4
+[agent-run] started sessionId=session-1 taskId= agentId=plan-execute-agent iteration=1
+[agent-memory] recalled sessionId=session-1 teamId=default-team userId=default-user agentId=plan-execute-agent taskId= l0Count=0 l1Count=3 l2Count=1 l3Count=1 degraded=false durationMs=4
 [model-call] finished sessionId=session-1 model=MiniMax-M3 status=200 stepCount=1 durationMs=820
 [agent-plan] created sessionId=session-1 planId=... type=DISCOVERY origin=INITIAL outcome=CONTINUE stepCount=1 ...
 [agent-step] started sessionId=session-1 planId=... position=1/1 stepId=step1 tool=directory_list optional=false ...

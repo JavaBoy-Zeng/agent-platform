@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SQLite 持久化续跑的端到端测试。
  *
  * <p>模拟 WAITING → save → 重启（new store 实例）→ load → 数据完整可恢复。
- * 验证 ReactAgent 的 ReactContinuation 与 MainAgent 的 PlanContinuation 两种载荷。
+ * 验证 ReactAgent 的 ReactContinuation 与 PlanExecuteAgent 的 PlanContinuation 两种载荷。
  */
 class SqliteContinuationStoreTest {
 

@@ -1,12 +1,14 @@
 <script setup>
 import { computed } from 'vue'
+import { agentLabel } from '../utils/agentIdentity.js'
 import { useLocale } from '../composables/useLocale.js'
 
 const { localeTag, t } = useLocale()
 
 const props = defineProps({
   runtimeState: { type: Object, required: true },
-  activeStage: { type: Number, default: 0 }
+  activeStage: { type: Number, default: 0 },
+  executingAgentId: { type: String, default: '' }
 })
 
 const description = computed(() => t(({
@@ -26,13 +28,15 @@ const updatedTime = computed(() => {
 })
 
 const stageSources = [
-  ['MAIN AGENT', '建立本次运行上下文'],
+  ['AGENT', '建立本次运行上下文'],
   ['PLANNER', '生成最小可执行计划'],
   ['TOOL', '调用注册工具'],
   ['OBSERVATION', '摘要化工具执行结果'],
   ['DECISION', '完成或继续规划']
 ]
-const stages = computed(() => stageSources.map(([name, description]) => [name, t(description)]))
+const stages = computed(() => stageSources.map(([name, description], index) => [
+  index === 0 ? agentLabel(props.executingAgentId) : name, t(description)
+]))
 
 function stageClass(index) {
   const stage = index + 1

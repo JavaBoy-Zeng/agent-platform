@@ -17,12 +17,12 @@ class InMemoryAgentRegistryTest {
 
     @Test
     void registersFindsAndRejectsDuplicateAgentIds() {
-        Agent main = agent("main-agent");
+        Agent main = agent("plan-execute-agent");
         InMemoryAgentRegistry registry = new InMemoryAgentRegistry(List.of(main));
 
-        assertThat(registry.find("main-agent")).containsSame(main);
+        assertThat(registry.find("plan-execute-agent")).containsSame(main);
         assertThat(registry.find("missing")).isEmpty();
-        assertThatThrownBy(() -> registry.register(agent("main-agent")))
+        assertThatThrownBy(() -> registry.register(agent("plan-execute-agent")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("already registered");
     }
@@ -30,10 +30,10 @@ class InMemoryAgentRegistryTest {
     @Test
     void listsAllRegisteredAgentsSortedById() {
         InMemoryAgentRegistry registry = new InMemoryAgentRegistry(
-                List.of(agent("main-agent"), agent("code-agent"), agent("search-agent")));
+                List.of(agent("plan-execute-agent"), agent("code-agent"), agent("search-agent")));
 
         assertThat(registry.all()).extracting(Agent::id)
-                .containsExactly("code-agent", "main-agent", "search-agent");
+                .containsExactly("code-agent", "plan-execute-agent", "search-agent");
     }
 
     @Test

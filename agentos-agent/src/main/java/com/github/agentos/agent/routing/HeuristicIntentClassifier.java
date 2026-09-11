@@ -19,10 +19,10 @@ import java.util.regex.Pattern;
  *       直接返回 canned answer，不调 LLM、不调工具；</li>
  *   <li><b>简单问答</b>：长度不超过 {@code simpleQaMaxChars} 且不包含任何任务信号词，
  *       派发到装配层注入的 {@code simpleQaAgentId} 对应 Agent 单次直答；</li>
- *   <li><b>复杂任务</b>：其余情况回退到既有 Agent 链路（MainAgent 规划执行）。</li>
+ *   <li><b>复杂任务</b>：其余情况回退到既有 Agent 链路（PlanExecuteAgent 规划执行）。</li>
  * </ol>
  *
- * <p>任务信号词采用保守黑名单策略：误把简单问答送进 MainAgent 只是多花 token，
+ * <p>任务信号词采用保守黑名单策略：误把简单问答送进 PlanExecuteAgent 只是多花 token，
  * 结果仍然正确；而误把需要工具的任务送进直答路径会产生幻觉，因此黑名单宁可偏宽。</p>
  */
 public final class HeuristicIntentClassifier implements IntentClassifier {
@@ -96,7 +96,7 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
             "公司", "工作", "file", "document", "resume", "above", "those", "these");
 
     /**
-     * 指示请求可能需要工具或实时信息的信号词；命中任意一个即回退到 MainAgent。
+     * 指示请求可能需要工具或实时信息的信号词；命中任意一个即回退到 PlanExecuteAgent。
      *
      * <p>包含中文动作动词、实时/领域信息词、文件系统与网络信号，以及常见英文
      * 动词。中文按子串、英文按单词边界匹配，均大小写不敏感。列表偏保守：
@@ -372,9 +372,21 @@ public final class HeuristicIntentClassifier implements IntentClassifier {
     }
 
     private enum ResponseKind {
+        /**
+         * 问候
+         */
         GREETING("trivial-greeting"),
+        /**
+         * 应答/确认
+         */
         ACKNOWLEDGEMENT("trivial-acknowledgement"),
+        /**
+         * 感谢
+         */
         THANKS("trivial-thanks"),
+        /**
+         * 道别
+         */
         FAREWELL("trivial-farewell");
 
         private final String intent;

@@ -89,3 +89,23 @@ AGENTOS_CORS_ALLOWED_ORIGINS="tauri://localhost" mvn -pl agentos-server -am spri
 - Apple 签名与公证（消除首次打开放行步骤）
 - 自动更新（Tauri updater，依赖签名密钥）
 - Windows/Linux 目标（能力上已具备，按需开启 bundle targets）
+
+## 任务本机工作区执行
+
+桌面交互任务在发送前通过 `workspace_execution_info` 验证目录、设备和当前 Git 分支，
+再将结构化 `workspaceId` 绑定到服务端会话。服务端 Agent 与 `workspace-agent` 的文件、
+命令、Git 工具经 `/api/desktop-workspaces/{sessionId}` 操作通道交给桌面执行；服务端
+不会打开这些本机路径。绑定随会话状态保存，无需数据库 schema 变更。
+
+- 服务端和桌面端必须同时更新。旧服务端缺少连接接口时，发送本机任务会明确失败。
+- 第一版在所选目录当前分支直接执行，不创建 worktree。所有使用该目录的运行会锁定界面分支切换；每次本机操作再次校验分支。
+- 本机工具沿用现有风险审批。即使服务端 `allow-host-processes=false`，仍能使用桌面命令工具；未绑定时它不能在服务端执行。
+- 桌面窗口必须保持打开。切换任务不影响其他任务的执行通道；退出、断网或重启后，任务暂停而非回退到服务端。重新连接后在待处理动作中继续。若结果丢失，先核对操作是否已执行，再继续，避免重复写入或提交。
+- 命令使用本机登录 shell 的环境并将工作目录恢复为所选目录，默认超时 60 秒，上限 120 秒；标准输出和错误各保留 20,000 字节。目录授权限制文件工具路径，命令使用现有人工审批策略，并非操作系统级沙箱。
+- 本机文件工具支持 UTF-8 文本/源码（包括 `pom.xml`），读取分页、NAME/CONTENT 搜索、新建/覆盖/追加；二进制文档应通过本机命令解析/生成。Git 提交仅处理明确路径，不推送，已有暂存内容时拒绝。
+- 本次通道针对交互任务；自动化任务原有文件摘要协议不在本次接入范围内。
+
+验证：`cargo test --manifest-path agentos-desktop/src-tauri/Cargo.toml --lib`；前端执行
+`npm test`；服务端运行 `DesktopWorkspaceBridgeTest` 和 `FileWriteToolConfigurationTest`。
+人工验收：选择真实项目目录后，检查任务顶部设备/绝对路径/分支，再让 `workspace-agent`
+执行 `pwd`、读取 `pom.xml` 和运行项目测试；命令结果中的 `cwd` 应与所选目录一致。

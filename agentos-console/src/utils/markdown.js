@@ -35,6 +35,7 @@ const NON_CODE_WORDS = /^(?:GitHub|GitLab|JavaScript|Markdown|YouTube|LinkedIn|W
 
 // 代码围栏与行内代码段必须原样保留，只对普通文本段做标识符增强
 const CODE_SEGMENT_RE = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]+`)/g
+const URL_SEGMENT_RE = /((?:https?:\/\/|www\.)[^\s<>"'`，。！？；：、]+)/gi
 
 function chipIdentifiers(text) {
   return text.replace(IDENTIFIER_RE, (match) => {
@@ -50,7 +51,13 @@ function chipIdentifiers(text) {
 function enhanceInlineCode(content) {
   return String(content || '')
     .split(CODE_SEGMENT_RE)
-    .map((segment, index) => (index % 2 === 1 ? segment : chipIdentifiers(segment)))
+    .map((segment, index) => {
+      if (index % 2 === 1) return segment
+      return segment
+        .split(URL_SEGMENT_RE)
+        .map((part, partIndex) => (partIndex % 2 === 1 ? part : chipIdentifiers(part)))
+        .join('')
+    })
     .join('')
 }
 

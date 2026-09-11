@@ -24,11 +24,11 @@ class AgentRunnerConcurrencyTest {
                 2,
                 2);
 
-        runner.run(AgentRequest.of("retained-1", "one"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("retained-1", "one"), InvocationContext.of("plan-execute-agent"));
         String firstInvocation = runner.latestInvocation("retained-1")
                 .orElseThrow().invocationId();
-        runner.run(AgentRequest.of("retained-2", "two"), InvocationContext.of("main-agent"));
-        runner.run(AgentRequest.of("retained-3", "three"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("retained-2", "two"), InvocationContext.of("plan-execute-agent"));
+        runner.run(AgentRequest.of("retained-3", "three"), InvocationContext.of("plan-execute-agent"));
 
         assertThat(runner.invocation(firstInvocation)).isEmpty();
         assertThat(runner.latestInvocation("retained-1")).isEmpty();
@@ -63,20 +63,20 @@ class AgentRunnerConcurrencyTest {
 
         Thread worker = Thread.ofVirtual().start(() -> runner.run(
                 AgentRequest.of("session-1", "first"),
-                InvocationContext.of("main-agent")));
+                InvocationContext.of("plan-execute-agent")));
         assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
         String activeInvocationId = runner.latestInvocation("session-1")
                 .orElseThrow().invocationId();
 
         assertThatThrownBy(() -> runner.run(
                 AgentRequest.of("session-1", "second"),
-                InvocationContext.of("main-agent")))
+                InvocationContext.of("plan-execute-agent")))
                 .isInstanceOfSatisfying(AgentRunRejectedException.class,
                         exception -> assertThat(exception.reason())
                                 .isEqualTo(AgentRunRejectedException.Reason.SESSION_BUSY));
         assertThatThrownBy(() -> runner.run(
                 AgentRequest.of("session-2", "other"),
-                InvocationContext.of("main-agent")))
+                InvocationContext.of("plan-execute-agent")))
                 .isInstanceOfSatisfying(AgentRunRejectedException.class,
                         exception -> assertThat(exception.reason())
                                 .isEqualTo(AgentRunRejectedException.Reason.CAPACITY_EXCEEDED));

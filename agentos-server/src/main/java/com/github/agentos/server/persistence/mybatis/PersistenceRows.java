@@ -25,6 +25,34 @@ public final class PersistenceRows {
             @TableField("event_actions") String eventActions) {
     }
 
+    @TableName("agent_runs")
+    public record AgentRunRow(
+            @TableId("run_id") String runId,
+            @TableField("session_id") String sessionId,
+            @TableField("user_id") String userId,
+            String status,
+            @TableField("created_at") Instant createdAt,
+            @TableField("updated_at") Instant updatedAt,
+            @TableField("snapshot_payload") String snapshotPayload) {
+    }
+
+    @TableName("agent_stream_events")
+    public record AgentStreamEventRow(
+            @TableId("event_id") String eventId,
+            @TableField("schema_version") String schemaVersion,
+            @TableField("event_name") String eventName,
+            @TableField("run_id") String runId,
+            @TableField("turn_id") String turnId,
+            @TableField("session_id") String sessionId,
+            @TableField("item_id") String itemId,
+            @TableField("agent_id") String agentId,
+            @TableField("parent_run_id") String parentRunId,
+            @TableField("event_seq") long eventSeq,
+            @TableField("occurred_at") Instant occurredAt,
+            String visibility,
+            @TableField("event_data") String eventData) {
+    }
+
     @TableName("agent_checkpoints")
     public record CheckpointRow(
             @TableId("invocation_id") String invocationId,

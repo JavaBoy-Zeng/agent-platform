@@ -26,6 +26,10 @@ public final class ApprovalToolInterceptor implements ToolInterceptor {
     /** 高风险调用未获批准时返回挂起动作，恢复后允许真实工具执行。 */
     @Override
     public ToolBeforeResult beforeExecute(ToolCall call, ToolContext context) {
+        // 委派本身不授权内部动作，审批由子 Agent 的实际工具调用触发。
+        if (context.tool() instanceof com.github.agentos.tool.api.AgentDelegationTool) {
+            return ToolBeforeResult.allow();
+        }
         String approvalMode = String.valueOf(
                 context.request().attributes().getOrDefault("approvalMode", "RISK_BASED"));
         boolean requiresApproval = switch (approvalMode.trim().toUpperCase(java.util.Locale.ROOT)) {

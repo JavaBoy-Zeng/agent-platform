@@ -42,14 +42,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * AgentOS 默认的迭代式主 Agent。
+ * 预先规划、委派执行并汇总结果的 Plan-and-Execute Agent。
  *
  * <p>Runtime 可以先执行 DISCOVERY 计划，再把累计工具结果反馈给规划器；也可以在明确可恢复
  * 的失败后重新规划。只有模型返回 EXECUTION/COMPLETE 后才由内部 Finalizer 结束运行。</p>
  */
-public final class MainAgent implements AgentLoop, Agent {
+public final class PlanExecuteAgent implements AgentLoop, Agent {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(MainAgent.class);
+    public static final String ID = "plan-execute-agent";
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PlanExecuteAgent.class);
     private static final int MAX_LOG_VALUE_LENGTH = 1_000;
     private final AgentPlanner planner;
     private final PlanExecutor planExecutor;
@@ -60,7 +62,7 @@ public final class MainAgent implements AgentLoop, Agent {
     private final ContinuationStore continuationStore;
     private final ConcurrentMap<String, Continuation> continuations = new ConcurrentHashMap<>();
 
-    public MainAgent(
+    public PlanExecuteAgent(
             AgentPlanner planner,
             PlanExecutor planExecutor,
             MemoryService memoryService,
@@ -71,7 +73,7 @@ public final class MainAgent implements AgentLoop, Agent {
                 new DefaultObservationSummarizer());
     }
 
-    public MainAgent(
+    public PlanExecuteAgent(
             AgentPlanner planner,
             PlanExecutor planExecutor,
             MemoryService memoryService,
@@ -83,9 +85,9 @@ public final class MainAgent implements AgentLoop, Agent {
     }
 
     /**
-     * 创建带续跑状态持久化的主 Agent；重启后审批恢复依赖该存储。
+     * 创建带续跑状态持久化的规划执行 Agent；重启后审批恢复依赖该存储。
      */
-    public MainAgent(
+    public PlanExecuteAgent(
             AgentPlanner planner,
             PlanExecutor planExecutor,
             MemoryService memoryService,
@@ -110,19 +112,19 @@ public final class MainAgent implements AgentLoop, Agent {
     }
 
     /**
-     * 返回默认主 Agent 标识。
+     * 返回规划执行 Agent 标识。
      */
     @Override
     public String id() {
-        return "main-agent";
+        return ID;
     }
 
     /**
-     * 返回当前主 Agent 的能力说明。
+     * 返回规划执行 Agent 的能力说明。
      */
     @Override
     public String description() {
-        return "AgentOS default planning and tool execution agent";
+        return "Plan tasks upfront, delegate execution to specialist agents, and synthesize results";
     }
 
     /**
@@ -184,6 +186,7 @@ public final class MainAgent implements AgentLoop, Agent {
 
     @Override
     public void discard(AgentCheckpoint checkpoint) {
+        planExecutor.discardPending(checkpoint.pendingAction());
         continuations.remove(checkpoint.invocationId());
         deleteContinuationQuietly(checkpoint.invocationId());
     }

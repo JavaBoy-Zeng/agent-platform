@@ -529,7 +529,7 @@ run_id="$(curl -fsS -X POST http://127.0.0.1:8080/api/agent-runs \
   | jq -r '.runId')"
 
 curl -N -D /tmp/agentos-stream.headers \
-  "http://127.0.0.1:8080/api/agent-runs/${run_id}/events?after=0"
+  "http://127.0.0.1:8080/api/agent-runs/${run_id}/events?afterSeq=0"
 ```
 
 预期结果：
@@ -844,7 +844,7 @@ curl -X POST http://127.0.0.1:8080/api/agents/runs \
 ```
 
 预期状态为 `COMPLETED`，回答说明只允许访问 `/Users/whale_fall/agentos`，日志中该次
-MainAgent 运行显示 `steps=0 toolCalls=0`。
+PlanExecuteAgent 运行显示 `steps=0 toolCalls=0`。
 - 公网部署必须保留 Cloudflare Access，且 Allow Policy 只包含必要账号。
 - 当前控制台不会发送 `X-API-Key`；不要只设置 `AGENTOS_API_KEY`，否则 UI 会因 `/api/**` 返回 `401` 而不可用。若要增加第二层鉴权，应先同步改造控制台或可信反向代理。
 - `run_command` 和本地 `execute_code` 能直接操作 Mac 文件系统，属于高风险能力。

@@ -27,13 +27,13 @@ const {
   approvalMode,
   busy,
   currentPhase,
+  executingAgentId,
   messages,
   canStop,
   selectTaskModel,
   refreshServerModel,
   setApprovalMode,
   execute,
-  retryMessage,
   cancelCurrentRun,
   resolveApproval,
   clearTranscript
@@ -102,14 +102,38 @@ async function onFilesPicked(event) {
   }
 }
 
+async function retryTask(task) {
+  prompt.value = task
+  await runTask()
+}
+
+async function resolveTaskAction({ messageId, approved }) {
+  const boundSessionId = sessionId.value
+  try {
+    if (approved && desktopWorkspace.currentWorkspace.value) await desktopWorkspace.buildRunContext()
+    await desktopWorkspace.lockExecution(true, boundSessionId)
+    await resolveApproval(messageId, approved)
+  } catch {
+    // The workspace publishes a visible preflight error; keep the pending action unresolved.
+  } finally {
+    await desktopWorkspace.lockExecution(false, boundSessionId)
+  }
+}
+
 async function runTask() {
   if (busy.value || desktopWorkspace.contextLoading.value) return
+  const boundSessionId = sessionId.value
   try {
     const mentionedPaths = desktopWorkspace.workspaceFiles.value
       .filter(file => prompt.value.includes(`@${file.relativePath}`))
       .map(file => file.relativePath)
     const workspaceContext = await desktopWorkspace.buildRunContext(mentionedPaths)
-    await execute(attachments.value, workspaceContext)
+    await desktopWorkspace.lockExecution(true, boundSessionId)
+    try {
+      await execute(attachments.value, workspaceContext)
+    } finally {
+      await desktopWorkspace.lockExecution(false, boundSessionId)
+    }
   } catch {
     // buildRunContext 已把可见错误写入工作区状态；读取失败时不发送无上下文任务。
   }
@@ -119,15 +143,27 @@ async function runTask() {
 <template>
   <div class="chat-view">
     <TaskHeader />
+    <div v-if="desktopWorkspace.executionRuntime.value" class="workspace-execution-status" role="status">
+      <span :class="{ 'execution-offline': !desktopWorkspace.executionRuntime.value.online }">
+        {{ desktopWorkspace.executionRuntime.value.online ? '本机已连接' : '本机连接不可用' }}
+      </span>
+      <span>{{ desktopWorkspace.executionRuntime.value.device }}</span>
+      <code>{{ desktopWorkspace.executionRuntime.value.root }}</code>
+      <span>{{ desktopWorkspace.executionRuntime.value.branch || '无 Git 分支' }}</span>
+      <button v-if="!desktopWorkspace.executionRuntime.value.online" type="button"
+              :disabled="desktopWorkspace.contextLoading.value" @click="desktopWorkspace.reconnectExecution().catch(() => {})">重新连接</button>
+      <span v-if="desktopWorkspace.executionRuntime.value.error">{{ desktopWorkspace.executionRuntime.value.error }}</span>
+    </div>
     <div class="task-body" :class="{ 'with-inspector': inspectorMode }">
       <section class="mission-workspace reveal reveal-2" aria-label="Agent conversation">
         <TranscriptPanel
           :messages="messages"
           :busy="busy"
           :phase="currentPhase"
+          :executing-agent-id="executingAgentId"
           @clear="clearTranscript"
-          @retry="retryMessage"
-          @resolve-approval="resolveApproval($event.messageId, $event.approved)"
+          @retry="retryTask"
+          @resolve-approval="resolveTaskAction"
         />
         <CommandDeck
           :agent-id="agentId"
@@ -150,6 +186,7 @@ async function runTask() {
           :workspace-error="desktopWorkspace.error.value"
           :git-branches="desktopWorkspace.gitBranches.value"
           :git-branch-loading="desktopWorkspace.gitBranchLoading.value"
+          :workspace-running="desktopWorkspace.workspaceRunning.value"
           :git-branch-error="desktopWorkspace.gitBranchError.value"
           :busy="busy || desktopWorkspace.contextLoading.value"
           :can-stop="canStop"

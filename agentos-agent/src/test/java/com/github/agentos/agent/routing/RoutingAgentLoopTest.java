@@ -41,7 +41,7 @@ class RoutingAgentLoopTest {
         List<AgentRunEvent> events = new ArrayList<>();
         AgentState result = router.run(
                 new AgentRequest("s1", "hi", Map.of()),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 events::add);
 
@@ -72,7 +72,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "hello", Map.of()),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 event -> { });
 
@@ -96,7 +96,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "hello", Map.of("callerAttribute", "kept")),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP);
 
@@ -121,7 +121,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "do something", Map.of()),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 event -> { });
 
@@ -132,7 +132,7 @@ class RoutingAgentLoopTest {
 
     @Test
     void endToEndRoutesSimpleQaToDirectChatAgent() {
-        // 启发式分类器 + 注册的 SimpleQaAgent + MainAgent fallback 的组合行为：
+        // 启发式分类器 + 注册的 SimpleQaAgent + PlanExecuteAgent fallback 的组合行为：
         // “什么是 JVM” 应单次直答完成，不触碰 fallback。
         AtomicInteger fallbackCalls = new AtomicInteger();
         AgentLoop fallback = (req, ctx, running) -> {
@@ -147,7 +147,7 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "什么是 JVM", Map.of()),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 event -> { });
 
@@ -166,7 +166,7 @@ class RoutingAgentLoopTest {
 
         assertThatThrownBy(() -> router.run(
                 new AgentRequest("s1", "hi", Map.of()),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 AgentEventSink.NOOP))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -197,10 +197,10 @@ class RoutingAgentLoopTest {
 
         AgentState result = router.resume(
                 new AgentRequest("s1", "hi", Map.of()),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration(),
                 new com.github.agentos.kernel.AgentCheckpoint(
-                        "s1", "inv-1", "main-agent", "", "team", "user", "hi",
+                        "s1", "inv-1", "plan-execute-agent", "", "team", "user", "hi",
                         "", "", 0, List.of(), Map.of(), null,
                         new com.github.agentos.kernel.ExecutionCounters(0, 0, 0, 0),
                         com.github.agentos.kernel.AgentRunStatus.WAITING,

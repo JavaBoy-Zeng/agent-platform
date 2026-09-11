@@ -1,11 +1,11 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import CommandDeck from './CommandDeck.vue'
 
 function mountDeck(overrides = {}) {
   return mount(CommandDeck, {
     props: {
-      agentId: 'main-agent',
+      agentId: 'plan-execute-agent',
       sessionId: 'session-1',
       prompt: 'hello',
       currentModel: { id: 'model-deepseek', name: 'deepseek-v4-pro', provider: 'DeepSeek', modelType: 'BUILT_IN' },
@@ -104,8 +104,11 @@ describe('CommandDeck composer controls', () => {
     expect(wrapper.emitted('manage-models')).toHaveLength(1)
   })
 
-  it('selects a recent task folder from the composer footer', async () => {
+  it('selects a recent task folder from the composer actions', async () => {
     const wrapper = mountDeck({ currentWorkspace: null })
+    expect(wrapper.get('.deck-left-actions > .workspace-context-inline').exists()).toBe(true)
+    expect(wrapper.find('.workspace-context-row').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Local')
     await wrapper.get('.workspace-context-trigger').trigger('click')
     const recent = wrapper.findAll('.composer-workspace-menu > button')
     await recent[0].trigger('click')
@@ -149,4 +152,36 @@ describe('CommandDeck composer controls', () => {
     ])
     expect(wrapper.find('.file-mention-menu').exists()).toBe(false)
   })
+
+  it('highlights links in blue and opens them without including trailing punctuation', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mountDeck({
+      prompt: '查看 https://example.com/docs，然后访问 www.example.org。'
+    })
+
+    const links = wrapper.findAll('.prompt-highlight .prompt-link')
+    expect(links.map(link => link.text())).toEqual([
+      'https://example.com/docs',
+      'www.example.org'
+    ])
+    expect(links.map(link => link.attributes('href'))).toEqual([
+      'https://example.com/docs',
+      'https://www.example.org'
+    ])
+    expect(links.every(link => link.attributes('target') === '_blank')).toBe(true)
+    await links[0].trigger('click')
+    expect(openSpy).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noopener,noreferrer')
+    openSpy.mockRestore()
+    expect(wrapper.get('#promptInput').element.value).toBe(
+      '查看 https://example.com/docs，然后访问 www.example.org。'
+    )
+  })
 })
+
+ it('locks branch selection while any task is using the workspace', async () => {
+    const wrapper = mountDeck({ workspaceRunning: true })
+    expect(wrapper.get('.branch-trigger').attributes('disabled')).toBeDefined()
+    await wrapper.get('.branch-trigger').trigger('click')
+    expect(wrapper.emitted('select-branch')).toBeUndefined()
+    wrapper.unmount()
+  })

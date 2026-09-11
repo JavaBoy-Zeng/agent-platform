@@ -140,6 +140,61 @@ class ConversationCompactorTest {
     }
 
     @Test
+    void keepsLatestToolPairWhenOversizedSeedAloneExceedsBudget() {
+        // 回归（观察丢失型死循环）：目标消息（前端注入 workspace 上下文后可达数十 KB）
+        // 本身超过 maxTotalChars 时，唯一的一轮 tool call pair 绝不能被整对丢弃——
+        // 否则模型每轮都只看到目标消息，重复发起相同工具调用。
+        ConversationCompactor compactor = new ConversationCompactor(1_000, 400, 60);
+        LlmMessage oversizedSeed = LlmMessage.user("目标：排查测试失败\n" + "x".repeat(2_000));
+        LlmMessage result = LlmMessage.toolResult("call-1",
+                compactor.wrapToolResult("workspace-agent", "测试失败原因：X"));
+
+        ConversationCompactor.Compaction compaction = compactor.compact(
+                List.of(oversizedSeed, assistantCall("call-1", "workspace-agent"), result));
+
+        assertThat(compaction.droppedCount()).isZero();
+        assertThat(compaction.messages()).hasSize(3);
+        LlmMessage latest = compaction.messages().get(2);
+        assertThat(latest.role()).isEqualTo(LlmMessage.Role.TOOL);
+        assertThat(latest.toolCallId()).isEqualTo("call-1");
+        assertThat(latest.content()).contains("测试失败原因：X");
+    }
+
+    @Test
+    void dropsOlderPairsButNeverTheLatestWhenSeedExceedsBudget() {
+        // 多轮场景：目标消息超预算时，更旧的调用对仍可丢弃腾空间，但最新一轮必须完整保留。
+        ConversationCompactor compactor = new ConversationCompactor(1_000, 400, 60);
+        LlmMessage oversizedSeed = LlmMessage.user("目标：排查\n" + "x".repeat(2_000));
+        LlmMessage firstResult = LlmMessage.toolResult("call-1",
+                compactor.wrapToolResult("search", "a".repeat(300)));
+        LlmMessage secondResult = LlmMessage.toolResult("call-2",
+                compactor.wrapToolResult("workspace-agent", "最新观察"));
+
+        ConversationCompactor.Compaction compaction = compactor.compact(
+                List.of(oversizedSeed, assistantCall("call-1", "search"), firstResult,
+                        assistantCall("call-2", "workspace-agent"), secondResult));
+
+        assertThat(compaction.droppedCount()).isGreaterThanOrEqualTo(1);
+        assertThat(compaction.messages().stream()
+                .map(LlmMessage::toolCallId)
+                .noneMatch("call-1"::equals)).isTrue();
+        String latest = toolContent(compaction, "call-2");
+        assertThat(latest).contains("最新观察");
+        assertThat(latest).doesNotContain(ConversationCompactor.COMPRESSED_MARKER);
+    }
+
+    @Test
+    void latestObservationKeepsTailEvenWhenSeedExceedsBudget() {
+        var compactor = new ConversationCompactor(200, 400, 60);
+        String output = "log header\n" + "x".repeat(2_000) + "\nBUILD FAILURE: useful cause";
+        var wrapped = compactor.wrapToolResult("workspace-agent", output);
+        var result = compactor.compact(List.of(LlmMessage.user("seed".repeat(200)),
+                assistantCall("last", "workspace-agent"), LlmMessage.toolResult("last", wrapped)));
+        assertThat(result.messages().getLast().content()).isEqualTo(wrapped)
+                .contains("BUILD FAILURE: useful cause").doesNotContain("[compressed]");
+    }
+
+    @Test
     void rejectsInvalidLimits() {
         assertThatThrownBy(() -> new ConversationCompactor(0, 100, 30))
                 .isInstanceOf(IllegalArgumentException.class);

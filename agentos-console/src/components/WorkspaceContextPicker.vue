@@ -93,12 +93,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="available" ref="root" class="workspace-context-row" :class="{ 'has-workspace': currentWorkspace }">
-    <span class="workspace-location" :title="t('任务将在本机工作区中运行')">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H4zM8 21h8M12 17v4" /></svg>
-      {{ t('本地') }}
-    </span>
-
+  <div v-if="available" ref="root" class="workspace-context-inline" :class="{ 'has-workspace': currentWorkspace }">
     <div v-if="currentWorkspace" class="workspace-context-fixed" :title="currentWorkspace.root">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z" /></svg>
       <span><strong>{{ currentWorkspace.name }}</strong><small>{{ currentWorkspace.root }}</small></span>

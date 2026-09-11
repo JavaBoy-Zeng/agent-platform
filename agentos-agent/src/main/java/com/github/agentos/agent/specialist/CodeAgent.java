@@ -7,7 +7,7 @@ import com.github.agentos.agent.routing.RouteAcceptance;
 import com.github.agentos.agent.routing.RouteScope;
 import com.github.agentos.agent.routing.RoutableAgent;
 import com.github.agentos.agent.routing.SupervisorRouteDecision;
-import com.github.agentos.agent.workflow.BaseAgent;
+import com.github.agentos.agent.workflow.ResumableSpecialist;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
@@ -42,7 +42,7 @@ import java.util.Set;
  * <p>该 Agent 通过 {@link com.github.agentos.agent.workflow.AgentToolAdapter} 暴露为
  * {@code code_agent} 工具，规划器可按需调用。</p>
  */
-public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
+public final class CodeAgent extends ResumableSpecialist implements Agent, RoutableAgent {
 
     /** 注册标识，同时作为 AgentToolAdapter 的工具名。 */
     public static final String ID = "code-agent";
@@ -65,7 +65,7 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
 
     /** 创建代码 Agent。 */
     public CodeAgent(ChatClient chatClient, AgentTool fileWriteTool, AgentTool runCommandTool) {
-        super(ID, "Write and execute code, then return the output", List.of());
+        super(ID, "Write and execute code, then return the output");
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
         this.fileWriteTool = Objects.requireNonNull(fileWriteTool, "fileWriteTool must not be null");
         this.runCommandTool = Objects.requireNonNull(runCommandTool, "runCommandTool must not be null");
@@ -98,7 +98,7 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
     }
 
     @Override
-    public AgentState run(
+    protected AgentState runWorkflow(
             AgentRequest request,
             InvocationContext context,
             AgentState runningState,
@@ -118,9 +118,9 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
         try {
             emitPlan(eventSink, request, currentPlanId, "INITIAL", 0);
             String objective = request.objective();
-            String code = generateCode(request);
+            String code = modelResult("generate", context, () -> generateCode(request));
             String extension = detectExtension(code);
-            String fileName = "snippet_" + System.currentTimeMillis() + extension;
+            String fileName = remember("filename", () -> "snippet_" + UUID.randomUUID() + extension);
             Path filePath = Path.of(System.getProperty("java.io.tmpdir"), fileName);
 
             for (int attempt = 0; attempt < MAX_FIX_ATTEMPTS; attempt++) {
@@ -206,7 +206,10 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
                                     "maxReplanCount", MAX_FIX_ATTEMPTS - 1)));
                     currentPlanId = nextPlanId;
                     emitPlan(eventSink, request, currentPlanId, "REPLANNED", attempt + 1);
-                    code = fixCode(request, code, error);
+                    String previousCode = code;
+                    String executionError = error;
+                    code = modelResult("fix-" + attempt, context,
+                            () -> fixCode(request, previousCode, executionError));
                 } else {
                     String failure = "代码执行失败（尝试 " + MAX_FIX_ATTEMPTS + " 次）：\n"
                             + "错误：" + error + "\n\n最终代码：\n" + code;
@@ -230,6 +233,8 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
                     failure,
                     Map.of("agentId", ID)));
             return runningState.fail(failure);
+        } catch (Suspended suspended) {
+            throw suspended;
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();
@@ -405,14 +410,6 @@ public final class CodeAgent extends BaseAgent implements Agent, RoutableAgent {
             AgentTool tool, String toolName,
             Map<String, Object> arguments,
             AgentRequest request, InvocationContext context) {
-        try {
-            ToolContext toolContext = new ToolContext(
-                    request, context, "", "",
-                    AgentExecutionLimits.defaults(), Map.of(), tool);
-            return tool.execute(toolContext, new ToolCall(toolName, arguments));
-        } catch (Exception exception) {
-            LOGGER.warn("[code-agent] tool {} failed: {}", toolName, exception.getMessage());
-            return ToolResult.failure(ToolFailureType.TOOL_INTERNAL_ERROR, exception.getMessage());
-        }
+        return dispatchTool(tool, new ToolCall(toolName, arguments), request, context);
     }
 }

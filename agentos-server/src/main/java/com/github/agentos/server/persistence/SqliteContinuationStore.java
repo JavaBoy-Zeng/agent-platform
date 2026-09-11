@@ -16,7 +16,7 @@ import java.util.Optional;
  * 基于 SQLite 的主 Agent 续跑状态存储。
  *
  * <p>整条 {@link PersistedContinuation} 序列化为 JSON 载荷；进程重启后
- * 审批恢复可读回剩余计划与累计结果。写入失败抛出异常，由 MainAgent 决定降级策略。</p>
+ * 审批恢复可读回剩余计划与累计结果。写入失败抛出异常，由 PlanExecuteAgent 决定降级策略。</p>
  */
 public final class SqliteContinuationStore implements ContinuationStore {
 

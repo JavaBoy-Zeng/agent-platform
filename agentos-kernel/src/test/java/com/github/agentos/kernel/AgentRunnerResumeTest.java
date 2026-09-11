@@ -2,6 +2,7 @@ package com.github.agentos.kernel;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -52,18 +53,25 @@ class AgentRunnerResumeTest {
         InMemoryCheckpointStore store = new InMemoryCheckpointStore();
         AgentRunner runner = new AgentRunner(loop, AgentEventPublisher.NOOP, store);
 
-        runner.run(AgentRequest.of("session-1", "write"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "write"), InvocationContext.of("plan-execute-agent"));
         String invocationId = runner.latestInvocation("session-1").orElseThrow().invocationId();
+        var resumedEvents = new ArrayList<AgentRunEvent>();
         AgentState approved = runner.resume(
-                invocationId, PendingActionResolution.approved("approval-1"));
+                invocationId, PendingActionResolution.approved("approval-1"), resumedEvents::add);
 
         assertThat(approved.status()).isEqualTo(AgentState.Status.COMPLETED);
         assertThat(approved.output()).isEqualTo("resumed");
         assertThat(resumes).hasValue(1);
         assertThat(stepOneExecutions).hasValue(1);
         assertThat(runner.checkpoint(invocationId)).isEmpty();
+        assertThat(resumedEvents).anySatisfy(event -> {
+            assertThat(event.type()).isEqualTo(AgentRunEvent.Type.DECISION);
+            assertThat(event.data()).containsEntry(
+                    "domainEventType", AgentEventType.HUMAN_ACTION_RESOLVED.name());
+            assertThat(event.data()).containsEntry("approved", true);
+        });
 
-        runner.run(AgentRequest.of("session-2", "write"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-2", "write"), InvocationContext.of("plan-execute-agent"));
         String rejectedId = runner.latestInvocation("session-2").orElseThrow().invocationId();
         AgentState rejected = runner.resume(
                 rejectedId, PendingActionResolution.rejected("approval-1"));

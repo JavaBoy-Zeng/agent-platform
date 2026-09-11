@@ -74,6 +74,8 @@ export const getTraces = (sessionId) => request(`/api/traces?sessionId=${encodeU
 export const getArtifacts = (sessionId) => request(`/api/artifacts?sessionId=${encodeURIComponent(sessionId)}`)
 export const deleteArtifact = (artifactId) => request(`/api/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' })
 export const getAgentRuns = () => request('/api/agent-runs')
+export const getSessionRunHistory = (sessionId) =>
+  request(`/api/agent-runs/history?sessionId=${encodeURIComponent(sessionId)}`)
 
 export const getModelManagement = () => request('/api/model-management')
 
@@ -111,7 +113,7 @@ export const evaluateInvocation = (invocationId, evalCase) =>
     body: JSON.stringify(evalCase)
   })
 
-export const getMemory = (sessionId, agentId = 'main-agent') => {
+export const getMemory = (sessionId, agentId = 'plan-execute-agent') => {
   const query = new URLSearchParams({ sessionId, agentId, recentLimit: '20' })
   return request(`/api/memories?${query}`)
 }
@@ -141,4 +143,13 @@ export async function downloadArtifact(artifactId) {
     : `artifact-${artifactId}`
   link.click()
   URL.revokeObjectURL(blobUrl)
+}
+
+/** 仅按已授权产物接口读取执行记录，不把记录内容当作 HTML。 */
+export async function readTraceArtifact(artifactId) {
+  const response = await apiFetch(apiUrl(`/api/artifacts/${encodeURIComponent(artifactId)}`), {
+    headers: authHeaders()
+  })
+  if (!response.ok) throw new AgentApiError(`读取执行记录失败 (${response.status})`, response.status)
+  return response.text()
 }

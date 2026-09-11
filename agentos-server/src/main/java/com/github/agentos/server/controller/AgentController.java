@@ -10,17 +10,13 @@ import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentState;
 import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRunStatus;
-import com.github.agentos.kernel.ChatStreamEvent;
 import com.github.agentos.kernel.PendingAction;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
-import com.github.agentos.server.run.ChatEventMapper;
 import com.github.agentos.server.security.RequestIdentity;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,15 +24,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.io.IOException;
 import java.net.URI;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 对外提供 Agent 运行和状态查询能力的 REST 控制器。
@@ -44,6 +37,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RestController
 @RequestMapping("/api/agents")
 public class AgentController {
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.github.agentos.server.workspace.DesktopWorkspaceBridge workspaceBridge;
 
     private final AgentRunner runner;
     private final ExecutorService streamExecutor;
@@ -91,64 +87,6 @@ public class AgentController {
                 "/api/agents/" + invocation.request().sessionId() + "/state")).body(response);
     }
 
-    /**
-     * 异步执行 Agent，并以 SSE 依次输出 Planner、Tool、Observation、Decision 和终态事件。
-     *
-     * <p>该接口流式输出运行阶段，而模型规划响应仍使用结构化 JSON 一次性校验。</p>
-     */
-    @PostMapping(value = "/runs/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(
-            @RequestBody RunRequest request,
-            HttpServletResponse response,
-            HttpServletRequest httpRequest) {
-        disableEventStreamBuffering(response);
-        RunInvocation invocation = normalize(request, RequestIdentity.from(httpRequest));
-        SseEmitter emitter = new SseEmitter(0L);
-        AtomicBoolean connected = new AtomicBoolean(true);
-        Runnable disconnect = () -> connected.set(false);
-        emitter.onCompletion(disconnect);
-        emitter.onTimeout(disconnect);
-        emitter.onError(error -> disconnect.run());
-
-        boolean started = taskRegistry.start(
-                invocation.request().sessionId(), streamExecutor, () -> {
-            try {
-                AgentRunner.AgentRunResult result = runner.runDetailed(
-                        invocation.request(),
-                        invocation.context(),
-                        event -> sendEvent(emitter, connected, event),
-                        AgentEventPublisher.NOOP);
-                send(emitter, connected, "state", response(
-                        invocation.request().sessionId(),
-                        result.state(),
-                        result.invocationId()));
-                if (connected.get()) {
-                    emitter.complete();
-                }
-            } catch (RuntimeException exception) {
-                send(emitter, connected, "stream-error", Map.of(
-                        "sessionId", invocation.request().sessionId(),
-                        "detail", exception.getMessage() == null
-                                ? exception.getClass().getSimpleName()
-                                : exception.getMessage()));
-                if (connected.get()) {
-                    emitter.completeWithError(exception);
-                }
-            }
-        });
-        if (!started) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT,
-                    "session already has a running stream: " + invocation.request().sessionId());
-        }
-        return emitter;
-    }
-
-    private static void disableEventStreamBuffering(HttpServletResponse response) {
-        response.setHeader("Cache-Control", "no-cache, no-transform");
-        response.setHeader("X-Accel-Buffering", "no");
-    }
-
     /** 请求停止指定会话的流式运行，并中断其虚拟线程或平台线程。 */
     @PostMapping("/{sessionId}/stop")
     public ResponseEntity<StopResponse> stop(
@@ -165,32 +103,6 @@ public class AgentController {
                 .body(response);
     }
 
-    private static void sendEvent(
-            SseEmitter emitter, AtomicBoolean connected, AgentRunEvent event) {
-        ChatStreamEvent chatEvent;
-        try {
-            chatEvent = ChatEventMapper.map(event);
-        } catch (RuntimeException exception) {
-            return;
-        }
-        if (chatEvent == null) {
-            return;
-        }
-        send(emitter, connected, ChatEventMapper.eventName(chatEvent), chatEvent);
-    }
-
-    private static void send(
-            SseEmitter emitter, AtomicBoolean connected, String name, Object data) {
-        if (!connected.get()) {
-            return;
-        }
-        try {
-            emitter.send(SseEmitter.event().name(name).data(data));
-        } catch (IOException | IllegalStateException exception) {
-            connected.set(false);
-        }
-    }
-
     private RunInvocation normalize(RunRequest request, RequestIdentity identity) {
         if (request == null || request.input() == null || request.input().isBlank()) {
             throw new IllegalArgumentException("input must not be blank");
@@ -199,7 +111,7 @@ public class AgentController {
                 ? UUID.randomUUID().toString()
                 : request.sessionId();
         String agentId = request.agentId() == null || request.agentId().isBlank()
-                ? "main-agent"
+                ? "plan-execute-agent"
                 : request.agentId();
         String teamId = identity.teamId();
         String userId = identity.userId();
@@ -209,6 +121,7 @@ public class AgentController {
         AgentRequest agentRequest = sessionHistoryService.withHistory(new AgentRequest(
                 sessionId, request.input(),
                 request.attributes() == null ? Map.of() : request.attributes()));
+        if (workspaceBridge != null) agentRequest = workspaceBridge.prepare(agentRequest, userId);
         return new RunInvocation(
                 agentRequest,
                 new InvocationContext(teamId, userId, agentId, taskId));
@@ -310,7 +223,7 @@ public class AgentController {
     /**
      * Agent 运行接口的请求体。
      *
-     * @param agentId Agent 标识；为空时使用 {@code main-agent}
+     * @param agentId Agent 标识；为空时使用 {@code plan-execute-agent}
      * @param sessionId 会话标识；为空时自动生成
      * @param input 用户任务指令
      * @param attributes 传递给 Agent 上下文的扩展属性

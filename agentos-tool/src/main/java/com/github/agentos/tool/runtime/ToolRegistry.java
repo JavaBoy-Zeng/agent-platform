@@ -21,6 +21,8 @@ import java.util.concurrent.ConcurrentMap;
  */
 public final class ToolRegistry implements ToolProvider {
 
+    private java.util.Set<String> orchestrators = java.util.Set.of();
+
     private final ConcurrentMap<String, AgentTool> tools = new ConcurrentHashMap<>();
 
     /**
@@ -32,6 +34,25 @@ public final class ToolRegistry implements ToolProvider {
      */
     public ToolRegistry(Collection<? extends AgentTool> initialTools) {
         Objects.requireNonNull(initialTools, "initialTools must not be null").forEach(this::register);
+    }
+
+    /** 为指定编排 Agent 限定只允许 Agent 委派。 */
+    public ToolRegistry(Collection<? extends AgentTool> tools, java.util.Set<String> orchestrators) {
+        this(tools);
+        this.orchestrators = java.util.Set.copyOf(orchestrators);
+    }
+
+    public boolean isOrchestrator(InvocationContext context) {
+        return orchestrators.contains(context.agentId());
+    }
+
+    public boolean allows(InvocationContext context, AgentTool tool) {
+        return !isOrchestrator(context) || tool instanceof com.github.agentos.tool.api.AgentDelegationTool;
+    }
+
+    public List<ToolDefinition> definitions(InvocationContext context) {
+        return getTools(context).stream().map(ToolDefinition::from)
+                .sorted(Comparator.comparing(ToolDefinition::name)).toList();
     }
 
     /**
@@ -82,7 +103,7 @@ public final class ToolRegistry implements ToolProvider {
     /** 注册表对任意 Invocation 作用域返回同一份内置工具集合。 */
     @Override
     public List<AgentTool> getTools(InvocationContext context) {
-        return all();
+        return all().stream().filter(tool -> allows(context, tool)).toList();
     }
 
     /**

@@ -101,7 +101,7 @@ class AgentToolAdapterTest {
     }
 
     @Test
-    void mapsWaitingStateToFailureBecauseApprovalCannotResume() {
+    void rejectsWaitingStateWithoutPendingAction() {
         AgentToolAdapter adapter = new AgentToolAdapter(
                 scripted("agent", state -> state.waitForAction("approval")));
 
@@ -119,7 +119,7 @@ class AgentToolAdapterTest {
         // 发到父的事件流，带 subagentId/subInvocationId 标签。
         com.github.agentos.kernel.AgentInvocation parentInvocation =
                 new com.github.agentos.kernel.AgentInvocation(
-                        "parent-inv-1", "session-iso", "main-agent", "", java.time.Instant.now());
+                        "parent-inv-1", "session-iso", "plan-execute-agent", "", java.time.Instant.now());
         parentInvocation.start();
         parentInvocation.incrementModelCalls();
         parentInvocation.incrementModelCalls();
@@ -132,7 +132,7 @@ class AgentToolAdapterTest {
         com.github.agentos.kernel.AgentEventPublisher publisher =
                 event -> forwardedEvents.add(event);
 
-        InvocationContext parentContext = InvocationContext.of("main-agent")
+        InvocationContext parentContext = InvocationContext.of("plan-execute-agent")
                 .withRuntime(parentInvocation, publisher);
 
         BaseAgent childAgent = new BaseAgent("child-agent", "isolated child", List.of()) {
@@ -184,7 +184,7 @@ class AgentToolAdapterTest {
             AgentToolAdapter adapter, Map<String, Object> attributes) {
         return new ToolContext(
                 new AgentRequest("session-9", "test", attributes),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 "", "", AgentExecutionLimits.defaults(), Map.of(), adapter);
     }
 

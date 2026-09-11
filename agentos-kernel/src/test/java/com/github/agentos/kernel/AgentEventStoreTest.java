@@ -54,9 +54,9 @@ class AgentEventStoreTest {
         AgentRunner runner = new AgentRunner(loop, AgentEventPublisher.NOOP, store);
         AgentRequest request = AgentRequest.of("same-session", "test");
 
-        runner.run(request, InvocationContext.of("main-agent"));
+        runner.run(request, InvocationContext.of("plan-execute-agent"));
         String firstId = runner.latestInvocation("same-session").orElseThrow().invocationId();
-        runner.run(request, InvocationContext.of("main-agent"));
+        runner.run(request, InvocationContext.of("plan-execute-agent"));
         String secondId = runner.latestInvocation("same-session").orElseThrow().invocationId();
 
         assertThat(store.findByInvocationId(firstId)).extracting(AgentEvent::type)
@@ -76,7 +76,7 @@ class AgentEventStoreTest {
                 eventId,
                 sessionId,
                 invocationId,
-                "main-agent",
+                "plan-execute-agent",
                 Instant.now(),
                 AgentEventType.AGENT_STARTED,
                 eventId,

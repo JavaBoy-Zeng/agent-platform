@@ -8,9 +8,14 @@ import com.github.agentos.kernel.InMemoryCheckpointStore;
 import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.kernel.SessionService;
 import com.github.agentos.server.persistence.mybatis.AgentEventMapper;
+import com.github.agentos.server.persistence.mybatis.AgentRunMapper;
+import com.github.agentos.server.persistence.mybatis.AgentStreamEventMapper;
 import com.github.agentos.server.persistence.mybatis.CheckpointMapper;
 import com.github.agentos.server.persistence.mybatis.ContinuationMapper;
 import com.github.agentos.server.persistence.mybatis.MybatisRuntimeStores;
+import com.github.agentos.server.persistence.mybatis.MybatisAgentRunStore;
+import com.github.agentos.server.run.AgentRunStore;
+import com.github.agentos.server.run.InMemoryAgentRunStore;
 import com.github.agentos.server.persistence.mybatis.SessionMapper;
 import com.github.agentos.server.persistence.mybatis.SettingsMapper;
 import com.github.agentos.server.persistence.mybatis.UsageMapper;
@@ -53,6 +58,21 @@ public class PersistenceConfiguration {
         return new InMemoryAgentEventStore(
                 maxInvocations, maxSessions,
                 maxEventsPerInvocation, maxEventsPerSession);
+    }
+
+    /** Run 快照和关键用户流事件：status 与 token delta 不进入该存储。 */
+    @Bean
+    AgentRunStore agentRunStore(
+            @Value("${agentos.persistence.mode:postgresql}") String mode,
+            ObjectProvider<AgentRunMapper> runMapper,
+            ObjectProvider<AgentStreamEventMapper> streamEventMapper,
+            ObjectMapper objectMapper) {
+        if (isPostgresql(mode)) {
+            return new MybatisAgentRunStore(
+                    runMapper.getObject(), streamEventMapper.getObject(), objectMapper);
+        }
+        requireMemory(mode);
+        return new InMemoryAgentRunStore();
     }
 
     /** 审批恢复 Checkpoint 存储。 */

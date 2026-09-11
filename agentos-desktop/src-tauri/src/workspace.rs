@@ -1,3 +1,5 @@
+#[path = "workspace_execution.rs"]
+pub mod execution;
 use base64::Engine;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -444,6 +446,7 @@ pub async fn authorize_workspace(
 pub fn revoke_workspace(
     window: WebviewWindow,
     state: State<'_, WorkspaceState>,
+    execution: State<'_, execution::ExecutionState>,
     grant_id: String,
 ) -> Result<(), String> {
     state.require_grant(&grant_id, window.label())?;
@@ -451,6 +454,7 @@ pub fn revoke_workspace(
         .inner
         .lock()
         .map_err(|_| "工作区状态不可用".to_string())?;
+    execution.cleanup_window(window.label());
     WorkspaceState::revoke_grant_locked(&mut inner, &grant_id);
     Ok(())
 }
@@ -1032,12 +1036,14 @@ pub fn git_branches(
 pub fn git_switch_branch(
     window: WebviewWindow,
     state: State<'_, WorkspaceState>,
+    execution: State<'_, execution::ExecutionState>,
     grant_id: String,
     workspace_id: String,
     branch: String,
 ) -> Result<GitStatus, String> {
     state.require_grant(&grant_id, window.label())?;
     let workspace = state.workspace(&workspace_id)?;
+    execution::require_unlocked(&execution, &workspace_id)?;
     ensure_repository_root(&workspace.root)?;
     switch_git_branch(&workspace.root, &branch)
 }

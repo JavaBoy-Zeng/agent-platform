@@ -35,19 +35,25 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             scope 只能是：LOCAL_RUNTIME、LOCAL_WORKSPACE、EXTERNAL_WORLD、GENERAL。
             requiredCapabilities 只能包含：RUNTIME_CATALOG_READ、WEB_RESEARCH、CODE_WRITE、
             COMMAND_EXECUTION、DOCUMENT_GENERATION、GENERAL_PLANNING。
-            targetAgent 只能是：search-agent、code-agent、report-agent、main-agent。
+            targetAgent 只能从下方实际可用 Agent 列表选择。
 
             规则：
-            - 当前 AgentOS、当前系统、已注册工具/Agent/Skill/MCP/模型属于 LOCAL_RUNTIME，交 main-agent；
+            - 当前 AgentOS、当前系统、已注册工具/Agent/Skill/MCP/模型属于 LOCAL_RUNTIME，优先交 utility-agent；
               上游通常会确定性拦截，此处不得选择 search-agent。
             - search-agent 仅限时效性检索：答案随时间变化、必须联网才能获得的外部事实
               （最新版本、新闻、今日天气、当前价格、实时行情等），并要求 WEB_RESEARCH。
             - 知识整理类任务（梳理、罗列、总结、介绍、科普、对比、解释某领域的既有知识）
-              一律交 main-agent，scope 记为 GENERAL：这类问题应以模型自身知识为主体作答，
+              优先交 plan-execute-agent，scope 记为 GENERAL：这类问题应以模型自身知识为主体作答，
               检索最多是补充，绝不能只复述搜索摘要，因此不得选择 search-agent。
-            - 本地代码编写或执行选择 code-agent；生成落盘文档选择 report-agent。
-            - 多步骤、混合能力或无法可靠判断时选择 main-agent。
-            - 作用域歧义且会改变工具选择时，将 confidence 设为低于 0.75，并提供 clarifyingQuestion。
+            - 独立代码生成与试运行选择 code-agent；生成落盘文档选择 report-agent。
+            - 工作区文件读取、搜索、修改、Git 操作选择 workspace-agent。
+            - 日期、天气、运行时目录或 MCP/Skill 适配工具任务选择 utility-agent。
+            - 专才的实际工具操作由统一执行边界审批，路由选择不授予工具权限。
+            - plan-execute-agent 适合目标明确、步骤和依赖可预先拆解、多阶段交付的 Plan-and-Execute 任务。
+            - react-agent 适合排障、探索、信息不完整、下一步依赖工具观察结果的任务，边执行边决策。
+            - 多步骤或混合能力本身不决定执行方式，应按是否能预先规划选择 plan-execute-agent 或 react-agent。
+            - 无法可靠判断或推荐的 Agent 不可用时选择下方配置的默认 Agent。
+            - 作用域歧义且会改变工具选择时，将 confidence 设为低于配置的澄清置信度阈值，并提供 clarifyingQuestion。
 
             JSON 字段：intent、scope、requiredCapabilities、targetAgent、confidence、reason、clarifyingQuestion。
             clarifyingQuestion 不需要时返回空字符串。
@@ -57,8 +63,12 @@ public final class SupervisorAgent implements Agent, AgentLoop {
 
     private final ChatClient chatClient;
     private final Map<String, Agent> specialists;
-    private final AgentLoop fallback;
-    /** fallback 的展示标识：fallback 实现 {@link Agent} 时取其 id，否则按 main-agent 记账。 */
+    private final Map<String, AgentLoop> executionAgents;
+    private final java.util.concurrent.ConcurrentMap<String, String> waitingRoutes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final String ROUTE_STATE_KEY = "supervisor.executionAgent";
+    private final String classifyInstruction;
+    /** 无法可靠分类时使用的默认执行 Agent。 */
     private final String fallbackId;
     private final ObjectMapper objectMapper;
     private final double minConfidence;
@@ -75,11 +85,33 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             AgentLoop fallback,
             ObjectMapper objectMapper,
             double minConfidence) {
+        this(chatClient, specialists,
+                Map.of(fallback instanceof Agent agent ? agent.id() : "plan-execute-agent", fallback),
+                fallback instanceof Agent agent ? agent.id() : "plan-execute-agent", objectMapper, minConfidence);
+    }
+
+    public SupervisorAgent(
+            ChatClient chatClient, Map<String, Agent> specialists,
+            Map<String, AgentLoop> executionAgents, String defaultAgentId,
+            ObjectMapper objectMapper, double minConfidence) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
         this.specialists = Map.copyOf(Objects.requireNonNull(
                 specialists, "specialists must not be null"));
-        this.fallback = Objects.requireNonNull(fallback, "fallback must not be null");
-        this.fallbackId = fallback instanceof Agent agent ? agent.id() : "main-agent";
+        var resumableAgents = new java.util.HashMap<>(executionAgents);
+        specialists.forEach((id, agent) -> {
+            if (agent instanceof AgentLoop loop) resumableAgents.put(id, loop);
+        });
+        this.executionAgents = Map.copyOf(resumableAgents);
+        this.fallbackId = Objects.requireNonNull(defaultAgentId, "defaultAgentId must not be null");
+        Objects.requireNonNull(this.executionAgents.get(defaultAgentId),
+                "default agent must be registered");
+        java.util.Set<String> available = new java.util.TreeSet<>(this.specialists.keySet());
+        available.addAll(this.executionAgents.keySet());
+        this.classifyInstruction = CLASSIFY_INSTRUCTION + "\n实际可用 Agent："
+                + String.join("、", available) + "。\n专才说明："
+                + specialists.values().stream().map(agent -> agent.id() + ": " + agent.description())
+                        .sorted().toList() + "\n默认 Agent：" + fallbackId + "。\n"
+                + "澄清置信度阈值：" + minConfidence + "。\n";
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         if (!Double.isFinite(minConfidence) || minConfidence < 0.0 || minConfidence > 1.0) {
             throw new IllegalArgumentException("minConfidence must be within [0.0, 1.0]");
@@ -124,7 +156,7 @@ public final class SupervisorAgent implements Agent, AgentLoop {
         SupervisorRouteDecision decision;
         try {
             LlmRequest classifyRequest = historyProcessor.process(
-                    new LlmRequest(CLASSIFY_INSTRUCTION,
+                    new LlmRequest(classifyInstruction,
                             java.util.List.of(LlmMessage.user(request.objective())))
                             .withRouting(request),
                     request);
@@ -142,8 +174,9 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             return rejectAndFallback(request, context, runningState, eventSink,
                     "LOW_CONFIDENCE", "route confidence below " + minConfidence, decision);
         }
-        if ("main-agent".equals(decision.targetAgent())) {
-            return fallback(request, context, runningState, eventSink);
+        if (executionAgents.containsKey(decision.targetAgent())
+                && !specialists.containsKey(decision.targetAgent())) {
+            return execute(decision.targetAgent(), request, context, runningState, eventSink);
         }
 
         Agent specialist = specialists.get(decision.targetAgent());
@@ -161,26 +194,9 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             return rejectAndFallback(request, context, runningState, eventSink,
                     "AGENT_REJECTED", acceptance.reason(), decision);
         }
-        if (requiresCentralToolDispatch(request)) {
-            // 专业 Agent 内部仍有少量直连工具调用，直接派发会绕开 ToolDispatcher 的
-            // HITL 拦截器。非 FULL_ACCESS 模式统一回到 MainAgent，让专业 Agent 作为
-            // 带风险等级的工具执行，从而在任何文件写入、命令或联网动作前先挂起审批。
-            return rejectAndFallback(request, context, runningState, eventSink,
-                    "CENTRAL_APPROVAL_REQUIRED",
-                    "当前权限模式要求通过统一工具审批链执行", decision);
-        }
-
         LOGGER.info("[supervisor] dispatching sessionId={} target={} scope={} confidence={}",
                 request.sessionId(), decision.targetAgent(), decision.scope(), decision.confidence());
-        return specialistLoop.run(request, context.withAgentId(decision.targetAgent()),
-                runningState, eventSink);
-    }
-
-    private static boolean requiresCentralToolDispatch(AgentRequest request) {
-        Object configured = request.attributes().getOrDefault("approvalMode", "RISK_BASED");
-        String mode = String.valueOf(configured).trim()
-                .toUpperCase(java.util.Locale.ROOT);
-        return !"FULL_ACCESS".equals(mode);
+        return execute(decision.targetAgent(), request, context, runningState, eventSink);
     }
 
     private SupervisorRouteDecision parseDecision(String raw) {
@@ -245,7 +261,75 @@ public final class SupervisorAgent implements Agent, AgentLoop {
             InvocationContext context,
             AgentState runningState,
             AgentEventSink eventSink) {
-        return fallback.run(request, context.withAgentId(fallbackId), runningState, eventSink);
+        return execute(fallbackId, request, context, runningState, eventSink);
+    }
+
+    private AgentState execute(String agentId, AgentRequest request, InvocationContext context,
+            AgentState runningState, AgentEventSink sink) {
+        AgentState result = executionAgents.get(agentId).run(
+                request, context.withAgentId(agentId), runningState, sink);
+        if (result.status() == AgentState.Status.WAITING && !context.invocationId().isBlank()) {
+            waitingRoutes.put(context.invocationId(), agentId);
+        }
+        return result;
+    }
+
+    /** 旧检查点仍可恢复到改名前的规划执行实现。 */
+    private String checkpointAgentId(AgentCheckpoint checkpoint) {
+        String id = checkpoint.state().getOrDefault(ROUTE_STATE_KEY, checkpoint.agentId());
+        return executionAgents.containsKey(id) ? id : checkpoint.state().containsKey(ROUTE_STATE_KEY)
+                ? id : fallbackId;
+    }
+
+    @Override
+    public AgentCheckpoint checkpoint(AgentRequest request,
+            InvocationContext context, AgentCheckpoint checkpoint) {
+        // 决定路由到哪个 agent
+        String agentId = waitingRoutes.getOrDefault(checkpoint.invocationId(),
+                checkpointAgentId(checkpoint));
+        //委托 agent 自己落盘
+        var delegated = executionAgents.get(agentId).checkpoint(
+                request, context.withAgentId(agentId), checkpoint);
+        //复制 agent 的 state
+        var state = new java.util.HashMap<>(delegated.state());
+        //写入路由键
+        state.put(ROUTE_STATE_KEY, agentId);
+        //顶层 agentId 也设上
+        var result = new AgentCheckpoint(
+                delegated.sessionId(), delegated.invocationId(), agentId, delegated.taskId(),
+                delegated.teamId(), delegated.userId(), delegated.objective(),
+                delegated.currentPlanId(), delegated.currentStepId(), delegated.currentStepIndex(),
+                delegated.completedStepIds(), state, delegated.pendingAction(),
+                delegated.executionCounters(), delegated.status(), delegated.savedAt());
+        //内存表清掉
+        waitingRoutes.remove(checkpoint.invocationId());
+        return result;
+    }
+
+    @Override
+    public AgentState resume(AgentRequest request, InvocationContext context, AgentState runningState,
+            AgentCheckpoint checkpoint,
+            PendingActionResolution resolution, AgentEventSink sink) {
+        String agentId = checkpointAgentId(checkpoint);
+        AgentLoop selected = executionAgents.get(agentId);
+        if (selected == null) {
+            return runningState.fail("checkpoint execution agent is unavailable: " + agentId);
+        }
+        AgentState result = selected.resume(request, context.withAgentId(agentId), runningState,
+                checkpoint, resolution, sink);
+        if (result.status() == AgentState.Status.WAITING) {
+            waitingRoutes.put(checkpoint.invocationId(), agentId);
+        }
+        return result;
+    }
+
+    @Override
+    public void discard(AgentCheckpoint checkpoint) {
+        waitingRoutes.remove(checkpoint.invocationId());
+        AgentLoop selected = executionAgents.get(checkpointAgentId(checkpoint));
+        if (selected != null) {
+            selected.discard(checkpoint);
+        }
     }
 
     private static AgentState clarify(
@@ -276,25 +360,4 @@ public final class SupervisorAgent implements Agent, AgentLoop {
                 ? exception.getClass().getSimpleName() : exception.getMessage();
     }
 
-    @Override
-    public AgentState resume(
-            AgentRequest request,
-            InvocationContext context,
-            AgentState runningState,
-            AgentCheckpoint checkpoint,
-            PendingActionResolution resolution,
-            AgentEventSink eventSink) {
-        return fallback.resume(request, context, runningState, checkpoint, resolution, eventSink);
-    }
-
-    @Override
-    public AgentCheckpoint checkpoint(
-            AgentRequest request, InvocationContext context, AgentCheckpoint checkpoint) {
-        return fallback.checkpoint(request, context, checkpoint);
-    }
-
-    @Override
-    public void discard(AgentCheckpoint checkpoint) {
-        fallback.discard(checkpoint);
-    }
 }

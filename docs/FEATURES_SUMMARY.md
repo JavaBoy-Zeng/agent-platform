@@ -46,7 +46,7 @@ flowchart LR
 ### 2.2 agentos-agent（主 Agent 编排）
 
 - 业务编排层：在运行预算内循环 `规划 → 工具 → 重新规划`。
-- `MainAgent` 串联：
+- `PlanExecuteAgent` 串联：
   - `AgentPlanner.createPlan`
   - `PlanExecutor.execute`
   - `AgentPlanner.replan(PlanExecutionSnapshot)`
@@ -123,14 +123,14 @@ flowchart LR
 
 - 启动 Spring Boot Web 应用并装配所有模块为 Bean。
 - 核心类型：`AgentOsApplication`、`AgentOsConfiguration`、`LlmPlannerConfiguration`、`AgentController`、`MemoryController`、`AgentExceptionHandler`、`AgentRuntimeIntegrationTest`。
-- 默认装配：`AgentRuntime → MainAgent → AgentPlanner(LlmAgentPlanner + ModelClient) / PlanExecutor(FailureClassifier / ToolDispatcher(ToolRegistry + ApprovalToolInterceptor)) / AgentFinalizer / MemoryService(MemoryStore + MemoryModel + MemoryEmbedding)`。
+- 默认装配：`AgentRuntime → PlanExecuteAgent → AgentPlanner(LlmAgentPlanner + ModelClient) / PlanExecutor(FailureClassifier / ToolDispatcher(ToolRegistry + ApprovalToolInterceptor)) / AgentFinalizer / MemoryService(MemoryStore + MemoryModel + MemoryEmbedding)`。
 - 对外 HTTP API：
   - `POST /api/agents/runs`：创建一次运行。
   - `GET  /api/agents/{sessionId}/state`：查询会话状态（不存在返回 404）。
-  - `POST /api/agents/runs/stream`：流式运行（SSE），依次发送阶段事件、上游模型 `output_delta`、`run_completed` 和最终 `state`；不对完整回答做定长二次切片。
   - `POST /api/agent-runs`：可恢复的后台运行，返回 `202 Accepted` + `runId`。
   - `GET  /api/agent-runs/{runId}`：查询运行快照。
-  - `GET  /api/agent-runs/{runId}/events?after=N`：按序号补播遗漏事件（事件 SSE `id` 与单调递增 `sequence` 一致）。
+  - `GET  /api/agent-runs/{runId}/events?afterSeq=N`：按 `seq` 补播遗漏的 `AgentStreamEvent`（也支持 `Last-Event-ID`）。
+  - `GET  /api/agent-runs/history?sessionId=...`：只回放可持久化的会话事件。
   - `POST /api/agent-runs/{runId}/cancel`：显式取消。
   - `GET  /api/memories?sessionId=...&teamId=...&userId=...&agentId=...&recentLimit=...`：查询 L0–L3 记忆快照（只读，不等待异步生成）。
 - 异常处理：非法参数被转换为标准 HTTP Problem Detail 400。
@@ -144,7 +144,7 @@ flowchart LR
   - 调用 `POST /api/agent-runs` 创建后台任务，并通过 GET SSE 按事件游标持续订阅。
   - 页面刷新后按 `runId` 查询快照、补播缺失事件并恢复实时展示。
   - 实时展示 Plan / Tool / Observation / Decision / 最终输出 / 失败信息。
-  - 可视化 MainAgent → Planner → Tool → Observation → Decision 执行管线。
+  - 可视化 PlanExecuteAgent → Planner → Tool → Observation → Decision 执行管线。
   - 从服务端分页加载会话，`localStorage` 仅缓存最近 20 个会话用于快速恢复和断网兜底。
   - 本地缓存缺失时，从服务端领域事件恢复完整的用户/助手对话轮次。
   - 顶部提供中英文全局切换，桌面端使用双段按钮，移动端压缩为单按钮。
@@ -195,12 +195,6 @@ curl -X POST http://localhost:8080/api/agents/runs \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"session-1","input":"hello agentos"}'
 
-# 流式运行
-curl -N -X POST http://localhost:8080/api/agents/runs/stream \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"sessionId":"session-1","input":"hello agentos"}'
-
 # 查询会话状态
 curl http://localhost:8080/api/agents/session-1/state
 
@@ -211,7 +205,7 @@ curl -X POST http://localhost:8080/api/agent-runs \
 # 响应：{ "runId": "..." } (HTTP 202)
 
 # 补播事件
-curl 'http://localhost:8080/api/agent-runs/<runId>/events?after=42'
+curl 'http://localhost:8080/api/agent-runs/<runId>/events?afterSeq=42'
 
 # 取消
 curl -X POST http://localhost:8080/api/agent-runs/<runId>/cancel

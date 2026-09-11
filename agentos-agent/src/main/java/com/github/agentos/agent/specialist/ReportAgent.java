@@ -7,7 +7,7 @@ import com.github.agentos.agent.routing.RouteAcceptance;
 import com.github.agentos.agent.routing.RouteScope;
 import com.github.agentos.agent.routing.RoutableAgent;
 import com.github.agentos.agent.routing.SupervisorRouteDecision;
-import com.github.agentos.agent.workflow.BaseAgent;
+import com.github.agentos.agent.workflow.ResumableSpecialist;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
@@ -46,7 +46,7 @@ import java.util.Set;
  * <p>该 Agent 通过 {@link com.github.agentos.agent.workflow.AgentToolAdapter} 暴露为
  * {@code report_agent} 工具，规划器可按需调用。</p>
  */
-public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent {
+public final class ReportAgent extends ResumableSpecialist implements Agent, RoutableAgent {
 
     /** 注册标识，同时作为 AgentToolAdapter 的工具名。 */
     public static final String ID = "report-agent";
@@ -75,7 +75,7 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
 
     /** 创建使用自定义请求构造链的文档 Agent。 */
     public ReportAgent(ChatClient chatClient, LlmFlow llmFlow, AgentTool fileWriteTool) {
-        super(ID, "Generate a structured Markdown report and save it as a file", List.of());
+        super(ID, "Generate a structured Markdown report and save it as a file");
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
         this.llmFlow = Objects.requireNonNull(llmFlow, "llmFlow must not be null");
         this.fileWriteTool = Objects.requireNonNull(fileWriteTool, "fileWriteTool must not be null");
@@ -113,7 +113,7 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
     }
 
     @Override
-    public AgentState run(
+    protected AgentState runWorkflow(
             AgentRequest request,
             InvocationContext context,
             AgentState runningState,
@@ -148,13 +148,14 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
             // 第一步：LLM 生成文档内容
             LlmRequest generateRequest = llmFlow.build(request)
                     .withSystemInstruction(SYSTEM_INSTRUCTION);
-            String rawContent = chatClient.chat(request.sessionId(), generateRequest);
+            String rawContent = modelResult("generate", context,
+                    () -> chatClient.chat(request.sessionId(), generateRequest));
             GeneratedMarkdownDocument document = GeneratedMarkdownDocument.from(
                     request.objective(), rawContent);
 
             // 第二步：按文档标题生成可读文件名；同名文件使用递增序号，避免覆盖历史产物。
-            Path filePath = nextAvailablePath(
-                    Path.of(System.getProperty("user.dir")), document.fileName());
+            Path filePath = Path.of(remember("output-path", () -> nextAvailablePath(
+                    Path.of(System.getProperty("user.dir")), document.fileName()).toString()));
             String fileName = filePath.getFileName().toString();
 
             Map<String, Object> writeArguments = Map.of(
@@ -269,6 +270,8 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
                     resultSummary,
                     Map.of("agentId", ID, "fileName", fileName)));
             return runningState.complete(resultSummary);
+        } catch (Suspended suspended) {
+            throw suspended;
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();
@@ -288,15 +291,7 @@ public final class ReportAgent extends BaseAgent implements Agent, RoutableAgent
             AgentTool tool, String toolName,
             Map<String, Object> arguments,
             AgentRequest request, InvocationContext context) {
-        try {
-            ToolContext toolContext = new ToolContext(
-                    request, context, "", "",
-                    AgentExecutionLimits.defaults(), Map.of(), tool);
-            return tool.execute(toolContext, new ToolCall(toolName, arguments));
-        } catch (Exception exception) {
-            LOGGER.warn("[report-agent] tool {} failed: {}", toolName, exception.getMessage());
-            return ToolResult.failure(ToolFailureType.TOOL_INTERNAL_ERROR, exception.getMessage());
-        }
+        return dispatchTool(tool, new ToolCall(toolName, arguments), request, context);
     }
 
     /** 返回未被占用的输出路径；同名时依次追加 {@code -2}、{@code -3}。 */

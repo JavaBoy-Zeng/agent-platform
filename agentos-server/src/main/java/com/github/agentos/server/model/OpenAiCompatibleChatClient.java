@@ -95,13 +95,16 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         validateRequest(request);
         String model = modelFor(request);
-        HttpRequest httpRequest = createHttpRequest(sessionId, request, false);
+        String traceCallId = java.util.UUID.randomUUID().toString();
+        StringBuilder traceBody = new StringBuilder();
+        HttpRequest httpRequest = createHttpRequest(sessionId, request, false, traceCallId);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-call] started sessionId={} model={} endpoint={}",
                 sessionId, model, properties.getEndpoint());
         try {
             HttpResponse<String> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            traceBody.append(response.body());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new ModelClientException(
                         "Chat endpoint returned HTTP " + response.statusCode()
@@ -120,11 +123,16 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             return ChatResponse.withReasoning(
                     payload.answer(), payload.reasoningContent(), usage);
         } catch (InterruptedException exception) {
+            traceBody.append("\n[interrupted] ").append(exception.getMessage());
             Thread.currentThread().interrupt();
             throw new ModelClientException("Chat request was interrupted", exception);
         } catch (IOException exception) {
+            traceBody.append("\n[transport error] ").append(exception.getMessage());
             throw new ModelClientException(
                     "Chat endpoint request failed: " + exception.getMessage(), exception);
+        } finally {
+            com.github.agentos.kernel.ExecutionTrace.recordCurrent(traceCallId, "model_response",
+                    "模型返回 · " + model, traceBody.toString());
         }
     }
 
@@ -135,7 +143,9 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         Objects.requireNonNull(onDelta, "onDelta must not be null");
         validateRequest(request);
         String model = modelFor(request);
-        HttpRequest httpRequest = createHttpRequest(sessionId, request, true);
+        String traceCallId = java.util.UUID.randomUUID().toString();
+        StringBuilder traceBody = new StringBuilder();
+        HttpRequest httpRequest = createHttpRequest(sessionId, request, true, traceCallId);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-stream] started sessionId={} model={}",
                 sessionId, model);
@@ -150,13 +160,14 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 String errorBody;
                 try (Stream<String> errorLines = response.body()) {
                     errorBody = errorLines.collect(Collectors.joining("\n"));
+                    traceBody.append(errorBody);
                 }
                 throw new ModelClientException(
                         "Chat endpoint returned HTTP " + response.statusCode()
                                 + errorDetail(errorBody));
             }
             try (Stream<String> lines = response.body()) {
-                lines.forEach(line -> consumeSseLine(
+                lines.peek(line -> traceBody.append(line).append("\n")).forEach(line -> consumeSseLine(
                         sessionId, line, filter, reasoning, usage, model));
             }
             filter.finish();
@@ -173,11 +184,16 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                     elapsedMillis(requestStarted));
             return ChatResponse.withReasoning(answer.toString(), reasoningText, usage[0]);
         } catch (InterruptedException exception) {
+            traceBody.append("\n[interrupted] ").append(exception.getMessage());
             Thread.currentThread().interrupt();
             throw new ModelClientException("Chat stream was interrupted", exception);
         } catch (IOException exception) {
+            traceBody.append("\n[transport error] ").append(exception.getMessage());
             throw new ModelClientException(
                     "Chat stream request failed: " + exception.getMessage(), exception);
+        } finally {
+            com.github.agentos.kernel.ExecutionTrace.recordCurrent(traceCallId, "model_response",
+                    "模型返回 · " + model, traceBody.toString());
         }
     }
 
@@ -188,10 +204,15 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         Objects.requireNonNull(onDelta, "onDelta must not be null");
         validateRequest(request);
         if (request.tools().isEmpty()) {
-            throw new IllegalArgumentException("chatWithTools requires a non-empty tools list");
+            // ReAct 的预算收尾和反思不提供工具，但仍需保留历史、流式输出及用量。
+            ChatResponse response = chatStream(sessionId, request, onDelta);
+            return ToolCallResponse.answerWithReasoning(
+                    response.answer(), response.reasoningContent(), response.usage());
         }
         String model = modelFor(request);
-        HttpRequest httpRequest = createHttpRequest(sessionId, request, true);
+        String traceCallId = java.util.UUID.randomUUID().toString();
+        StringBuilder traceBody = new StringBuilder();
+        HttpRequest httpRequest = createHttpRequest(sessionId, request, true, traceCallId);
         long requestStarted = System.nanoTime();
         LOGGER.info("[chat-tools] started sessionId={} model={} toolCount={}",
                 sessionId, model, request.tools().size());
@@ -207,13 +228,14 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 String errorBody;
                 try (Stream<String> errorLines = response.body()) {
                     errorBody = errorLines.collect(Collectors.joining("\n"));
+                    traceBody.append(errorBody);
                 }
                 throw new ModelClientException(
                         "Chat endpoint returned HTTP " + response.statusCode()
                                 + errorDetail(errorBody));
             }
             try (Stream<String> lines = response.body()) {
-                lines.forEach(line -> consumeToolCallSseLine(
+                lines.peek(line -> traceBody.append(line).append("\n")).forEach(line -> consumeToolCallSseLine(
                         sessionId, line, model, filter, reasoning, toolCalls, usage));
             }
             filter.finish();
@@ -246,11 +268,16 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             return ToolCallResponse.answerWithReasoning(
                     answer.toString(), reasoningText, usage[0]);
         } catch (InterruptedException exception) {
+            traceBody.append("\n[interrupted] ").append(exception.getMessage());
             Thread.currentThread().interrupt();
             throw new ModelClientException("Chat tool stream was interrupted", exception);
         } catch (IOException exception) {
+            traceBody.append("\n[transport error] ").append(exception.getMessage());
             throw new ModelClientException(
                     "Chat tool stream request failed: " + exception.getMessage(), exception);
+        } finally {
+            com.github.agentos.kernel.ExecutionTrace.recordCurrent(traceCallId, "model_response",
+                    "模型返回 · " + model, traceBody.toString());
         }
     }
 
@@ -267,7 +294,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             }
             Map<String, Object> arguments = new LinkedHashMap<>();
             node.properties().forEach(entry ->
-                    arguments.put(entry.getKey(), scalarValue(entry.getValue())));
+                    arguments.put(entry.getKey(), javaValue(entry.getValue())));
             return arguments;
         } catch (JacksonException exception) {
             throw new ModelClientException(
@@ -275,8 +302,8 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         }
     }
 
-    /** 标量取原生值，嵌套结构回退为 JSON 文本，与工具层参数绑定约定一致。 */
-    private static Object scalarValue(JsonNode node) {
+    /** 将 arguments JSON 递归转换为工具层可直接消费的 Java 值。 */
+    private static Object javaValue(JsonNode node) {
         if (node.isString()) {
             return node.stringValue();
         }
@@ -288,6 +315,17 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         }
         if (node.isBoolean()) {
             return node.asBoolean();
+        }
+        if (node.isArray()) {
+            List<Object> values = new ArrayList<>();
+            node.forEach(child -> values.add(javaValue(child)));
+            return List.copyOf(values);
+        }
+        if (node.isObject()) {
+            Map<String, Object> values = new LinkedHashMap<>();
+            node.properties().forEach(entry ->
+                    values.put(entry.getKey(), javaValue(entry.getValue())));
+            return Map.copyOf(values);
         }
         return node.toString();
     }
@@ -541,7 +579,7 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
     }
 
     private HttpRequest createHttpRequest(
-            String sessionId, LlmRequest request, boolean stream) {
+            String sessionId, LlmRequest request, boolean stream, String traceCallId) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", modelFor(request));
         body.put("messages", requestMessages(request));
@@ -567,6 +605,8 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
             throw new ModelClientException("Failed to serialize the chat request", exception);
         }
 
+        com.github.agentos.kernel.ExecutionTrace.recordCurrent(traceCallId, "model_request",
+                "模型请求 · " + modelFor(request), serialized);
         HttpRequest.Builder builder = HttpRequest.newBuilder(properties.getEndpoint())
                 .timeout(properties.getRequestTimeout())
                 .header("Content-Type", "application/json")

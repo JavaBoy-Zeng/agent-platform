@@ -34,12 +34,12 @@ class SqliteAgentEventStoreTest {
         Path file = tempDir.resolve("events.sqlite");
         SqliteAgentEventStore first = store(file);
         first.append(new DefaultAgentEvent(
-                "e1", "session-1", "inv-1", "main-agent",
+                "e1", "session-1", "inv-1", "plan-execute-agent",
                 Instant.parse("2026-08-19T10:00:00Z"),
                 AgentEventType.TOOL_CALL_COMPLETED, "weather done", Map.of(),
                 EventActions.stateDelta(Map.of("city", "重庆"))));
         first.append(new DefaultAgentEvent(
-                "e2", "session-1", "inv-1", "main-agent",
+                "e2", "session-1", "inv-1", "plan-execute-agent",
                 Instant.parse("2026-08-19T10:00:01Z"),
                 AgentEventType.AGENT_COMPLETED, "28℃", Map.of("status", "COMPLETED"),
                 EventActions.stateDelta(Map.of("turnCount", 1L))));
@@ -58,7 +58,7 @@ class SqliteAgentEventStoreTest {
     void plainEventsKeepNoneActions() {
         SqliteAgentEventStore store = store(tempDir.resolve("events.sqlite"));
         store.append(new DefaultAgentEvent(
-                "e1", "session-1", "inv-1", "main-agent",
+                "e1", "session-1", "inv-1", "plan-execute-agent",
                 Instant.parse("2026-08-19T10:00:00Z"),
                 AgentEventType.AGENT_STARTED, "hi", Map.of()));
 

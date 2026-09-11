@@ -30,6 +30,10 @@ public final class JsonSchemas {
             Map<String, Object> property = new LinkedHashMap<>();
             property.put("type", jsonType(parameter.type()));
             property.put("description", parameter.description());
+            if (parameter.type() == ToolParameter.ValueType.ARRAY) {
+                // 当前内置数组参数（路径、过滤规则）均为字符串列表。
+                property.put("items", Map.of("type", "string"));
+            }
             properties.put(parameter.name(), Map.copyOf(property));
             if (parameter.required()) {
                 required.add(parameter.name());

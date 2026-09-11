@@ -27,6 +27,8 @@ import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,7 +43,7 @@ import java.util.stream.Collectors;
 /**
  * 无显式计划、每轮即时决策的 Tool-Calling Agent（业界主流形态）。
  *
- * <p>与 {@link MainAgent} 的 Plan-and-Execute 不同，本 Agent 不生成前置计划：
+ * <p>与 {@link PlanExecuteAgent} 的 Plan-and-Execute 不同，本 Agent 不生成前置计划：
  * 每一轮把当前对话（目标 + 全部工具观察）交给模型，由模型即时决定
  * “调用一个工具”或“直接给出最终回答”，工具结果回填后进入下一轮。</p>
  *
@@ -54,7 +56,7 @@ import java.util.stream.Collectors;
  *
  * <p>工具调用经 {@link ToolDispatcher} 统一调度，因此保留 HITL 审批与
  * 领域事件能力。高风险工具返回 pendingAction 时，运行转为 WAITING；
- * 与 MainAgent 不同，当前实现不持久化中间对话，审批通过后的恢复会
+ * 与 PlanExecuteAgent 不同，当前实现不持久化中间对话，审批通过后的恢复会
  * 从目标重新开始执行。</p>
  */
 public final class ReactAgent implements Agent, AgentLoop {
@@ -66,11 +68,13 @@ public final class ReactAgent implements Agent, AgentLoop {
     private static final String TOOL_CALL_PLACEHOLDER = "(工具调用)";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ReactAgent.class);
+    private static final ObjectMapper TOOL_ARGUMENT_MAPPER = new ObjectMapper();
     private static final int MAX_LOG_VALUE_LENGTH = 1_000;
 
     private final ChatClient chatClient;
     private final ToolDispatcher toolDispatcher;
     private final List<LlmToolDefinition> toolDefinitions;
+    private com.github.agentos.tool.api.ToolProvider toolProvider;
     private final AgentExecutionLimits limits;
     private final ConversationCompactor compactor;
     private final ContinuationStore continuationStore;
@@ -185,6 +189,11 @@ public final class ReactAgent implements Agent, AgentLoop {
                 messages, systemInstruction, 0, 0, 0, 0L, 0L, runId, started);
     }
 
+    /** 按当前 Invocation 提供能力；生产编排层仅提供 Agent 委派。 */
+    public void configureToolProvider(com.github.agentos.tool.api.ToolProvider provider) {
+        this.toolProvider = Objects.requireNonNull(provider);
+    }
+
     @Override
     public AgentState resume(
             AgentRequest request,
@@ -200,6 +209,9 @@ public final class ReactAgent implements Agent, AgentLoop {
         if (continuation == null) {
             return runningState.fail(
                     "approved invocation cannot resume because its execution continuation is missing");
+        }
+        if (context.invocation() != null) {
+            context.invocation().configureModelCallBudget(limits.maxModelCalls(), continuation.modelCalls());
         }
         AgentRequest resumedRequest = continuation.request();
         if (!resumedRequest.sessionId().equals(request.sessionId())) {
@@ -245,6 +257,13 @@ public final class ReactAgent implements Agent, AgentLoop {
                             limits,
                             Map.of(),
                             tool));
+            if (result.actions().pendingAction() != null) {
+                var action = result.actions().pendingAction();
+                context.invocation().waitFor(action);
+                saveContinuation(context.invocationId(), new ReactContinuation(resumedRequest,
+                        messages, context.invocation().totalModelCalls(), toolCalls, pendingCall, callId, toolName));
+                return runningState.waitForAction(action.title());
+            }
             eventSink.emit(AgentRunEvent.of(
                     AgentRunEvent.Type.TOOL_FINISHED,
                     request.sessionId(),
@@ -315,6 +334,7 @@ public final class ReactAgent implements Agent, AgentLoop {
 
     @Override
     public void discard(AgentCheckpoint checkpoint) {
+        toolDispatcher.discardPending(checkpoint.pendingAction());
         continuations.remove(checkpoint.invocationId());
         deleteContinuationQuietly(checkpoint.invocationId());
     }
@@ -339,9 +359,13 @@ public final class ReactAgent implements Agent, AgentLoop {
             long totalOutputTokens,
             String runId,
             long started) {
-        try {
+        if (context.invocation() != null) {
+            context.invocation().configureModelCallBudget(limits.maxModelCalls(), modelCalls);
+        }
+        try (var traceScope = com.github.agentos.kernel.ExecutionTrace.open(context)) {
             while (true) {
                 context.throwIfCancelled();
+                if (context.invocation() != null) modelCalls = context.invocation().totalModelCalls();
                 if (modelCalls >= limits.maxModelCalls()) {
                     return failed(request, runningState, eventSink, started, modelCalls, toolCalls,
                             totalInputTokens, totalOutputTokens,
@@ -349,9 +373,16 @@ public final class ReactAgent implements Agent, AgentLoop {
                                     + "（每轮决策计一次模型调用，react 模式可通过"
                                     + " agentos.agent.react.max-model-calls 提高预算）");
                 }
+                if (context.invocation() != null) {
+                    if (!context.invocation().reserveModelCall()) {
+                        return failed(request, runningState, eventSink, started, modelCalls, toolCalls,
+                                totalInputTokens, totalOutputTokens, "task model-call budget exhausted");
+                    }
+                    context.invocation().incrementModelCalls();
+                }
                 modelCalls++;
                 RoundDecision decision = decide(
-                        request, eventSink, systemInstruction, messages, modelCalls);
+                        request, context, eventSink, systemInstruction, messages, modelCalls);
                 emitUsage(request, eventSink, decision.usage());
                 if (decision.usage() != null) {
                     totalInputTokens += decision.usage().promptTokens();
@@ -390,6 +421,12 @@ public final class ReactAgent implements Agent, AgentLoop {
                     return runningState.complete(answer, decision.reasoningContent());
                 }
 
+                if (modelCalls >= limits.maxModelCalls()
+                        || (context.invocation() != null && context.invocation().remainingModelCalls() == 0)) {
+                    return failed(request, runningState, eventSink, started, modelCalls, toolCalls,
+                            totalInputTokens, totalOutputTokens,
+                            "maxModelCalls exhausted: final response attempted another tool call");
+                }
                 if (toolCalls >= limits.maxToolCalls()) {
                     return failed(request, runningState, eventSink, started, modelCalls, toolCalls,
                             totalInputTokens, totalOutputTokens,
@@ -447,7 +484,8 @@ public final class ReactAgent implements Agent, AgentLoop {
                             new LlmMessage.ToolCallPart(
                                     callId, call.toolName(), argumentsJson(call))));
                     saveContinuation(context.invocationId(), new ReactContinuation(
-                            request, List.copyOf(messages), modelCalls, toolCalls,
+                            request, List.copyOf(messages), context.invocation() == null ? modelCalls
+                                    : context.invocation().totalModelCalls(), toolCalls,
                             call, callId, call.toolName()));
                     eventSink.emit(AgentRunEvent.of(
                             AgentRunEvent.Type.DECISION,
@@ -524,7 +562,7 @@ public final class ReactAgent implements Agent, AgentLoop {
                 consecutiveFailures = result.success() ? 0 : consecutiveFailures + 1;
                 ReflectionOutcome reflection = maybeReflect(
                         request, context, eventSink, systemInstruction, messages,
-                        toolCalls, consecutiveFailures, runId);
+                        toolCalls, consecutiveFailures, runId, modelCalls);
                 if (reflection != null) {
                     messages.add(reflection.message());
                     if (reflection.abort()) {
@@ -602,8 +640,9 @@ public final class ReactAgent implements Agent, AgentLoop {
             deleteContinuationQuietly(invocationId);
             return inMemory;
         }
-        return continuationStore.load(invocationId)
-                .map(loaded -> new ReactContinuation(
+        var persisted = continuationStore.load(invocationId);
+        if (persisted.isPresent()) deleteContinuationQuietly(invocationId);
+        return persisted.map(loaded -> new ReactContinuation(
                         loaded.request(),
                         loaded.reactMessages(),
                         loaded.modelCalls(),
@@ -642,12 +681,13 @@ public final class ReactAgent implements Agent, AgentLoop {
             List<LlmMessage> messages,
             int toolCalls,
             int consecutiveFailures,
-            String runId) {
+            String runId, int modelCalls) {
         boolean periodic = reflectionInterval > 0 && toolCalls > 0
                 && toolCalls % reflectionInterval == 0;
         boolean failureDriven = consecutiveFailureThreshold > 0
                 && consecutiveFailures >= consecutiveFailureThreshold;
-        if (!periodic && !failureDriven) {
+        if ((!periodic && !failureDriven) || modelCalls >= limits.maxModelCalls()
+                || (context.invocation() != null && context.invocation().remainingModelCalls() <= 1)) {
             return null;
         }
         String trigger = failureDriven ? "CONSECUTIVE_FAILURE" : "PERIODIC";
@@ -670,6 +710,7 @@ public final class ReactAgent implements Agent, AgentLoop {
                     continue=false 表示任务无法继续（如方向错误、工具反复失败、目标已达成无需更多调用）。
                     """;
             List<LlmMessage> reflectionMessages = new ArrayList<>();
+            reflectionMessages.addAll(compactor.compact(messages).messages());
             reflectionMessages.add(LlmMessage.user("已执行工具调用次数：" + toolCalls
                     + "，连续失败：" + consecutiveFailures
                     + "。请评估并输出 JSON。"));
@@ -677,11 +718,15 @@ public final class ReactAgent implements Agent, AgentLoop {
             LlmRequest reflectionRequest = new LlmRequest(
                     systemInstruction + "\n\n[反思阶段] " + reflectionPrompt,
                     reflectionMessages).withTools(List.of()).withRouting(request);
+            if (context.invocation() != null) {
+                if (!context.invocation().reserveModelCall()) return null;
+                context.invocation().incrementModelCalls();
+            }
             ChatClient.ToolCallResponse response = chatClient.chatWithTools(
                     request.sessionId(), reflectionRequest, delta -> { });
             String answer = response.answer() == null ? "" : response.answer().strip();
             int newModelCalls = context.invocation() != null
-                    ? context.invocation().incrementModelCalls() : 0;
+                    ? context.invocation().totalModelCalls() : modelCalls + 1;
             boolean shouldContinue = !answer.toLowerCase().contains("\"continue\":false");
             String reason = extractJsonField(answer, "reason");
             if (reason.isBlank()) {
@@ -704,8 +749,10 @@ public final class ReactAgent implements Agent, AgentLoop {
         } catch (RuntimeException exception) {
             LOGGER.warn("[react] reflection failed sessionId={} runId={}: {}",
                     request.sessionId(), runId, exception.getMessage());
-            // 反思失败不中断主循环，返回 null 跳过。
-            return null;
+            // 失败请求也消耗预算，不能因异常把调用计数回退。
+            return new ReflectionOutcome(LlmMessage.assistant("[反思] 请求失败，保留已有观察继续。"),
+                    false, "", context.invocation() == null ? modelCalls + 1
+                            : context.invocation().totalModelCalls());
         }
     }
 
@@ -804,7 +851,7 @@ public final class ReactAgent implements Agent, AgentLoop {
      * 无需任何前缀探测或 JSON 文本解析。</p>
      */
     private RoundDecision decide(
-            AgentRequest request,
+            AgentRequest request, InvocationContext context,
             AgentEventSink eventSink,
             String systemInstruction,
             List<LlmMessage> messages,
@@ -813,9 +860,17 @@ public final class ReactAgent implements Agent, AgentLoop {
                 request.sessionId(), modelCalls, limits.maxModelCalls(), messages.size());
         AtomicInteger sequence = new AtomicInteger();
         AtomicBoolean streamed = new AtomicBoolean(false);
+        boolean finalRound = context.invocation() == null ? modelCalls >= limits.maxModelCalls()
+                : context.invocation().remainingModelCalls() == 0;
+        List<LlmToolDefinition> availableTools = finalRound ? List.of()
+                : toolProvider == null ? toolDefinitions : toolProvider.getTools(context).stream()
+                        .map(ReactAgent::toolDefinition).toList();
+        String instruction = finalRound ? systemInstruction
+                + "\n本次任务模型调用预算已到上限。依据已有观察给出结论、未完成项和原因，不得调用工具或声称未验证的成功。"
+                : systemInstruction;
         ChatClient.ToolCallResponse response = chatClient.chatWithTools(
                 request.sessionId(),
-                new LlmRequest(systemInstruction, List.copyOf(messages), "", toolDefinitions)
+                new LlmRequest(instruction, List.copyOf(messages), "", availableTools)
                         .withRouting(request),
                 delta -> {
                     streamed.set(true);
@@ -838,34 +893,22 @@ public final class ReactAgent implements Agent, AgentLoop {
                 response.toolCall(), response.toolCallId(), streamed.get());
     }
 
-    private static String argumentsJson(ToolCall call) {
+    static String argumentsJson(ToolCall call) {
         if (call.arguments() == null || call.arguments().isEmpty()) {
             return "{}";
         }
-        StringBuilder json = new StringBuilder("{");
-        boolean first = true;
-        for (Map.Entry<String, Object> entry : call.arguments().entrySet()) {
-            if (!first) {
-                json.append(',');
-            }
-            first = false;
-            json.append('"').append(entry.getKey()).append("\":");
-            Object value = entry.getValue();
-            if (value instanceof Number || value instanceof Boolean) {
-                json.append(value);
-            } else {
-                json.append('"').append(
-                        String.valueOf(value).replace("\\", "\\\\").replace("\"", "\\\""))
-                        .append('"');
-            }
+        try {
+            return TOOL_ARGUMENT_MAPPER.writeValueAsString(call.arguments());
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("failed to serialize tool call arguments", exception);
         }
-        return json.append('}').toString();
     }
 
     private String buildSystemInstruction() {
         return """
                 你是 AgentOS 的 React Agent，通过“观察-行动”循环完成用户目标。
                 没有预先生成的执行计划：每一轮基于目标与已有观察即时决定下一步。
+                生产编排层只能委派本次 tools 中的 Agent；实际工具、MCP 与 Skill 操作由专才执行。
 
                 工具经协议层原生提供（见本次请求的 tools 定义），通过原生工具调用
                 机制发起调用；需要回答时直接输出正文文本。
@@ -874,8 +917,13 @@ public final class ReactAgent implements Agent, AgentLoop {
                 - 每轮至多调用一个工具；工具结果会以工具消息追加。
                 - 旧工具结果可能被压缩为 “[compressed]” 前缀的摘要；需要完整细节时重新调用工具。
                 - 工具失败会以失败观察返回，修正参数后重试，不要编造工具结果。
+                - 权限审批由 ToolDispatcher 统一处理。任务需要工具时直接发起原生工具调用；
+                  不得在回答正文中询问用户“是否允许”“是否批准”，不得要求用户先切换权限模式，
+                  也不要把调用子 Agent 描述成“升级”。若调用需要批准，系统会自动挂起并展示正式审批操作。
                 - 长文档、多来源检索等大范围探索优先委托子 Agent 工具（如 search-agent），
                   它们在独立上下文中执行，只返回结论。
+                - search-agent 已封装搜索和正文抓取；调用成功后直接使用其结论，
+                  不要再调用 browser_search 或 web_fetch 重复检索。
                 - 目标完成后立即给出最终回答，不要继续调用工具。
                 """;
     }

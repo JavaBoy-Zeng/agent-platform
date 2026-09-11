@@ -9,7 +9,6 @@ import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -21,10 +20,8 @@ import java.util.stream.Collectors;
 /**
  * React 模式装配：无显式计划、每轮即时决策的 Agent 循环。
  *
- * <p>开启方式：{@code agentos.agent.loop.mode=react}。开启后
- * {@link com.github.agentos.agent.specialist.SupervisorAgent} 的复杂任务
- * fallback 从 {@link com.github.agentos.agent.loop.MainAgent}（Plan-and-Execute）
- * 切换为 {@link ReactAgent}；默认（缺省或 {@code plan}）行为不变。</p>
+ * <p>始终创建 ReactAgent，与 PlanExecuteAgent 一起参与 Supervisor 路由。
+ * {@code agentos.agent.loop.mode} 仅选择无法分类时的默认执行 Agent。</p>
  *
  * <p>子代理隔离复用既有装配：SearchAgent/CodeAgent/ReportAgent 经
  * {@code AgentToolAdapter} 已注册进 {@link ToolRegistry}，ReactAgent 的工具
@@ -32,11 +29,10 @@ import java.util.stream.Collectors;
  * 其中间产出隔离在子 Agent 上下文内，主循环只回收结论。</p>
  */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(name = "agentos.agent.loop.mode", havingValue = "react")
 public class ReactLoopConfiguration {
 
     /**
-     * 创建 React Agent 并接管复杂任务 fallback。
+     * 创建参与任务路由的 React Agent。
      *
      * @param chatClient 模型客户端
      * @param toolDispatcher 统一工具调度边界（保留 HITL 审批）
@@ -64,9 +60,9 @@ public class ReactLoopConfiguration {
                 maxToolCalls, maxModelCalls);
         // 白名单：配置非空时只下发指定工具，空则全量（向后兼容）。
         List<AgentTool> manifest = allowedToolsCsv == null || allowedToolsCsv.isBlank()
-                ? toolRegistry.all()
-                : filterByAllowedTools(toolRegistry.all(), allowedToolsCsv);
-        return new ReactAgent(
+                ? toolRegistry.getTools(com.github.agentos.kernel.InvocationContext.of(ReactAgent.ID))
+                : filterByAllowedTools(toolRegistry.getTools(com.github.agentos.kernel.InvocationContext.of(ReactAgent.ID)), allowedToolsCsv);
+        ReactAgent agent = new ReactAgent(
                 chatClient,
                 toolDispatcher,
                 manifest,
@@ -75,6 +71,12 @@ public class ReactLoopConfiguration {
                 continuationStore.getIfAvailable(() -> ContinuationStore.NOOP),
                 reflectionInterval,
                 consecutiveFailureThreshold);
+        agent.configureToolProvider(context -> {
+            List<AgentTool> available = toolRegistry.getTools(context);
+            return allowedToolsCsv == null || allowedToolsCsv.isBlank()
+                    ? available : filterByAllowedTools(available, allowedToolsCsv);
+        });
+        return agent;
     }
 
     /** 按白名单 CSV 过滤工具列表；不在白名单内的工具不下发给模型。 */

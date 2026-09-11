@@ -11,6 +11,26 @@ class UsageRecorderTest {
     private final UsageRecorder recorder = new UsageRecorder(new UsageStore.InMemoryUsageStore());
 
     @Test
+    void nestedUsageScopeChargesRootAndRestoresAfterFailure() {
+        try (var outer = com.github.agentos.kernel.ModelUsageScope.open("root")) {
+            recorder.onModelUsage("child", new ModelUsage("test", 10, 5));
+            try {
+                try (var inner = com.github.agentos.kernel.ModelUsageScope.open("other")) {
+                    recorder.onModelUsage("grandchild", new ModelUsage("test", 20, 5));
+                    throw new IllegalStateException("model failed");
+                }
+            } catch (IllegalStateException expected) {
+                recorder.onModelUsage("child", new ModelUsage("test", 30, 5));
+            }
+        }
+        recorder.onModelUsage("standalone", new ModelUsage("test", 1, 1));
+        assertThat(recorder.summary("root").totalTokens()).isEqualTo(50);
+        assertThat(recorder.summary("other").totalTokens()).isEqualTo(25);
+        assertThat(recorder.summary("child").totalTokens()).isZero();
+        assertThat(recorder.summary("standalone").totalTokens()).isEqualTo(2);
+    }
+
+    @Test
     void accumulatesUsagePerSession() {
         recorder.onModelUsage("s1", new ModelUsage("model-a", 100, 50));
         recorder.onModelUsage("s1", new ModelUsage("model-a", 200, 150));

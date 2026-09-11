@@ -87,7 +87,7 @@ flowchart TD
 | `agentos-memory` | L0–L3 记忆、异步加工、混合召回、HTTP 模型适配和本地持久化 | `MemoryService`、`MemoryPipeline`、`MemoryStore`、`HybridMemoryRetriever` | 无其他 AgentOS 模块 |
 | `agentos-hitl` | 工具风险策略和人工审批端口 | `RiskPolicy`、`ApprovalService` | `agentos-kernel`、`agentos-tool` |
 | `agentos-planner` | 模型规划、计划校验、工具步骤执行、观察和失败决策 | `LlmAgentPlanner`、`PlanValidator`、`PlanExecutor` | kernel、tool、memory |
-| `agentos-agent` | 串联规划、执行、决策、终结和记忆写入 | `MainAgent`、`AgentFinalizer` | kernel、planner、memory |
+| `agentos-agent` | 串联规划、执行、决策、终结和记忆写入 | `PlanExecuteAgent`、`AgentFinalizer` | kernel、planner、memory |
 | `agentos-server` | Spring 装配、模型适配、REST/SSE API 和集成测试 | `AgentOsConfiguration`、`AgentController`、`OpenAiCompatibleModelClient` | 所有后端模块 |
 | `agentos-console` | 会话操作、SSE 消费、运行轨迹和状态展示 | `useAgentConsole`、`agentApi`、Vue 组件 | 仅通过 HTTP 依赖 server |
 
@@ -95,7 +95,7 @@ flowchart TD
 
 - 内核层只负责“如何运行并保存状态”，不了解模型、计划、工具、记忆或 Spring。
 - 领域能力通过 Java 接口隔离：`AgentLoop`、`AgentPlanner`、`ModelClient`、`AgentTool`、`MemoryStore`、`MemoryModel`、`MemoryEmbedding`、`ApprovalHandler`。
-- `MainAgent` 是业务编排中心，但不直接发送 HTTP、不直接读文件，也不直接操作存储实现。
+- `PlanExecuteAgent` 是业务编排中心，但不直接发送 HTTP、不直接读文件，也不直接操作存储实现。
 - `agentos-server` 是组合根，负责把接口与默认实现装配成可运行应用。
 - 前端与后端只共享 HTTP/SSE 契约，不共享构建、类型或发布产物。
 
@@ -107,10 +107,10 @@ flowchart TD
 sequenceDiagram
     autonumber
     participant C as Console / API Client
-    participant AC as AgentController
+    participant AC as BackgroundAgentRunController
     participant TR as AgentRunTaskRegistry
     participant AR as AgentRuntime
-    participant MA as MainAgent
+    participant MA as PlanExecuteAgent
     participant AP as LlmAgentPlanner
     participant AF as ModelStreamingAgentFinalizer
     participant CC as ChatClient
@@ -119,12 +119,14 @@ sequenceDiagram
     participant PE as PlanExecutor
     participant T as AgentTool
 
-    C->>AC: POST /api/agents/runs/stream
-    AC->>TR: 按 sessionId 注册任务
+    C->>AC: POST /api/agent-runs
+    AC-->>C: 202 + AgentRunSnapshot
+    C->>AC: GET /api/agent-runs/{runId}/events?afterSeq=N
+    AC->>TR: 按 sessionId 注册后台任务
     TR->>AR: 在虚拟线程中 run(..., eventSink)
     AR->>AR: 同一 sessionId 串行更新状态
     AR->>MA: AgentLoop.run()
-    MA-->>C: RUN_STARTED
+    MA-->>C: AgentStreamEvent(run.started / status)
 
     MA->>AP: createPlan(request, context)
     AP->>MS: recall(scope, objective)
@@ -167,7 +169,7 @@ sequenceDiagram
     MA-->>AR: COMPLETED / FAILED / CANCELLED
 ```
 
-同步接口 `POST /api/agents/runs` 走相同的 `AgentRuntime → MainAgent` 主链路，只是不注册流式任务，也不向客户端发送阶段事件。
+同步接口 `POST /api/agents/runs` 走相同的 `AgentRuntime → PlanExecuteAgent` 主链路，只是不注册流式任务，也不向客户端发送阶段事件。
 
 ### 5.2 运行状态
 
@@ -236,7 +238,7 @@ stateDiagram-v2
 
 ### 6.4 重规划触发
 
-以下情况会让 `MainAgent` 请求模型做下一次决策：
+以下情况会让 `PlanExecuteAgent` 请求模型做下一次决策：
 
 - `DISCOVERY_COMPLETED`：探索步骤完成，需要基于新事实决定下一步；
 - `EXECUTION_COMPLETED`：执行步骤完成，需要综合真实结果；
@@ -356,27 +358,24 @@ flowchart TD
 | 方法 | 路径 | 用途 | 主要响应 |
 | --- | --- | --- | --- |
 | `POST` | `/api/agents/runs` | 同步执行一次 Agent | `201` + sessionId + 最终状态 |
-| `POST` | `/api/agents/runs/stream` | 通过 POST 请求启动 SSE 阶段流 | 命名事件 + 最终 `state` |
 | `POST` | `/api/agents/{sessionId}/stop` | 中断该会话已注册的流式任务 | 是否发出中断 + 当前状态 |
 | `GET` | `/api/agents/{sessionId}/state` | 查询 JVM 内最新会话状态 | `AgentState` 或 `404` |
 | `POST` | `/api/agent-runs` | 创建与客户端连接解耦的后台运行 | `202` + runId + 运行快照 |
-| `GET` | `/api/agent-runs/{runId}` | 查询后台运行快照 | 状态、结果、pendingAction、lastSequence |
-| `GET` | `/api/agent-runs/{runId}/events?after=N` | 补播游标后的事件并继续 SSE 订阅 | 带 `id` 和 `sequence` 的事件信封 |
+| `GET` | `/api/agent-runs/{runId}` | 查询后台运行快照 | 状态、结果、pendingAction、lastSeq |
+| `GET` | `/api/agent-runs/{runId}/events?afterSeq=N` | 补播游标后的事件并继续 SSE 订阅 | `AgentStreamEvent` 信封 |
+| `GET` | `/api/agent-runs/history?sessionId=...` | 重建会话 | 仅可持久化的用户事件 |
 | `POST` | `/api/agent-runs/{runId}/cancel` | 显式取消后台运行 | 是否发出中断 + 运行快照 |
 | `GET` | `/api/memories` | 按作用域查询 L0–L3 当前快照 | 计数及实际记忆数据 |
 
 SSE 主要事件顺序为：
 
 ```text
-run_started
-  → plan_created
-  → tool_started / tool_finished
-  → observation
-  → decision
-  → [replan → plan_created → ...]
-  → output_delta
-  → run_completed | run_failed | run_cancelled
-  → state
+run.started → status
+  → tool.started → [tool.awaiting_approval → tool.approved] → tool.completed | tool.failed
+  → [artifact.created]
+  → message.started → message.delta* → message.completed
+  → usage
+  → run.completed | run.failed | run.cancelled
 ```
 
 SSE 使用 Spring `SseEmitter`，服务端通过虚拟线程执行 Agent。`AgentRunTaskRegistry` 限制同一 `sessionId` 同时只能注册一个任务，并通过 `Thread.interrupt()` 协作取消。后台运行由 `AgentRunCoordinator` 管理：客户端断开只移除订阅者，任务继续执行；只有显式取消接口会请求中断。
@@ -397,9 +396,9 @@ useAgentConsole.js         会话状态、执行流程和 localStorage
 agentApi.js                REST 调用、后台运行与可恢复 SSE 流解析
 ```
 
-控制台先通过 `POST /api/agent-runs` 获得 `runId`，再使用 GET SSE 订阅事件。每个事件都有递增 `sequence`；前端持续保存 `activeRunId` 和 `lastSequence`，刷新后先查询快照，再以 `after=lastSequence` 补播缺失事件并继续订阅。
+控制台先通过 `POST /api/agent-runs` 获得 `runId`，再使用 GET SSE 订阅事件。每个事件都有递增 `seq`；前端持续保存 `activeRunId` 和 `lastSeq`，刷新后先查询快照，再以 `afterSeq=lastSeq` 补播缺失事件并继续订阅。
 
-聊天侧栏通过 `/api/sessions/page` 从服务端分页加载会话，服务端会话索引是列表的权威数据源。浏览器使用 `agentos.console.sessions.v1` 缓存最近 20 个会话及展示消息，并单独保存刷新前选中的会话；缓存缺失时，前端从 `/api/events` 恢复完整的用户/助手对话轮次。事件使用 `runId:sequence` 去重，最终回答使用稳定消息标识覆盖流式草稿。运行中的停止按钮调用显式取消接口。浏览器缓存不等同于后端记忆，清理站点数据不会删除服务端会话与领域事件。
+聊天侧栏通过 `/api/sessions/page` 从服务端分页加载会话，服务端会话索引是列表的权威数据源。浏览器使用账号隔离的 `agentos.console.sessions.v2.*` 缓存最近 20 个会话及稳定展示记录；缓存缺失时，前端从 `/api/agent-runs/history` 回放持久化事件。事件使用 `runId + seq` 去重，并按 `itemId` 归约；`message.completed` 覆盖流式草稿。运行中的停止按钮调用显式取消接口。浏览器缓存不等同于后端记忆，清理站点数据不会删除服务端会话与领域事件。
 
 开发环境由 Vite 将 `/api` 代理到 `http://localhost:8080`。生产构建产物位于 `agentos-console/dist`，需要独立静态托管并把 `/api` 反向代理到后端。
 
@@ -407,9 +406,9 @@ agentApi.js                REST 调用、后台运行与可恢复 SSE 流解析
 
 - 同一 JVM 内，`AgentRuntime` 按 `sessionId` 串行化运行状态更新。
 - 不同 session 可以并行；流式运行使用“一任务一虚拟线程”。
-- `AgentRunTaskRegistry` 登记兼容流式任务和后台任务；同步接口不进入该注册表，但仍受 `AgentRuntime` 的 session 串行化约束。
+- `AgentRunTaskRegistry` 登记后台任务；同步接口不进入该注册表，但仍受 `AgentRuntime` 的 session 串行化约束。
 - `AgentRuntime` 在一次 `compute` 结束时才提交新快照，因此运行期间调用状态查询可能看到上一轮终态或 `404`；实时进度应以本次 SSE 事件为准。
-- 取消依靠线程中断。`MainAgent`、计划执行边界和模型客户端会检查或传播中断，但具体工具仍需要正确响应中断才能及时停止。
+- 取消依靠线程中断。`PlanExecuteAgent`、计划执行边界和模型客户端会检查或传播中断，但具体工具仍需要正确响应中断才能及时停止。
 - 会话状态、后台运行和可补播事件目前均为进程内数据；可以应对页面刷新和网络闪断，但不能跨实例协调，也不能在服务重启后恢复。
 - 记忆后台管线使用单个守护调度线程，保证简单的顺序加工，但吞吐能力有限。
 
@@ -463,7 +462,7 @@ Spring 支持以下核心配置；当前运行值见 `agentos-server/src/main/re
 | 更换记忆存储 | `MemoryStore` | 使用内置 SQLite 或实现 Redis、对象存储、向量库适配器 |
 | 更换记忆抽取 | `MemoryModel` | 使用 OpenAI-compatible 适配器或实现其他 LLM 适配器 |
 | 更换向量实现 | `MemoryEmbedding` | 使用 OpenAI-compatible Embedding 或实现其他向量服务适配器 |
-| 自定义 Agent | `AgentLoop` 或组合 `MainAgent` 依赖 | 通过 `AgentRuntime` 暴露统一运行入口 |
+| 自定义 Agent | `AgentLoop` 或组合 `PlanExecuteAgent` 依赖 | 通过 `AgentRuntime` 暴露统一运行入口 |
 | 新增事件消费者 | `AgentEventSink` | 接入审计、消息总线或可观测系统 |
 
 ## 15. 当前风险与架构限制
@@ -502,7 +501,7 @@ Spring 支持以下核心配置；当前运行值见 `agentos-server/src/main/re
 新成员可以按以下顺序理解代码：
 
 1. [`AgentRuntime`](../agentos-kernel/src/main/java/com/github/agentos/kernel/AgentRuntime.java)：会话状态和运行边界；
-2. [`MainAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/MainAgent.java)：完整业务循环；
+2. [`PlanExecuteAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/PlanExecuteAgent.java)：完整业务循环；
 3. [`LlmAgentPlanner`](../agentos-planner/src/main/java/com/github/agentos/planner/LlmAgentPlanner.java)：模型规划入口；
 4. [`PlanExecutor`](../agentos-planner/src/main/java/com/github/agentos/planner/PlanExecutor.java)：工具执行和失败控制；
 5. [`MemoryService`](../agentos-memory/src/main/java/com/github/agentos/memory/MemoryService.java) 与 [`MemoryPipeline`](../agentos-memory/src/main/java/com/github/agentos/memory/MemoryPipeline.java)：记忆召回和写入；

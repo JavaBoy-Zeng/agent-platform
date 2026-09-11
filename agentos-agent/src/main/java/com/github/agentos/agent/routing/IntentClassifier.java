@@ -3,7 +3,7 @@ package com.github.agentos.agent.routing;
 import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentRequest;
 
-/** 在请求进入 MainAgent 之前产出路由决策的策略接口。 */
+/** 在请求进入 PlanExecuteAgent 之前产出路由决策的策略接口。 */
 @FunctionalInterface
 public interface IntentClassifier {
 

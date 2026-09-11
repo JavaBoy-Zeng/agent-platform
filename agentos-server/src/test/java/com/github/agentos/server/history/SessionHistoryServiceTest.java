@@ -220,7 +220,7 @@ class SessionHistoryServiceTest {
 
         @Override
         public String agentId() {
-            return "main-agent";
+            return "plan-execute-agent";
         }
 
         @Override

@@ -75,7 +75,7 @@ AgentRunner runner = new AgentRunner(loop);
 
 AgentState result = runner.run(
         AgentRequest.of("session-1", "hello"),
-        InvocationContext.of("main-agent"));
+        InvocationContext.of("plan-execute-agent"));
 ```
 
 `AgentRunner` 在执行边界统一注入执行预算与产物存储（`bind`），并加载当前会话快照；

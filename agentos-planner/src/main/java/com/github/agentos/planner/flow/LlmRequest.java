@@ -95,7 +95,21 @@ public record LlmRequest(
         Objects.requireNonNull(request, "request must not be null");
         Object selectedModel = request.attributes().getOrDefault("modelId", "");
         return new LlmRequest(
-                systemInstruction, messages, String.valueOf(selectedModel), tools);
+                systemInstruction, messages, String.valueOf(selectedModel), tools).withWorkspace(request);
+    }
+
+    /** 将结构化本机执行位置传递给每次模型调用，包括动态工具组子 Agent。 */
+    public LlmRequest withWorkspace(AgentRequest request) {
+        if (!(request.attributes().get("workspaceRuntime") instanceof java.util.Map<?, ?> runtime)) return this;
+        String marker = "[desktop_workspace_runtime]";
+        String instruction = instruction().orElse("");
+        if (instruction.contains(marker)) return this;
+        return withSystemInstruction(instruction + "\n" + marker
+                + "\n当前任务的文件、命令和 Git 工具在桌面本机的绑定目录执行，相对路径以 root 为准。"
+                + "子 Agent 继承该绑定，不使用服务端部署目录。run_command 使用本机 shell；"
+                + "file_write 可写入 UTF-8 源码和项目配置（包括 pom.xml），不能生成二进制文档。"
+                + "其他网络或集成工具仍按各自定义执行。执行位置数据：" + runtime
+                + "\n[/desktop_workspace_runtime]");
     }
 
     /** 派生携带原生工具定义的新请求；空列表视为清除工具。 */

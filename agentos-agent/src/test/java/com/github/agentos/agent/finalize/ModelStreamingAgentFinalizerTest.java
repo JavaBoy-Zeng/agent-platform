@@ -30,7 +30,7 @@ class ModelStreamingAgentFinalizerTest {
         String answer = finalizer.finishStreaming(
                 new AgentRequest("s1", "分析测试结果", Map.of(
                         "modelId", "model-deepseek")),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 completePlan("测试通过 20 项"),
                 deltas::add);
 
@@ -53,7 +53,7 @@ class ModelStreamingAgentFinalizerTest {
 
         String answer = finalizer.finishStreaming(
                 AgentRequest.of("s1", "生成长回答"),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 completePlan("候选"),
                 deltas::add);
 

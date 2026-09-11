@@ -23,7 +23,7 @@ import java.util.Objects;
  * <ol>
  *   <li>{@link IntentClassification#isShortCircuit()} ⇒ 直接以终态返回，跳过 LLM 与工具调用；</li>
  *   <li>{@link IntentClassification#hasAgentTarget()} ⇒ 通过 {@link AgentRegistry} 派发到指定 Agent；</li>
- *   <li>其余情况 ⇒ 落到 {@code fallback}，沿用既有执行链路（当前为 {@code MainAgent}）。</li>
+ *   <li>其余情况 ⇒ 落到 {@code fallback}，沿用既有执行链路（当前为 {@code PlanExecuteAgent}）。</li>
  * </ol>
  *
  * <p>注册的 Agent 同时承担可执行循环职责，因此必须实现 {@link AgentLoop}；

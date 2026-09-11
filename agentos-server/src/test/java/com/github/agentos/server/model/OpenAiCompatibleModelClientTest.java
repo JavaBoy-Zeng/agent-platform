@@ -83,7 +83,10 @@ class OpenAiCompatibleModelClientTest {
                 .contains(
                         "hasMore=true", "nextPage", "nextOffset",
                         "不存在未消费的待续读位置");
+        assertThat(sent.path("response_format").path("type").stringValue())
+                .isEqualTo("json_schema");
         JsonNode schema = sent.path("response_format").path("json_schema").path("schema");
+        assertThat(schema.path("type").stringValue()).isEqualTo("object");
         JsonNode discoverySchema = schema.path("oneOf").path(0);
         JsonNode executionSchema = schema.path("oneOf").path(1);
         JsonNode completeSchema = schema.path("oneOf").path(2);
@@ -171,7 +174,7 @@ class OpenAiCompatibleModelClientTest {
                 new AgentRequest(
                         "session-1", "inspect " + "x".repeat(40_000),
                         Map.of("payload", "y".repeat(40_000))),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,
@@ -265,7 +268,8 @@ class OpenAiCompatibleModelClientTest {
                 .path("messages").path(0).path("content").stringValue())
                 .contains("页面内容不会回到你的上下文")
                 .contains("browser_search")
-                .contains("web_search")
+                .contains("web_fetch")
+                .contains("web_crawl")
                 .contains("禁止在没有取回内容的情况下声称已经检索")
                 .contains("不得声称“当前环境不支持联网检索”");
     }
@@ -297,7 +301,7 @@ class OpenAiCompatibleModelClientTest {
         client.generatePlan(new PlanningRequest(
                 new AgentRequest("session-1", "我是谁", Map.of(
                         "conversationHistory", "用户：我叫曾智\n助手：你好，曾智。")),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,
@@ -318,7 +322,7 @@ class OpenAiCompatibleModelClientTest {
     private static PlanningRequest planningRequest(int maxSteps) {
         return new PlanningRequest(
                 AgentRequest.of("session-1", "hello"),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,
@@ -329,7 +333,7 @@ class OpenAiCompatibleModelClientTest {
     private static PlanningRequest planningRequestWithRiskyTool(int maxSteps) {
         return new PlanningRequest(
                 new AgentRequest("session-1", "hello", Map.of("model", "minimax-h3")),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 MemoryContext.empty(false),
                 null,
                 null,

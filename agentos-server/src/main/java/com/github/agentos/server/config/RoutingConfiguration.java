@@ -1,7 +1,7 @@
 package com.github.agentos.server.config;
 
 import com.github.agentos.agent.Agent;
-import com.github.agentos.agent.loop.MainAgent;
+import com.github.agentos.agent.loop.PlanExecuteAgent;
 import com.github.agentos.agent.loop.SimpleQaAgent;
 import com.github.agentos.agent.registry.AgentRegistry;
 import com.github.agentos.agent.registry.InMemoryAgentRegistry;
@@ -30,7 +30,7 @@ import tools.jackson.databind.ObjectMapper;
  * 让请求先经过 {@link IntentClassifier} 决策再进入执行循环。
  * 意图分级顺序：寒暄短路（零调用）→ 简单问答（{@link SimpleQaAgent} 单次直答）
  * → 复杂任务（{@link SupervisorAgent} LLM 分类 + 专业 Agent 派发，
- * 或回退到 {@link MainAgent} 全量规划）。</p>
+ * 或回退到 {@link PlanExecuteAgent} 全量规划）。</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class RoutingConfiguration {
@@ -96,7 +96,7 @@ public class RoutingConfiguration {
      * 创建意图路由器，将短路、Agent派发和 fallback 三类决策统一封装为 AgentLoop。
      *
      * <p>fallback 绑定到 {@link SupervisorAgent}，后者通过单次 LLM 调用将任务
-     * 分类到专业 Agent 或回退到 {@link MainAgent} 走完整规划循环。
+     * 分类到专业 Agent 或回退到 {@link PlanExecuteAgent} 走完整规划循环。
      * 显式绑定避免与 {@link RoutingAgentLoop} 自身同为 {@code AgentLoop}
      * 实现而引发 Spring 注入歧义。</p>
      */

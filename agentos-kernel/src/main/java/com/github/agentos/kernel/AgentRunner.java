@@ -258,8 +258,8 @@ public final class AgentRunner {
     /**
      * 执行 Agent，并把领域事件单独发送到本次运行发布器。
      *
-     * <p>领域事件发布器与旧版流事件接收端互相独立，便于 SSE 区分 token、兼容事件和
-     * Runner 领域事件。</p>
+     * <p>领域事件发布器与本次运行的客户端事件接收端互相独立；上层负责把允许公开的
+     * token、工具和审批生命周期统一映射为自己的事件协议。</p>
      */
     public AgentState run(
             AgentRequest request,
@@ -299,7 +299,8 @@ public final class AgentRunner {
         CancellationToken token = CancellationToken.notCancelled();
         AgentEventPublisher runPublisher = new StateMergingEventPublisher(
                 new CompositeAgentEventPublisher(java.util.List.of(
-                        eventPublisher, invocationEventPublisher, plugins)),
+                        eventPublisher, invocationEventPublisher, plugins,
+                        clientLifecyclePublisher(eventSink), delegatedProgressPublisher(eventSink))),
                 sessionService);
         InvocationContext invocationContext = bind(request, context)
                 .withRuntime(invocation, runPublisher)
@@ -320,7 +321,7 @@ public final class AgentRunner {
                     mapLegacyEvent(invocationContext, event)
                             .ifPresent(domainEvent -> publish(runPublisher, domainEvent));
                 };
-                try {
+                try (var traceScope = ExecutionTrace.open(invocationContext)) {
                     AgentState executed = Objects.requireNonNull(
                             agentLoop.run(request, invocationContext, running, publishingSink),
                             "agentLoop returned null state");
@@ -478,7 +479,11 @@ public final class AgentRunner {
         invocation.resolve(resolution);
         CancellationToken token = CancellationToken.notCancelled();
         AgentEventPublisher resumePublisher = new StateMergingEventPublisher(
-                new CompositeAgentEventPublisher(java.util.List.of(eventPublisher, plugins)),
+                new CompositeAgentEventPublisher(java.util.List.of(
+                        eventPublisher,
+                        plugins,
+                        delegatedProgressPublisher(eventSink),
+                        clientLifecyclePublisher(eventSink))),
                 sessionService);
         AgentRequest request = AgentRequest.of(checkpoint.sessionId(), checkpoint.objective());
         InvocationContext context = bind(request, new InvocationContext(
@@ -518,8 +523,10 @@ public final class AgentRunner {
                     eventSink.emit(event);
                     mapLegacyEvent(context, event).ifPresent(this::publish);
                 };
-                AgentState resumed = agentLoop.resume(
-                        request, context, running, checkpoint, resolution, publishingSink);
+                AgentState resumed;
+                try (var traceScope = ExecutionTrace.open(context)) {
+                    resumed = agentLoop.resume(request, context, running, checkpoint, resolution, publishingSink);
+                }
                 invocation.finish(resumed);
                 if (resumed.status() == AgentState.Status.WAITING) {
                     saveCheckpoint(context, request, invocation);
@@ -662,6 +669,7 @@ public final class AgentRunner {
         AgentEventType type = switch (event.type()) {
             case PLAN_CREATED -> AgentEventType.PLAN_CREATED;
             case REPLAN -> AgentEventType.REPLAN_STARTED;
+            case DECISION, OBSERVATION, USAGE -> AgentEventType.STEP_COMPLETED;
             case ROUTE_DECIDED -> AgentEventType.ROUTE_DECIDED;
             case ROUTE_REJECTED -> AgentEventType.ROUTE_REJECTED;
             case ROUTE_CLARIFICATION_REQUIRED ->
@@ -671,8 +679,10 @@ public final class AgentRunner {
                     ? AgentEventType.STEP_COMPLETED : AgentEventType.STEP_FAILED;
             default -> null;
         };
+        var data = new java.util.LinkedHashMap<>(event.data());
+        data.put("runEventType", event.type().name());
         return type == null ? Optional.empty() : Optional.of(
-                DefaultAgentEvent.of(context, type, event.message(), event.data()));
+                DefaultAgentEvent.of(context, type, event.message(), data));
     }
 
     private void publishTerminal(
@@ -793,6 +803,43 @@ public final class AgentRunner {
 
     private void publish(AgentEvent event) {
         publish(eventPublisher, event);
+    }
+
+    /** 子任务领域进度也进入普通运行 SSE；不把子任务终态当作根任务终态。 */
+    private static AgentEventPublisher delegatedProgressPublisher(AgentEventSink sink) {
+        return event -> {
+            if (event.data().containsKey("traceKind")) return;
+            if (!event.data().containsKey("subInvocationId")) return;
+            Object raw = event.data().get("runEventType");
+            if (!(raw instanceof String name)) return;
+            AgentRunEvent.Type type;
+            try { type = AgentRunEvent.Type.valueOf(name); }
+            catch (IllegalArgumentException ignored) { return; }
+            if (type != AgentRunEvent.Type.DECISION && type != AgentRunEvent.Type.TOOL_STARTED
+                    && type != AgentRunEvent.Type.TOOL_FINISHED) return;
+            sink.emit(AgentRunEvent.of(type, event.sessionId(), event.message(), event.data()));
+        };
+    }
+
+    /**
+     * 只把真实工具和审批生命周期转入用户事件流。模型请求、原始响应、系统提示词和
+     * reasoning trace 永远不经过该边界。
+     */
+    private static AgentEventPublisher clientLifecyclePublisher(AgentEventSink sink) {
+        return event -> {
+            AgentRunEvent.Type type = switch (event.type()) {
+                case TOOL_CALL_STARTED -> AgentRunEvent.Type.TOOL_STARTED;
+                case TOOL_CALL_COMPLETED, TOOL_CALL_FAILED -> AgentRunEvent.Type.TOOL_FINISHED;
+                case HUMAN_ACTION_REQUIRED, HUMAN_ACTION_RESOLVED -> AgentRunEvent.Type.DECISION;
+                default -> null;
+            };
+            if (type == null || event.data().containsKey("traceKind")) return;
+            var data = new java.util.LinkedHashMap<>(event.data());
+            data.putIfAbsent("agentId", event.agentId());
+            data.putIfAbsent("invocationId", event.invocationId());
+            data.putIfAbsent("domainEventType", event.type().name());
+            sink.emit(AgentRunEvent.of(type, event.sessionId(), event.message(), data));
+        };
     }
 
     private static void publish(AgentEventPublisher publisher, AgentEvent event) {

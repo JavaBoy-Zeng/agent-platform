@@ -23,7 +23,7 @@ class AgentRunnerSessionStateTest {
                 AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
                 new InMemoryCheckpointStore(), sessions);
 
-        runner.run(AgentRequest.of("session-1", "重庆天气"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "重庆天气"), InvocationContext.of("plan-execute-agent"));
 
         Session session = sessions.find("session-1").orElseThrow();
         assertThat(session.state().value("city")).isEqualTo("重庆");
@@ -38,8 +38,8 @@ class AgentRunnerSessionStateTest {
                 AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
                 new InMemoryCheckpointStore(), sessions);
 
-        runner.run(AgentRequest.of("session-1", "第一个问题"), InvocationContext.of("main-agent"));
-        runner.run(AgentRequest.of("session-1", "第二个问题"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "第一个问题"), InvocationContext.of("plan-execute-agent"));
+        runner.run(AgentRequest.of("session-1", "第二个问题"), InvocationContext.of("plan-execute-agent"));
 
         Session session = sessions.find("session-1").orElseThrow();
         assertThat(session.state().longValue("turnCount", 0)).isEqualTo(2L);
@@ -58,7 +58,7 @@ class AgentRunnerSessionStateTest {
                 new InMemoryCheckpointStore(), sessions);
 
         AgentState completed = firstRunner.run(
-                AgentRequest.of("session-1", "问题"), InvocationContext.of("main-agent"));
+                AgentRequest.of("session-1", "问题"), InvocationContext.of("plan-execute-agent"));
         AgentRunner restartedRunner = new AgentRunner(
                 (request, context, running) -> running.complete("unused"),
                 AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
@@ -98,7 +98,7 @@ class AgentRunnerSessionStateTest {
                 AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
                 new InMemoryCheckpointStore(), sessions);
 
-        runner.run(AgentRequest.of("session-1", "高危操作"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "高危操作"), InvocationContext.of("plan-execute-agent"));
 
         Session session = sessions.find("session-1").orElseThrow();
         assertThat(session.state().value("turnCount")).isNull();
@@ -126,8 +126,8 @@ class AgentRunnerSessionStateTest {
                 AgentEventPublisher.NOOP, eventStore,
                 new InMemoryCheckpointStore(), sessions);
 
-        runner.run(AgentRequest.of("session-1", "第一个问题"), InvocationContext.of("main-agent"));
-        runner.run(AgentRequest.of("session-1", "第二个问题"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "第一个问题"), InvocationContext.of("plan-execute-agent"));
+        runner.run(AgentRequest.of("session-1", "第二个问题"), InvocationContext.of("plan-execute-agent"));
 
         // 事件流重放：按时间顺序应用每条事件的 stateDelta，应得到与会话一致的最终状态。
         SessionState replayed = SessionState.empty();
@@ -175,7 +175,7 @@ class AgentRunnerSessionStateTest {
                 new InMemoryCheckpointStore(), broken);
 
         AgentState state = runner.run(
-                AgentRequest.of("session-1", "问题"), InvocationContext.of("main-agent"));
+                AgentRequest.of("session-1", "问题"), InvocationContext.of("plan-execute-agent"));
 
         assertThat(state.status()).isEqualTo(AgentState.Status.COMPLETED);
     }

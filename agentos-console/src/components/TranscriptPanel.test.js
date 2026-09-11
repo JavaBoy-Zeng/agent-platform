@@ -10,6 +10,44 @@ beforeEach(() => {
 })
 
 describe('TranscriptPanel result presentation', () => {
+  it('groups each user request and its execution records into one conversation turn', () => {
+    const wrapper = mount(TranscriptPanel, {
+      props: {
+        messages: [
+          { id: 'u1', role: 'user', content: '修复 #A', createdAt: '2026-09-10T08:00:00Z' },
+          { id: 'ops1', role: 'ops', kind: 'edit', expanded: false, createdAt: '2026-09-10T08:00:02Z', items: [] },
+          { id: 'a1', role: 'assistant', content: '#A 已修复', createdAt: '2026-09-10T08:04:08Z', runEnd: true, runStatus: 'COMPLETED' },
+          { id: 'u2', role: 'user', content: '继续', createdAt: '2026-09-10T08:05:00Z' },
+          { id: 'a2', role: 'assistant', content: '已继续', createdAt: '2026-09-10T08:05:03Z', runEnd: true, runStatus: 'COMPLETED' }
+        ]
+      }
+    })
+
+    expect(wrapper.findAll('.conversation-turn')).toHaveLength(2)
+    expect(wrapper.findAll('.user-message-bubble')).toHaveLength(2)
+    expect(wrapper.findAll('.assistant-content')).toHaveLength(2)
+    expect(wrapper.findAll('.task-status-line')).toHaveLength(2)
+    expect(wrapper.findAll('.message-metadata')).toHaveLength(2)
+    expect(wrapper.findAll('.conversation-turn')[0].get('.task-status-line').text()).toContain('4分8秒')
+  })
+
+  it('renders assistant output as an unboxed document stream with a separate pending status', () => {
+    const wrapper = mount(TranscriptPanel, {
+      props: {
+        busy: true, executingAgentId: 'react-agent',
+        messages: [
+          { id: 'plan', role: 'assistant', agentId: 'plan-execute-agent', content: 'planned', createdAt: new Date().toISOString() },
+          { id: 'react', role: 'assistant', agentId: 'react-agent', content: 'observed', createdAt: new Date().toISOString() },
+          { id: 'old', role: 'assistant', content: 'unknown', createdAt: new Date().toISOString() }
+        ]
+      }
+    })
+    expect(wrapper.findAll('.assistant-message')).toHaveLength(3)
+    expect(wrapper.find('.message').exists()).toBe(false)
+    expect(wrapper.get('.assistant-pending').text()).toMatch(/Agent Loop|running/i)
+    expect(wrapper.find('.assistant-message header').exists()).toBe(false)
+  })
+
   it('keeps an action result collapsed until its summary is opened', async () => {
     const wrapper = mount(TranscriptPanel, {
       props: {
@@ -35,8 +73,8 @@ describe('TranscriptPanel result presentation', () => {
         }]
       }
     })
-    expect(wrapper.get('.answer-token').text()).toContain('28 token')
-    const buttons = wrapper.findAll('.answer-actions button')
+    expect(wrapper.get('.token-usage').text()).toContain('Tokens: 28')
+    const buttons = wrapper.findAll('.message-metadata button')
     await buttons[0].trigger('click')
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('done')
     await buttons[1].trigger('click')
@@ -52,6 +90,25 @@ describe('TranscriptPanel result presentation', () => {
         }]
       }
     })
-    expect(wrapper.get('.answer-status').text()).toMatch(/手动终止输出|Output stopped manually/)
+    expect(wrapper.get('.runtime-result-status').text()).toMatch(/手动终止输出|Output stopped manually/)
+  })
+
+  it('keeps a sent bare URL intact and opens it from the transcript', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(TranscriptPanel, {
+      props: {
+        messages: [{
+          id: 'link-1', role: 'user',
+          content: 'https://m.cq.bendibao.com/live/67253.shtm 总结一下',
+          createdAt: new Date().toISOString()
+        }]
+      }
+    })
+
+    const link = wrapper.get('.user-message-bubble a')
+    expect(link.text()).toBe('https://m.cq.bendibao.com/live/67253.shtm')
+    await link.trigger('click')
+    expect(openSpy).toHaveBeenCalledWith('https://m.cq.bendibao.com/live/67253.shtm', '_blank', 'noopener,noreferrer')
+    openSpy.mockRestore()
   })
 })

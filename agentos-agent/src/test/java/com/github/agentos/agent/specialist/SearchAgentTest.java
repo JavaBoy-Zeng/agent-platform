@@ -118,7 +118,7 @@ class SearchAgentTest {
         AgentState result = run(chatClient, List.of(), events);
 
         assertThat(result.status()).isEqualTo(AgentState.Status.FAILED);
-        assertThat(result.error()).contains("搜索工具未配置", "browser_search", "web_search");
+        assertThat(result.error()).contains("搜索工具未配置", "browser_search");
         assertThat(modelCalls).hasValue(0);
         assertThat(decision(events).data()).containsEntry("reason", "SEARCH_UNAVAILABLE");
     }
@@ -212,6 +212,75 @@ class SearchAgentTest {
         assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.TOOL_STARTED)
                 .extracting(event -> event.data().get("toolName"))
                 .containsExactly("browser_search", "web_search");
+    }
+
+    @Test
+    void fetchesTwoSearchResultsBeforeSummarizing() {
+        StringBuilder summarizePrompt = new StringBuilder();
+        AtomicInteger modelCalls = new AtomicInteger();
+        ChatClient chatClient = (sessionId, request) -> {
+            if (modelCalls.incrementAndGet() == 1) {
+                return "Agent 开发薪资";
+            }
+            summarizePrompt.append(request.messages().get(0).content());
+            return "基于网页正文的摘要";
+        };
+        AgentTool browserSearch = constantTool("browser_search", ToolResult.success("""
+                1. 来源 A
+                   https://a.example.org/report
+                   搜索摘要 A
+                2. 来源 B
+                   https://b.example.net/report
+                   搜索摘要 B
+                """));
+        List<String> fetchedUrls = new ArrayList<>();
+        AgentTool webFetch = functionalTool("web_fetch", call -> {
+            String url = String.valueOf(call.arguments().get("url"));
+            fetchedUrls.add(url);
+            return ToolResult.success(("这是从 " + url + " 抓取到的网页正文，")
+                    .repeat(8));
+        });
+
+        AgentState result = new SearchAgent(chatClient, List.of(browserSearch), webFetch).run(
+                AgentRequest.of("session-1", "搜索 Agent 开发重庆薪资"),
+                InvocationContext.of(SearchAgent.ID),
+                AgentState.ready().startNextIteration(), event -> { });
+
+        assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
+        assertThat(fetchedUrls).containsExactly(
+                "https://a.example.org/report", "https://b.example.net/report");
+        assertThat(summarizePrompt.toString()).contains("抓取到的网页正文");
+    }
+
+    @Test
+    void explicitUrlSkipsSearchAndQueryGeneration() {
+        AtomicInteger modelCalls = new AtomicInteger();
+        AtomicInteger searchCalls = new AtomicInteger();
+        AtomicInteger fetchCalls = new AtomicInteger();
+        ChatClient chatClient = (sessionId, request) -> {
+            modelCalls.incrementAndGet();
+            return "页面资料摘要";
+        };
+        AgentTool browserSearch = functionalTool("browser_search", call -> {
+            searchCalls.incrementAndGet();
+            return ToolResult.success("must not run");
+        });
+        AgentTool webFetch = functionalTool("web_fetch", call -> {
+            fetchCalls.incrementAndGet();
+            assertThat(call.arguments().get("url"))
+                    .isEqualTo("https://example.org/article");
+            return ToolResult.success("明确 URL 返回的完整网页正文。".repeat(12));
+        });
+
+        AgentState result = new SearchAgent(chatClient, List.of(browserSearch), webFetch).run(
+                AgentRequest.of("session-1", "总结 https://example.org/article 需要哪些资料"),
+                InvocationContext.of(SearchAgent.ID),
+                AgentState.ready().startNextIteration(), event -> { });
+
+        assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
+        assertThat(searchCalls).hasValue(0);
+        assertThat(fetchCalls).hasValue(1);
+        assertThat(modelCalls).hasValue(1);
     }
 
     private static AgentState run(

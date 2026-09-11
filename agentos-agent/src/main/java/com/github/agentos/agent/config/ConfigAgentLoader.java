@@ -23,7 +23,7 @@ import java.util.Objects;
  *     kind: specialist
  *     description: "Research a topic"
  *     instruction: "You are a research expert..."
- *     tools: [web_search, web_fetch]
+ *     tools: [browser_search, web_fetch]
  *     save-output: false
  *     expose-as-tool: true
  *   - id: pipeline

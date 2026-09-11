@@ -4,14 +4,23 @@ import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentLoop;
 import com.github.agentos.kernel.AgentRequest;
+import com.github.agentos.kernel.AgentCheckpoint;
 import com.github.agentos.kernel.AgentRunEvent;
+import com.github.agentos.kernel.AgentRunStatus;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
+import com.github.agentos.kernel.PendingAction;
+import com.github.agentos.kernel.PendingActionResolution;
+import com.github.agentos.kernel.PendingActionType;
 import com.github.agentos.kernel.InMemoryAgentEventStore;
+import com.github.agentos.kernel.InMemorySessionService;
 import com.github.agentos.server.controller.BackgroundAgentRunController;
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import com.github.agentos.server.run.AgentRunCoordinator;
+import com.github.agentos.server.run.AgentRunSnapshot;
+import com.github.agentos.server.security.RequestIdentity;
+import com.github.agentos.server.security.SessionAuthorization;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -20,6 +29,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -41,7 +51,156 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class BackgroundAgentRunControllerTest {
 
     @Test
-    void boundsRunAndEventRetention() throws Exception {
+    void approvalResolutionReturnsAcceptedBeforeTheResumedWorkCompletes() throws Exception {
+        CountDownLatch resumeStarted = new CountDownLatch(1);
+        CountDownLatch releaseResume = new CountDownLatch(1);
+        AgentLoop loop = new AgentLoop() {
+            @Override
+            public AgentState run(
+                    AgentRequest request, InvocationContext context, AgentState runningState) {
+                context.invocation().waitFor(new PendingAction(
+                        "pending-web-1", PendingActionType.HUMAN_APPROVAL,
+                        "批准网页读取", "读取目标网页", Map.of("toolName", "web_fetch")));
+                return runningState.waitForAction("等待网页读取审批");
+            }
+
+            @Override
+            public AgentState resume(
+                    AgentRequest request,
+                    InvocationContext context,
+                    AgentState runningState,
+                    AgentCheckpoint checkpoint,
+                    PendingActionResolution resolution,
+                    AgentEventSink eventSink) {
+                resumeStarted.countDown();
+                try {
+                    if (!releaseResume.await(2, TimeUnit.SECONDS)) {
+                        return runningState.fail("resume release timeout");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return runningState.fail("resume interrupted");
+                }
+                return runningState.complete("网页总结完成");
+            }
+        };
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRunner runner = new AgentRunner(loop);
+            AgentRunCoordinator coordinator = new AgentRunCoordinator(
+                    runner, executor, new AgentRunTaskRegistry());
+            MockMvc mvc = MockMvcBuilders.standaloneSetup(
+                    new BackgroundAgentRunController(
+                            coordinator, historyService(),
+                            TestSessionAuthorizations.owned())).build();
+
+            String initialRunId = JsonPath.read(mvc.perform(post("/api/agent-runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"sessionId":"approval-background-1","input":"读取网页"}
+                                    """))
+                    .andExpect(status().isAccepted())
+                    .andReturn().getResponse().getContentAsString(), "$.runId");
+            AgentRunSnapshot waiting = awaitTerminal(coordinator, initialRunId);
+            assertThat(waiting.status()).isEqualTo(AgentRunStatus.WAITING);
+            String invocationId = waiting.invocationId();
+
+            String resumedBody = mvc.perform(post(
+                            "/api/agent-runs/invocations/{invocationId}/resolution", invocationId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"pendingActionId":"pending-web-1","approved":true}
+                                    """))
+                    .andExpect(status().isAccepted())
+                    .andExpect(header().string("Location", containsString("/api/agent-runs/")))
+                    .andExpect(jsonPath("$.status").value("RUNNING"))
+                    .andReturn().getResponse().getContentAsString();
+            String resumedRunId = JsonPath.read(resumedBody, "$.runId");
+            assertThat(resumedRunId).isEqualTo(initialRunId);
+            assertThat(resumeStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+            mvc.perform(post(
+                            "/api/agent-runs/invocations/{invocationId}/resolution", invocationId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"pendingActionId":"pending-web-1","approved":true}
+                                    """))
+                    .andExpect(status().isConflict());
+
+            releaseResume.countDown();
+            AgentRunSnapshot completed = awaitTerminal(
+                    coordinator, resumedRunId);
+            assertThat(completed.status()).isEqualTo(AgentRunStatus.COMPLETED);
+            assertThat(completed.output()).isEqualTo("网页总结完成");
+            assertThat(completed.invocationId()).isEqualTo(invocationId);
+        }
+    }
+
+    @Test
+    void retainedRunBecomesInaccessibleAfterSessionSoftDelete() throws Exception {
+        AgentLoop loop = (request, context, runningState) -> runningState.complete("done");
+        InMemorySessionService sessions = new InMemorySessionService();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRunCoordinator coordinator = new AgentRunCoordinator(
+                    new AgentRunner(loop), executor, new AgentRunTaskRegistry());
+            MockMvc mvc = MockMvcBuilders.standaloneSetup(new BackgroundAgentRunController(
+                    coordinator, historyService(), new SessionAuthorization(sessions))).build();
+
+            String runId = JsonPath.read(mvc.perform(post("/api/agent-runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"sessionId":"soft-deleted-run","input":"hello"}
+                                    """))
+                    .andExpect(status().isAccepted())
+                    .andReturn().getResponse().getContentAsString(), "$.runId");
+            awaitTerminal(coordinator, runId);
+            assertThat(sessions.deleteByUser("soft-deleted-run", "default-user")).isTrue();
+
+            mvc.perform(get("/api/agent-runs/{runId}", runId))
+                    .andExpect(status().isNotFound());
+            mvc.perform(get("/api/agent-runs"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.length()").value(0));
+        }
+    }
+
+    @Test
+    void ignoresClientSuppliedIdentityAndUsesAuthenticatedAccount() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<InvocationContext> observed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AgentLoop loop = (request, context, runningState) -> {
+            observed.set(context);
+            return runningState.complete("done");
+        };
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            AgentRunCoordinator coordinator = new AgentRunCoordinator(
+                    new AgentRunner(loop), executor, new AgentRunTaskRegistry());
+            MockMvc mvc = MockMvcBuilders.standaloneSetup(new BackgroundAgentRunController(
+                            coordinator, historyService(),
+                            TestSessionAuthorizations.ownedBy("demo")))
+                    .defaultRequest(get("/").requestAttr(
+                            RequestIdentity.REQUEST_ATTRIBUTE,
+                            new RequestIdentity("trusted-team", "demo", Set.of())))
+                    .build();
+
+            String runId = JsonPath.read(mvc.perform(post("/api/agent-runs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"teamId":"forged-team","userId":"admin",
+                                     "sessionId":"identity-bound","input":"hello"}
+                                    """))
+                    .andExpect(status().isAccepted())
+                    .andReturn().getResponse().getContentAsString(), "$.runId");
+            awaitTerminal(coordinator, runId);
+
+            assertThat(observed.get().teamId()).isEqualTo("trusted-team");
+            assertThat(observed.get().userId()).isEqualTo("demo");
+        }
+    }
+
+    @Test
+    void boundsInMemoryRetentionWithoutLosingDurableRuns() throws Exception {
         AgentLoop loop = new AgentLoop() {
             @Override
             public AgentState run(
@@ -74,20 +233,20 @@ class BackgroundAgentRunControllerTest {
                             coordinator, historyService(),
                             TestSessionAuthorizations.owned("retention-2"))).build();
 
-            AgentRunCoordinator.RunSnapshot first = coordinator.start(
+            AgentRunSnapshot first = coordinator.start(
                     AgentRequest.of("retention-1", "first"),
                     InvocationContext.of("agent"));
             awaitTerminal(coordinator, first.runId());
-            AgentRunCoordinator.RunSnapshot second = coordinator.start(
+            AgentRunSnapshot second = coordinator.start(
                     AgentRequest.of("retention-2", "second"),
                     InvocationContext.of("agent"));
             awaitTerminal(coordinator, second.runId());
 
-            assertThat(coordinator.find(first.runId())).isEmpty();
+            assertThat(coordinator.find(first.runId())).isPresent();
             assertThat(coordinator.list()).hasSize(1);
 
             MvcResult subscribed = mvc.perform(get(
-                                    "/api/agent-runs/{runId}/events?after=0", second.runId())
+                                    "/api/agent-runs/{runId}/events?afterSeq=0", second.runId())
                             .accept(MediaType.TEXT_EVENT_STREAM))
                     .andExpect(request().asyncStarted())
                     .andReturn();
@@ -97,10 +256,10 @@ class BackgroundAgentRunControllerTest {
                     .andExpect(header().string(
                             "Cache-Control", "no-cache, no-transform"))
                     .andExpect(header().string("X-Accel-Buffering", "no"))
-                    .andExpect(content().string(not(containsString("id:1\n"))))
-                    .andExpect(content().string(not(containsString("id:2\n"))))
-                    .andExpect(content().string(containsString("id:3")))
-                    .andExpect(content().string(containsString("id:4")));
+                    .andExpect(content().string(containsString("event:run.started")))
+                    .andExpect(content().string(containsString("event:message.completed")))
+                    .andExpect(content().string(containsString("event:run.completed")))
+                    .andExpect(content().string(not(containsString("event:message.delta"))));
         }
     }
 
@@ -146,13 +305,19 @@ class BackgroundAgentRunControllerTest {
             String runId = JsonPath.read(body, "$.runId");
             awaitTerminal(coordinator, runId);
 
+            var durableNames = coordinator.history("recoverable-1").stream()
+                    .map(com.github.agentos.kernel.AgentStreamEvent::event).toList();
+            assertThat(durableNames).contains(
+                    "run.started", "message.started", "message.completed", "run.completed");
+            assertThat(durableNames).doesNotContain("status", "message.delta");
+
             mvc.perform(get("/api/agent-runs/{runId}", runId))
                     .andExpect(status().isOk())
                     .andExpect(content().string(containsString("\"status\":\"COMPLETED\"")))
                     .andExpect(content().string(containsString("\"output\":\"done\"")));
 
             MvcResult subscribed = mvc.perform(get(
-                                    "/api/agent-runs/{runId}/events?after=1", runId)
+                                    "/api/agent-runs/{runId}/events?afterSeq=1", runId)
                             .accept(MediaType.TEXT_EVENT_STREAM))
                     .andExpect(request().asyncStarted())
                     .andReturn();
@@ -162,9 +327,23 @@ class BackgroundAgentRunControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(content().string(not(containsString("id:1\n"))))
                     .andExpect(content().string(containsString("id:2")))
-                    .andExpect(content().string(containsString("event:assistant_message")))
-                    .andExpect(content().string(containsString("event:state")))
-                    .andExpect(content().string(containsString("\"lastSequence\":3")));
+                    .andExpect(content().string(containsString("event:message.delta")))
+                    .andExpect(content().string(containsString("event:message.completed")))
+                    .andExpect(content().string(containsString("event:run.completed")))
+                    .andExpect(content().string(containsString("\"lastSeq\":6")));
+
+            MvcResult resumedByHeader = mvc.perform(get(
+                                    "/api/agent-runs/{runId}/events?afterSeq=0", runId)
+                            .header("Last-Event-ID", "4")
+                            .accept(MediaType.TEXT_EVENT_STREAM))
+                    .andExpect(request().asyncStarted())
+                    .andReturn();
+            resumedByHeader.getAsyncResult(2_000);
+            mvc.perform(asyncDispatch(resumedByHeader))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(not(containsString("id:4\n"))))
+                    .andExpect(content().string(containsString("id:5")))
+                    .andExpect(content().string(containsString("id:6")));
         }
     }
 
@@ -194,27 +373,27 @@ class BackgroundAgentRunControllerTest {
             AgentRunCoordinator coordinator = new AgentRunCoordinator(
                     new AgentRunner(loop), executor, new AgentRunTaskRegistry());
 
-            AgentRunCoordinator.RunSnapshot disconnectedRun = coordinator.start(
+            AgentRunSnapshot disconnectedRun = coordinator.start(
                     new AgentRequest("disconnect-1", "hello", Map.of()),
                     InvocationContext.of("agent"));
             assertThat(firstStarted.await(2, TimeUnit.SECONDS)).isTrue();
             var emitter = coordinator.stream(disconnectedRun.runId(), 0).orElseThrow();
             emitter.complete();
             firstRelease.countDown();
-            AgentRunCoordinator.RunSnapshot completed = awaitTerminal(
+            AgentRunSnapshot completed = awaitTerminal(
                     coordinator, disconnectedRun.runId());
-            assertThat(completed.state().status()).isEqualTo(AgentState.Status.COMPLETED);
+            assertThat(completed.status()).isEqualTo(AgentRunStatus.COMPLETED);
 
-            AgentRunCoordinator.RunSnapshot cancellableRun = coordinator.start(
+            AgentRunSnapshot cancellableRun = coordinator.start(
                     new AgentRequest("cancel-1", "hello", Map.of()),
                     InvocationContext.of("agent"));
             assertThat(secondStarted.await(2, TimeUnit.SECONDS)).isTrue();
             AgentRunCoordinator.CancelResult cancellation = coordinator.cancel(
                     cancellableRun.runId()).orElseThrow();
             assertThat(cancellation.interruptRequested()).isTrue();
-            AgentRunCoordinator.RunSnapshot cancelled = awaitTerminal(
+            AgentRunSnapshot cancelled = awaitTerminal(
                     coordinator, cancellableRun.runId());
-            assertThat(cancelled.state().status()).isEqualTo(AgentState.Status.CANCELLED);
+            assertThat(cancelled.status()).isEqualTo(AgentRunStatus.CANCELLED);
         }
     }
 
@@ -230,13 +409,13 @@ class BackgroundAgentRunControllerTest {
                             coordinator, historyService(),
                             TestSessionAuthorizations.owned("list-1", "list-2"))).build();
 
-            AgentRunCoordinator.RunSnapshot first = coordinator.start(
+            AgentRunSnapshot first = coordinator.start(
                     new AgentRequest("list-1", "hello", Map.of()),
                     InvocationContext.of("agent"));
             awaitTerminal(coordinator, first.runId());
             // 创建时间以毫秒记录；显式间隔保证两次运行的排序稳定。
             Thread.sleep(5);
-            AgentRunCoordinator.RunSnapshot second = coordinator.start(
+            AgentRunSnapshot second = coordinator.start(
                     new AgentRequest("list-2", "hello", Map.of()),
                     InvocationContext.of("agent"));
             awaitTerminal(coordinator, second.runId());
@@ -246,7 +425,7 @@ class BackgroundAgentRunControllerTest {
                     .andExpect(jsonPath("$.length()").value(2))
                     .andExpect(jsonPath("$[0].sessionId").value("list-2"))
                     .andExpect(jsonPath("$[1].sessionId").value("list-1"))
-                    .andExpect(jsonPath("$[0].state.status").value("COMPLETED"));
+                    .andExpect(jsonPath("$[0].status").value("COMPLETED"));
         }
     }
 
@@ -302,12 +481,13 @@ class BackgroundAgentRunControllerTest {
                 new com.github.agentos.kernel.InMemoryAgentEventStore(), 5, 400);
     }
 
-    private static AgentRunCoordinator.RunSnapshot awaitTerminal(
+    private static AgentRunSnapshot awaitTerminal(
             AgentRunCoordinator coordinator, String runId) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (System.nanoTime() < deadline) {
-            AgentRunCoordinator.RunSnapshot snapshot = coordinator.find(runId).orElseThrow();
-            if (snapshot.state().status() != AgentState.Status.RUNNING) {
+            AgentRunSnapshot snapshot = coordinator.find(runId).orElseThrow();
+            if (snapshot.status() != AgentRunStatus.CREATED
+                    && snapshot.status() != AgentRunStatus.RUNNING) {
                 return snapshot;
             }
             Thread.sleep(10);

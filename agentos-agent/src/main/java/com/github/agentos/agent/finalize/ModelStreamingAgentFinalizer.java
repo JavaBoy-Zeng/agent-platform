@@ -53,7 +53,7 @@ public final class ModelStreamingAgentFinalizer implements AgentFinalizer {
         this.maxDraftLength = maxDraftLength;
     }
 
-    /** 同步调用仍只做领域校验；MainAgent 使用 {@link #finishStreaming}。 */
+    /** 同步调用仍只做领域校验；PlanExecuteAgent 使用 {@link #finishStreaming}。 */
     @Override
     public String finish(
             AgentRequest request, InvocationContext context, AgentPlan completedPlan) {

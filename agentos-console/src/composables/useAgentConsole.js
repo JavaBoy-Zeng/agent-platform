@@ -14,8 +14,7 @@ import {
   deleteSessionRecords,
   getModelCatalog,
   getModelManagement,
-  getUsage,
-  getSessionEvents,
+  getSessionRunHistory,
   getSessionPage,
   updateSessionPinned,
   updateSessionTitle
@@ -28,7 +27,8 @@ const STORAGE_KEY_PREFIX = 'agentos.console.sessions.v2'
 const ACTIVE_SESSION_KEY_PREFIX = 'agentos.console.active-session.v2'
 const SESSION_PAGE_SIZE = 20
 const SESSION_CACHE_SIZE = 20
-const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING'])
+const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const EPHEMERAL_EVENTS = new Set(['status', 'message.delta', 'tool.input.delta'])
 const APPROVAL_MODE_KEY = 'agentos.console.approval-mode.v1'
 function randomId(prefix) {
   const token = globalThis.crypto?.randomUUID?.()
@@ -71,7 +71,8 @@ function newSession(id = randomId('session')) {
 }
 
 function isSessionBusy(session) {
-  return Boolean(session?.activeRunId || session?.submitting)
+  return Boolean(session?.submitting || (session?.activeRunId
+    && !['WAITING', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(session?.state?.status)))
 }
 
 function sessionTitle(remote, cached) {
@@ -115,7 +116,7 @@ export function useAgentConsole(ownerId = '') {
   const activeSessionKey = scopedStorageKey(ACTIVE_SESSION_KEY_PREFIX, owner)
   const sessions = ref([])
   const currentSessionId = ref('')
-  const agentId = ref('main-agent')
+  const agentId = ref('plan-execute-agent')
   const sessionId = ref('')
   const prompt = ref('')
   const models = ref([])
@@ -129,6 +130,7 @@ export function useAgentConsole(ownerId = '') {
   const serverHasMoreSessions = ref(false)
   const monitoredRuns = new Map()
   const pipelineTimers = new Map()
+  const pendingMessageDeltas = new Map()
   const streamAbortController = new AbortController()
   let disposed = false
 
@@ -140,6 +142,7 @@ export function useAgentConsole(ownerId = '') {
 
   const messages = computed(() => currentSession.value?.messages || [])
   const busy = computed(() => isSessionBusy(currentSession.value))
+  const executingAgentId = computed(() => currentSession.value?.executingAgentId || '')
   const activeStage = computed(() => Number(currentSession.value?.activeStage || 0))
   const canStop = computed(() => Boolean(currentSession.value?.activeRunId))
   const runtimeState = computed(() => currentSession.value?.state || {
@@ -163,7 +166,16 @@ export function useAgentConsole(ownerId = '') {
     const cache = active && !isUnsavedDraft(active) && !recent.some(session => session.id === active.id)
       ? [...recent.slice(0, SESSION_CACHE_SIZE - 1), active]
       : recent
-    localStorage.setItem(storageKey, JSON.stringify(cache))
+    // status 和 delta 只服务于实时 UI；浏览器缓存也只保存可重建的稳定记录。
+    const cached = cache.map(session => ({
+      ...session,
+      phase: '',
+      messages: session.messages.filter(message => message.role !== 'trace'
+          && !(message.role === 'assistant' && message.streaming))
+        .map(message => ({ ...message, streaming: false }))
+    }))
+    try { localStorage.setItem(storageKey, JSON.stringify(cached)) }
+    catch { /* 浏览器缓存容量不足不应中断运行；服务端仍可回放记录。 */ }
     if (currentSessionId.value && !isUnsavedDraft(active)) {
       localStorage.setItem(activeSessionKey, currentSessionId.value)
     } else {
@@ -217,39 +229,53 @@ export function useAgentConsole(ownerId = '') {
     if (!session.serverBacked || session.historyLoaded || session.messages.length) return
     session.historyLoading = true
     try {
-      const traces = await getSessionEvents(session.id)
+      const events = await getSessionRunHistory(session.id)
       if (disposed) return
       const recovered = []
-      const ordered = [...(Array.isArray(traces) ? traces : [])]
-        .sort((left, right) => new Date(left.startedAt) - new Date(right.startedAt))
-      for (const trace of ordered) {
-        const events = Array.isArray(trace.events) ? trace.events : []
-        const started = events.find(event => event.type === 'AGENT_STARTED')
-        const completed = [...events].reverse().find(event => event.type === 'AGENT_COMPLETED')
-        const failed = [...events].reverse().find(event => event.type === 'AGENT_FAILED')
-        if (started?.message) {
+      const replay = { messages: recovered, executingAgentId: '' }
+      const boundaries = new Map()
+      const ordered = [...(Array.isArray(events) ? events : [])]
+        .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp)
+          || Number(left.seq || 0) - Number(right.seq || 0))
+      for (const event of ordered) {
+        if (event.event === 'run.started') {
           recovered.push({
-            id: `${trace.invocationId}:user`,
-            role: 'user',
-            content: started.message,
-            createdAt: started.timestamp || trace.startedAt
+            id: `${event.turnId}:user`, role: 'user',
+            content: event.data?.objective || '', createdAt: event.timestamp
           })
-        }
-        recovered.push(...recoverOperationGroups(trace, events))
-        if (completed?.message) {
+          boundaries.set(event.runId, recovered.length)
+        } else if (event.event === 'message.completed') {
           recovered.push({
-            id: `${trace.invocationId}:assistant`,
-            role: 'assistant',
-            content: completed.message,
-            createdAt: completed.timestamp || trace.endedAt
+            id: event.itemId, role: 'assistant', agentId: event.agentId,
+            content: event.data?.content || '', createdAt: event.timestamp
           })
-        } else if (failed?.message) {
-          recovered.push({
-            id: `${trace.invocationId}:failed`,
-            role: 'error',
-            content: failed.message,
-            createdAt: failed.timestamp || trace.endedAt
-          })
+        } else if (event.event === 'tool.started'
+          || event.event === 'tool.awaiting_approval'
+          || event.event === 'tool.approved'
+          || event.event === 'tool.completed' || event.event === 'tool.failed') {
+          applyToolEvent(replay, event)
+        } else if (event.event === 'artifact.created') {
+          applyArtifactEvent(replay, event)
+        } else if (['run.completed', 'run.failed', 'run.cancelled'].includes(event.event)) {
+          const snapshot = event.data?.snapshot || {}
+          const boundary = boundaries.get(event.runId) || 0
+          const target = [...recovered.slice(boundary)].reverse()
+            .find(message => message.role === 'assistant' || message.role === 'error')
+          if (target) {
+            target.runEnd = true
+            target.runStatus = snapshot.status
+            target.runId = event.runId
+            target.durationMs = snapshot.durationMs
+            target.tokenUsageDetails = snapshot.usage
+          } else if (snapshot.status !== 'COMPLETED') {
+            recovered.push({
+              id: `${event.runId}:terminal`,
+              role: snapshot.status === 'FAILED' ? 'error' : 'event',
+              content: snapshot.error?.message || (snapshot.status === 'CANCELLED' ? '任务已取消。' : ''),
+              createdAt: event.timestamp, runEnd: true, runStatus: snapshot.status,
+              durationMs: snapshot.durationMs, tokenUsageDetails: snapshot.usage
+            })
+          }
         }
       }
       session.messages = recovered
@@ -261,30 +287,6 @@ export function useAgentConsole(ownerId = '') {
     } finally {
       session.historyLoading = false
     }
-  }
-
-  // 操作记录只从事件存储中的 TOOL_CALL_* 领域事件重建，与实时 SSE 事件同源，
-  // 避免模型生成的文本描述进入执行记录。
-  function recoverOperationGroups(trace, events) {
-    const groups = []
-    events.forEach((event, eventIndex) => {
-      if (event.type !== 'TOOL_CALL_COMPLETED' && event.type !== 'TOOL_CALL_FAILED') return
-      const data = event.data || {}
-      const kind = classifyTool(data.toolName || '')
-      appendOperationGroup(groups, {
-        id: `${trace.invocationId}:ops:${eventIndex}`,
-        kind,
-        item: {
-          toolName: data.toolName || '',
-          arguments: data.arguments || {},
-          summary: data.summary || event.message || '',
-          success: event.type === 'TOOL_CALL_COMPLETED',
-          status: event.type === 'TOOL_CALL_COMPLETED' ? 'COMPLETED' : 'FAILED'
-        },
-        createdAt: event.timestamp || trace.startedAt
-      })
-    })
-    return groups
   }
 
   function activateSession(session) {
@@ -488,6 +490,7 @@ export function useAgentConsole(ownerId = '') {
       role,
       content,
       createdAt: nowIso(),
+      ...(role === 'assistant' ? { agentId: session.executingAgentId || '' } : {}),
       ...extra
     })
     session.updatedAt = nowIso()
@@ -558,30 +561,6 @@ export function useAgentConsole(ownerId = '') {
     pipelineTimers.set(session.id, timer)
   }
 
-  function streamStage(eventName, data) {
-    switch (eventName) {
-      case 'tool_started':
-      case 'tool_completed':
-      case 'file_read':
-      case 'file_edited':
-      case 'command_executed':
-        return 3
-      case 'assistant_message':
-      case 'final_answer':
-      case 'error':
-        return 5
-      case 'progress': {
-        const source = data?.sourceEvent
-        if (source === 'run_started' || source === 'route_decided') return 1
-        if (source === 'plan_created' || source === 'replan') return 2
-        if (source === 'decision') return 5
-        return null
-      }
-      default:
-        return null
-    }
-  }
-
   // 文件读取、命令执行、文件修改等操作记录必须来源于 Runtime 真实工具事件，
   // 这里仅按 toolName 分类，绝不依据模型生成的文本描述。
   function classifyTool(toolName) {
@@ -591,101 +570,196 @@ export function useAgentConsole(ownerId = '') {
     return 'tool'
   }
 
-  function appendOperation(session, kind, item) {
-    appendOperationGroup(session.messages, {
+  function appendOperation(session, kind, item, createdAt = nowIso()) {
+    return appendOperationGroup(session.messages, {
       id: randomId('ops'),
       kind,
       item,
-      createdAt: nowIso()
+      createdAt
     })
   }
 
-  function applyOperationEvent(session, data, message = '') {
-    const calls = Array.isArray(data?.toolCalls) && data.toolCalls.length
-      ? data.toolCalls
-      : [{ toolName: data?.toolName || '', arguments: data?.arguments || {} }]
-    for (const call of calls) {
-      const toolName = call.toolName || data?.toolName || 'tool'
-      appendOperation(session, classifyTool(toolName), {
-        toolName,
-        arguments: call.arguments || {},
-        summary: data?.summary || message,
-        success: data?.success !== false,
-        status: data?.status || ''
-      })
+  function findToolItem(session, toolCallId) {
+    for (const message of session.messages) {
+      if (message.role !== 'ops') continue
+      const item = message.items?.find(candidate => candidate.toolCallId === toolCallId)
+      if (item) return item
     }
+    return null
   }
 
-  function appendAssistantDelta(session, runId, delta) {
-    if (!delta) return
-    const last = session.messages[session.messages.length - 1]
-    if (last && last.role === 'assistant' && last.streaming) {
-      last.content += delta
-    } else {
-      addMessage(session, 'assistant', delta, {
-        id: `${runId}:assistant:${randomId('seg')}`,
+  function applyToolEvent(session, event) {
+    const data = event.data || {}
+    const toolCallId = String(data.toolCallId || event.itemId || '')
+    if (!toolCallId) return
+    let item = findToolItem(session, toolCallId)
+    if (!item) {
+      const toolName = data.toolName || 'tool'
+      item = {
+        toolCallId,
+        toolName,
+        arguments: data.arguments || {},
+        summary: '',
+        outputRef: '',
+        truncated: false,
+        success: true,
+        status: 'RUNNING'
+      }
+      appendOperation(session, classifyTool(toolName), item, event.timestamp || nowIso())
+    }
+    if (data.toolName) item.toolName = data.toolName
+    if (data.arguments && Object.keys(data.arguments).length) item.arguments = data.arguments
+    if (data.summary) item.summary = data.summary
+    if (data.outputRef) item.outputRef = data.outputRef
+    item.truncated = Boolean(data.truncated)
+    const states = {
+      'tool.started': ['RUNNING', true],
+      'tool.awaiting_approval': ['WAITING', true],
+      'tool.approved': ['APPROVED', true],
+      'tool.completed': ['COMPLETED', true],
+      'tool.failed': ['FAILED', false]
+    }
+    const [status, success] = states[event.event] || [item.status, item.success]
+    item.status = status
+    item.success = success
+    if (data.error) {
+      item.error = data.error
+      item.summary = data.error.message || item.summary
+    }
+    if (event.event === 'tool.awaiting_approval') session.phase = '等待批准工具调用'
+    else if (event.event === 'tool.started') session.phase = data.toolName
+      ? `正在执行 ${data.toolName}` : '正在执行工具'
+    else if (['tool.completed', 'tool.failed'].includes(event.event)) session.phase = ''
+  }
+
+  function applyArtifactEvent(session, event) {
+    const data = event.data || {}
+    const artifactId = String(data.artifactId || event.itemId || '')
+    if (!artifactId || session.messages.some(message =>
+      message.role === 'artifact' && message.artifactId === artifactId)) return
+    addMessage(session, 'artifact', data.filename || 'Agent 产物', {
+      id: event.itemId,
+      artifactId,
+      filename: data.filename || '',
+      contentType: data.contentType || '',
+      sizeBytes: Number(data.sizeBytes || 0),
+      agentId: event.agentId || '',
+      createdAt: event.timestamp || nowIso()
+    })
+  }
+
+  function ensureAssistantMessage(session, event) {
+    let message = session.messages.find(candidate =>
+      candidate.role === 'assistant' && candidate.id === event.itemId)
+    if (!message) {
+      addMessage(session, 'assistant', '', {
+        id: event.itemId,
+        agentId: event.agentId || '',
+        createdAt: event.timestamp || nowIso(),
         streaming: true
       })
+      message = session.messages.at(-1)
+    }
+    return message
+  }
+
+  function flushMessageDelta(session, itemId) {
+    const key = `${session.id}:${itemId}`
+    const pending = pendingMessageDeltas.get(key)
+    if (!pending) return
+    if (pending.timer) window.clearTimeout(pending.timer)
+    pendingMessageDeltas.delete(key)
+    const message = session.messages.find(candidate => candidate.id === itemId)
+    if (message) message.content += pending.chunks.join('')
+  }
+
+  function queueMessageDelta(session, event) {
+    const delta = String(event.data?.delta || '')
+    if (!delta) return
+    const message = ensureAssistantMessage(session, event)
+    const key = `${session.id}:${event.itemId}`
+    let pending = pendingMessageDeltas.get(key)
+    if (!pending) {
+      pending = { chunks: [], timer: 0 }
+      pendingMessageDeltas.set(key, pending)
+    }
+    pending.chunks.push(delta)
+    if (!pending.timer) {
+      pending.timer = window.setTimeout(() => flushMessageDelta(session, message.id), 50)
     }
   }
 
-  function finalizeAssistantAnswer(session, answer) {
-    const streaming = session.messages.filter(
-      message => message.role === 'assistant' && message.streaming)
-    if (!streaming.length) {
-      if (answer) addMessage(session, 'assistant', answer)
-      return
-    }
-    const last = streaming[streaming.length - 1]
-    if (answer && last.content !== answer) last.content = answer
-    streaming.forEach(message => { message.streaming = false })
+  function completeAssistantMessage(session, event) {
+    flushMessageDelta(session, event.itemId)
+    const message = ensureAssistantMessage(session, event)
+    // completed 是最终事实：即使中间 delta 丢失，也用完整快照校正。
+    message.content = String(event.data?.content || '')
+    message.streaming = false
+    message.agentId = event.agentId || message.agentId || ''
+    message.createdAt = event.timestamp || message.createdAt
+    session.phase = ''
   }
 
-  function handleChatEvent(session, runId, eventName, payload) {
-    const data = payload?.data || {}
-    if (eventName === 'assistant_message') {
-      appendAssistantDelta(session, runId, payload?.message || '')
-    } else if (eventName === 'tool_started') {
-      session.phase = payload?.message
-        || (data.toolName ? `正在执行 ${data.toolName}` : '正在执行工具')
-    } else if (eventName === 'progress') {
-      session.phase = payload?.message || ''
-    } else if (eventName === 'error') {
-      session.runError = payload?.message || session.runError
-      session.phase = ''
-    } else if (eventName === 'final_answer') {
-      finalizeAssistantAnswer(session, payload?.message || '')
-      session.phase = ''
-    } else if (eventName === 'tool_completed'
-      || eventName === 'file_read'
-      || eventName === 'file_edited'
-      || eventName === 'command_executed') {
-      applyOperationEvent(session, data, payload?.message || '')
-      session.phase = ''
+  function handleStreamEvent(session, event) {
+    if (!event?.event) return
+    if (event.agentId) session.executingAgentId = event.agentId
+    switch (event.event) {
+      case 'run.started':
+        session.activeStage = 1
+        break
+      case 'status':
+        session.phase = String(event.data?.text || '')
+        break
+      case 'message.started':
+        session.activeStage = 5
+        ensureAssistantMessage(session, event)
+        break
+      case 'message.delta':
+        session.activeStage = 5
+        queueMessageDelta(session, event)
+        break
+      case 'message.completed':
+        session.activeStage = 5
+        completeAssistantMessage(session, event)
+        break
+      case 'tool.started':
+      case 'tool.awaiting_approval':
+      case 'tool.approved':
+      case 'tool.completed':
+      case 'tool.failed':
+        session.activeStage = 3
+        applyToolEvent(session, event)
+        break
+      case 'artifact.created':
+        applyArtifactEvent(session, event)
+        break
+      case 'usage':
+        session.runUsage = event.data?.aggregate || event.data || null
+        break
+      case 'error':
+        session.runError = event.data?.error?.message || event.data?.message || session.runError
+        break
+      case 'run.waiting':
+      case 'run.completed':
+      case 'run.failed':
+      case 'run.cancelled':
+        applyRunSnapshot(session, event.data?.snapshot)
+        break
     }
     session.updatedAt = nowIso()
   }
 
-  function handleStreamEvent(session, packet, messageId = '') {
-    const eventName = packet.event
-    const payload = packet.data || {}
-    const stage = streamStage(eventName, payload?.data)
-    if (stage) session.activeStage = stage
-    if (eventName === 'state') {
-      session.activeStage = 5
-      if (payload?.state) {
-        session.state = payload.state
-        if (payload.state.status === 'WAITING') setPendingApproval(session, payload)
-      }
-      return
-    }
-    handleChatEvent(session, packet.runId || session.activeRunId || 'run', eventName, payload)
-  }
-
   function applyRunSnapshot(session, snapshot) {
-    if (!snapshot?.state) return
-    session.state = snapshot.state
-    if (snapshot.state.status === 'WAITING' && snapshot.pendingAction) {
+    if (!snapshot?.status) return
+    session.runSnapshot = snapshot
+    session.state = {
+      ...session.state,
+      status: snapshot.status,
+      output: snapshot.output || '',
+      error: snapshot.error?.message || '',
+      updatedAt: snapshot.updatedAt || nowIso()
+    }
+    if (snapshot.status === 'WAITING' && snapshot.pendingAction) {
       setPendingApproval(session, snapshot)
     }
     persist()
@@ -708,36 +782,21 @@ export function useAgentConsole(ownerId = '') {
     return target
   }
 
-  async function refreshRunUsage(session, targetId, baseline) {
-    if (!targetId) return
-    try {
-      const usage = await getUsage(session.id)
-      const total = Number(usage?.totalTokens || 0)
-      const tokenUsage = Number.isFinite(baseline)
-        ? Math.max(0, total - baseline)
-        : total
-      const target = session.messages.find(message => message.id === targetId)
-      if (target) {
-        target.tokenUsage = tokenUsage
-        target.tokenUsageScope = Number.isFinite(baseline) ? 'run' : 'session'
-        persist()
-      }
-    } catch {
-      // Token accounting must never change the run result.
-    }
-  }
-
   function finalizeRun(session, snapshot) {
     const runId = snapshot.runId || session.activeRunId
     const boundary = Number(session.runBoundary || 0)
     const task = session.runTask || ''
-    const usageBaseline = Number.isFinite(session.runUsageBase)
-      ? session.runUsageBase
-      : null
     applyRunSnapshot(session, snapshot)
+    const status = snapshot.status
 
-    if (snapshot.state.status === 'COMPLETED') {
-      const output = snapshot.state.output || ''
+    if (status === 'WAITING') {
+      session.updatedAt = nowIso()
+      persist()
+      return
+    }
+
+    if (status === 'COMPLETED') {
+      const output = snapshot.output || ''
       const streaming = session.messages.filter(
         message => message.role === 'assistant' && message.streaming)
       if (streaming.length) {
@@ -748,33 +807,34 @@ export function useAgentConsole(ownerId = '') {
         message => message.role === 'assistant' && message.content === output)) {
         addMessage(session, 'assistant', output)
       }
-    } else if (snapshot.state.status === 'CANCELLED') {
+    } else if (status === 'CANCELLED') {
       markAssistantDone(session)
       addTerminalMessage(
         session, `${runId}:cancelled`, 'event', session.runError || '任务已取消。')
-    } else if (snapshot.state.status === 'FAILED') {
+    } else if (status === 'FAILED') {
       markAssistantDone(session)
+      const rejected = snapshot.error?.code === 'APPROVAL_REJECTED'
       addTerminalMessage(
-        session, `${runId}:failed`, 'error',
-        session.runError || snapshot.state.error || 'Agent 未能完成任务。')
+        session, `${runId}:failed`, rejected ? 'event' : 'error',
+        rejected
+          ? '操作已拒绝，任务已停止。'
+          : (session.runError || snapshot.error?.message || 'Agent 未能完成任务。'))
     }
 
     session.activeRunId = ''
     session.phase = ''
-    if (snapshot.state.status === 'WAITING') {
-      session.updatedAt = nowIso()
-      persist()
-      return
-    }
     const resultMessage = markRunResult(
-      session, snapshot.state.status, boundary, task, runId)
+      session, status, boundary, task, runId)
+    if (resultMessage) {
+      resultMessage.durationMs = Number(snapshot.durationMs || 0)
+      resultMessage.tokenUsageDetails = snapshot.usage || session.runUsage || null
+    }
     session.runBoundary = 0
     session.runError = ''
     session.runTask = ''
-    session.runUsageBase = null
+    session.runUsage = null
     session.updatedAt = nowIso()
     persist()
-    void refreshRunUsage(session, resultMessage?.id, usageBaseline)
   }
 
   function markAssistantDone(session) {
@@ -790,16 +850,13 @@ export function useAgentConsole(ownerId = '') {
   }
 
   function handleBackgroundEvent(session, runId, packet) {
-    const envelope = packet.data || {}
-    const sequence = Number(envelope.sequence || packet.id || 0)
-    if (sequence && sequence <= Number(session.lastSequence || 0)) return
-    if (sequence) session.lastSequence = sequence
-    handleStreamEvent(session, {
-      event: envelope.type || packet.event,
-      data: envelope.data,
-      runId
-    })
-    persist()
+    const event = packet.data || {}
+    const sequence = Number(event.seq || packet.id || 0)
+    if (event.runId && event.runId !== runId) return
+    if (sequence && sequence <= Number(session.lastSeq || 0)) return
+    if (sequence) session.lastSeq = sequence
+    handleStreamEvent(session, event)
+    if (!EPHEMERAL_EVENTS.has(event.event)) persist()
   }
 
   async function recoverMissingRun(session, runId) {
@@ -809,8 +866,10 @@ export function useAgentConsole(ownerId = '') {
       if (state) {
         finalizeRun(session, {
           runId,
-          state,
-          lastSequence: session.lastSequence || 0
+          status: state.status,
+          output: state.output || '',
+          error: state.error ? { code: 'RUN_FAILED', message: state.error, retryable: false } : null,
+          lastSeq: session.lastSeq || 0
         })
         return
       }
@@ -847,15 +906,15 @@ export function useAgentConsole(ownerId = '') {
           if (disposed) return null
           connection.value = 'online'
           applyRunSnapshot(session, snapshot)
-          if (TERMINAL_STATUSES.has(snapshot.state.status)
-              && Number(session.lastSequence || 0) >= Number(snapshot.lastSequence || 0)) {
+          if (TERMINAL_STATUSES.has(snapshot.status)
+              && Number(session.lastSeq || 0) >= Number(snapshot.lastSeq || 0)) {
             finalizeRun(session, snapshot)
             return snapshot
           }
 
           const finalSnapshot = await streamAgentRun(
             runId,
-            session.lastSequence || 0,
+            session.lastSeq || 0,
             packet => {
               if (!disposed) handleBackgroundEvent(session, runId, packet)
             },
@@ -899,6 +958,8 @@ export function useAgentConsole(ownerId = '') {
       pendingActionId: action.pendingActionId,
       title: action.title || '需要批准操作',
       payload: {
+        toolCallId: action.payload?.toolCallId || '',
+        workspaceReconnect: Boolean(action.payload?.workspaceReconnect),
         toolName: action.payload?.toolName || '',
         riskLevel: action.payload?.riskLevel || '',
         arguments: {
@@ -922,16 +983,17 @@ export function useAgentConsole(ownerId = '') {
     if (!currentModel.value?.id) throw new Error('请先选择一个已启用的模型')
 
     const normalizedSessionId = sanitizeId(sessionId.value, randomId('session'))
-    const normalizedAgentId = sanitizeId(agentId.value, 'main-agent')
+    const normalizedAgentId = sanitizeId(agentId.value, 'plan-execute-agent')
     const session = ensureSession(normalizedSessionId, task)
     sessionId.value = normalizedSessionId
     agentId.value = normalizedAgentId
+    session.executingAgentId = ''
     addMessage(session, 'user', task)
     // 本轮运行的操作分组从用户消息之后开始，避免与历史轮次合并
     session.runBoundary = session.messages.length
     session.runError = ''
     session.runTask = task
-    session.runUsageBase = null
+    session.runUsage = null
     session.phase = '正在启动任务'
     session.state = {
       status: 'RUNNING',
@@ -946,12 +1008,6 @@ export function useAgentConsole(ownerId = '') {
     persist()
 
     try {
-      try {
-        const usage = await getUsage(normalizedSessionId)
-        session.runUsageBase = Number(usage?.totalTokens || 0)
-      } catch {
-        session.runUsageBase = null
-      }
       const attributes = {
         source: 'agentos-console',
         approvalMode: approvalMode.value
@@ -960,6 +1016,11 @@ export function useAgentConsole(ownerId = '') {
       if (workspaceContext?.name) {
         attributes.workspaceName = workspaceContext.name
         attributes.workspaceContextFiles = workspaceContext.files?.length || 0
+        if (workspaceContext.workspaceId) {
+          attributes.workspaceId = workspaceContext.workspaceId
+          attributes.workspaceSessionId = normalizedSessionId
+          attributes.workspaceRuntime = workspaceContext.workspaceRuntime
+        }
       }
       const run = await createAgentRun({
         agentId: normalizedAgentId,
@@ -970,7 +1031,7 @@ export function useAgentConsole(ownerId = '') {
       connection.value = 'online'
       session.activeRunId = run.runId
       session.submitting = false
-      session.lastSequence = 0
+      session.lastSeq = Number(run.lastSeq || 0)
       applyRunSnapshot(session, run)
       await monitorRun(session)
     } catch (error) {
@@ -988,11 +1049,9 @@ export function useAgentConsole(ownerId = '') {
         retryPrompt: task,
         copyContent: message
       })
-      const target = session.messages[session.messages.length - 1]
-      void refreshRunUsage(session, target.id, session.runUsageBase)
       session.runBoundary = 0
       session.runTask = ''
-      session.runUsageBase = null
+      session.runUsage = null
     } finally {
       session.submitting = false
       if (!session.activeRunId) stopPipeline(session)
@@ -1001,7 +1060,7 @@ export function useAgentConsole(ownerId = '') {
   }
 
   async function resolveApproval(messageId, approved) {
-    if (busy.value || !currentSession.value) return
+    if (!currentSession.value || currentSession.value.submitting) return
     const session = currentSession.value
     const message = session.messages.find(item => item.id === messageId)
     if (!message || message.role !== 'approval' || message.resolved) return
@@ -1013,35 +1072,18 @@ export function useAgentConsole(ownerId = '') {
       connection.value = 'online'
       message.resolved = true
       message.approved = approved
-      session.activeRunId = ''
-      session.state = response.state
-      if (response.state.status === 'COMPLETED') {
-        addMessage(session, 'assistant', response.state.output || '任务已完成。')
-      } else if (response.state.status === 'WAITING') {
-        setPendingApproval(session, response)
-      } else if (!approved && response.state.error === 'human approval rejected') {
-        addMessage(session, 'event', '操作已拒绝，任务已停止。')
-      } else {
-        addMessage(session, 'error', response.state.error || 'Agent 未能完成任务。')
-      }
-      if (response.state.status !== 'WAITING') {
-        const result = markRunResult(
-          session,
-          response.state.status,
-          Number(session.runBoundary || 0),
-          session.runTask || '',
-          response.invocationId || '')
-        void refreshRunUsage(session, result?.id, session.runUsageBase)
-        session.runBoundary = 0
-        session.runTask = ''
-        session.runUsageBase = null
-      }
+      session.activeRunId = response.runId
+      session.phase = approved ? '已批准，正在恢复任务' : '正在处理拒绝操作'
+      applyRunSnapshot(session, response)
+      session.submitting = false
+      persist()
+      await monitorRun(session)
     } catch (error) {
       connection.value = error instanceof TypeError ? 'offline' : 'online'
       addMessage(session, 'error', error.message || '处理审批操作失败')
     } finally {
       session.submitting = false
-      stopPipeline(session)
+      if (!session.activeRunId) stopPipeline(session)
       persist()
     }
   }
@@ -1054,7 +1096,7 @@ export function useAgentConsole(ownerId = '') {
       const result = await cancelAgentRun(runId)
       connection.value = 'online'
       addTerminalMessage(session, `${runId}:cancel-requested`, 'event', '已请求停止当前任务。')
-      if (TERMINAL_STATUSES.has(result.run?.state?.status)) {
+      if (TERMINAL_STATUSES.has(result.run?.status)) {
         finalizeRun(session, result.run)
       } else {
         applyRunSnapshot(session, result.run)
@@ -1124,6 +1166,8 @@ export function useAgentConsole(ownerId = '') {
     streamAbortController.abort()
     pipelineTimers.forEach(timer => window.clearTimeout(timer))
     pipelineTimers.clear()
+    pendingMessageDeltas.forEach(pending => window.clearTimeout(pending.timer))
+    pendingMessageDeltas.clear()
     sessions.value = []
     currentSessionId.value = ''
     sessionId.value = ''
@@ -1136,6 +1180,7 @@ export function useAgentConsole(ownerId = '') {
     currentSessionId,
     currentSessionDraft,
     agentId,
+    executingAgentId,
     sessionId,
     prompt,
     models,

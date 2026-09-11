@@ -12,7 +12,7 @@ class AgentInvocationApprovalTest {
     @Test
     void consumesMatchingApprovalExactlyOnce() {
         AgentInvocation invocation = new AgentInvocation(
-                "invocation-1", "session-1", "main-agent", "", Instant.now());
+                "invocation-1", "session-1", "plan-execute-agent", "", Instant.now());
         invocation.waitFor(action("approval-1", "file_write", Map.of("path", "report.docx")));
         invocation.resolve(PendingActionResolution.approved("approval-1"));
 
@@ -27,7 +27,7 @@ class AgentInvocationApprovalTest {
     @Test
     void doesNotConsumeMismatchedOrRejectedResolution() {
         AgentInvocation invocation = new AgentInvocation(
-                "invocation-1", "session-1", "main-agent", "", Instant.now());
+                "invocation-1", "session-1", "plan-execute-agent", "", Instant.now());
         invocation.waitFor(action("approval-1", "file_write", Map.of("path", "report.docx")));
         invocation.resolve(PendingActionResolution.approved("approval-2"));
 
@@ -42,7 +42,7 @@ class AgentInvocationApprovalTest {
     @Test
     void doesNotApproveChangedToolArguments() {
         AgentInvocation invocation = new AgentInvocation(
-                "invocation-1", "session-1", "main-agent", "", Instant.now());
+                "invocation-1", "session-1", "plan-execute-agent", "", Instant.now());
         invocation.waitFor(action(
                 "approval-1", "file_write", Map.of("path", "report.docx", "mode", "CREATE_NEW")));
         invocation.resolve(PendingActionResolution.approved("approval-1"));

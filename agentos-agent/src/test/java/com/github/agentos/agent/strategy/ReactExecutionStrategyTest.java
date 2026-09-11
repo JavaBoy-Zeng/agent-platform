@@ -67,7 +67,7 @@ class ReactExecutionStrategyTest {
                 new DefaultAgentFinalizer(), new AgentExecutionLimits(0, 4, 4, 2));
 
         AgentState result = strategy.run(
-                AgentRequest.of("session-1", "weather"), InvocationContext.of("main-agent"),
+                AgentRequest.of("session-1", "weather"), InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration());
 
         assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
@@ -94,7 +94,7 @@ class ReactExecutionStrategyTest {
                 new DefaultAgentFinalizer(), new AgentExecutionLimits(0, 4, 4, 1));
 
         AgentState result = strategy.run(
-                AgentRequest.of("session-1", "weather"), InvocationContext.of("main-agent"),
+                AgentRequest.of("session-1", "weather"), InvocationContext.of("plan-execute-agent"),
                 AgentState.ready().startNextIteration());
 
         assertThat(result.status()).isEqualTo(AgentState.Status.FAILED);

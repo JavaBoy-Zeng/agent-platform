@@ -106,7 +106,7 @@ class EvaluationControllerTest {
     private static AgentEvent event(
             String invocationId, AgentEventType type, String message, Map<String, Object> data) {
         return new DefaultAgentEvent(
-                "event-" + Math.random(), "session-1", invocationId, "main-agent",
+                "event-" + Math.random(), "session-1", invocationId, "plan-execute-agent",
                 Instant.now(), type, message, data);
     }
 }

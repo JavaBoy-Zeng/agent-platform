@@ -21,6 +21,8 @@ import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolRegistry;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,6 +35,22 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ReactAgentTest {
+
+    @Test
+    void serializesMultilineAndNestedToolArgumentsAsValidJson() throws Exception {
+        String json = ReactAgent.argumentsJson(new ToolCall("search-agent", Map.of(
+                "objective", "第一行\n第二行\t含制表符",
+                "include_paths", List.of("/docs/**", "/help/**"),
+                "options", Map.of("limit", 2))));
+
+        JsonNode arguments = new ObjectMapper().readTree(json);
+
+        assertThat(arguments.path("objective").stringValue())
+                .isEqualTo("第一行\n第二行\t含制表符");
+        assertThat(arguments.path("include_paths").path(1).stringValue())
+                .isEqualTo("/help/**");
+        assertThat(arguments.path("options").path("limit").asInt()).isEqualTo(2);
+    }
 
     @Test
     void resumesFromApprovalCheckpointAndPreservesAccumulatedContext() {
@@ -252,8 +270,9 @@ class ReactAgentTest {
                         new ToolCall("echo", Map.of()), "call-" + round, null),
                 deltas -> { });
         List<AgentRunEvent> events = new ArrayList<>();
+        AtomicInteger executions = new AtomicInteger();
 
-        AgentState result = reactAgent(chatClient, tool("echo", call -> ToolResult.success("ok")),
+        AgentState result = reactAgent(chatClient, tool("echo", call -> { executions.incrementAndGet(); return ToolResult.success("ok"); }),
                 new AgentExecutionLimits(3, 30, 30, 1))
                 .run(AgentRequest.of("session-1", "预算耗尽场景"),
                         InvocationContext.of(ReactAgent.ID),
@@ -262,6 +281,7 @@ class ReactAgentTest {
 
         assertThat(result.status()).isEqualTo(AgentState.Status.FAILED);
         assertThat(result.error()).contains("maxModelCalls");
+        assertThat(executions).hasValue(0);
     }
 
     @Test
@@ -295,6 +315,10 @@ class ReactAgentTest {
         assertThat(seenRequests.getFirst().tools().getFirst().name()).isEqualTo("echo");
         assertThat(seenRequests.getFirst().tools().getFirst().parametersSchema())
                 .containsEntry("type", "object");
+        assertThat(seenRequests.getFirst().systemInstruction())
+                .contains("任务需要工具时直接发起原生工具调用")
+                .contains("不得在回答正文中询问用户“是否允许”“是否批准”")
+                .contains("系统会自动挂起并展示正式审批操作");
         // 仅最终回答轮转发正文增量。
         List<AgentRunEvent> outputDeltas = events.stream()
                 .filter(event -> event.type() == AgentRunEvent.Type.OUTPUT_DELTA)
@@ -303,6 +327,42 @@ class ReactAgentTest {
                 .containsExactly("这是", "流式最终回答");
         assertThat(outputDeltas).extracting(event -> event.data().get("source"))
                 .containsOnly("model-sse");
+    }
+
+    @Test
+    void oversizedSeedKeepsLatestObservationAndConverges() {
+        // 回归（线上死循环）：前端注入 workspace 上下文后目标消息可达数十 KB，
+        // 本身超过压缩预算。旧实现每轮 compact 都把唯一的 tool call pair 丢掉，
+        // 模型每轮只看到目标消息 → 失忆 → 重复调用同一工具直到预算耗尽。
+        // 这里按真实模型行为脚本化：看不到 TOOL 观察就调用工具，看到观察就收敛。
+        AtomicInteger toolExecutions = new AtomicInteger();
+        ChatClient chatClient = nativeToolCallClient((request, round) -> {
+            boolean hasObservation = request.messages().stream()
+                    .anyMatch(message -> message.role() == LlmMessage.Role.TOOL);
+            if (!hasObservation) {
+                return ChatClient.ToolCallResponse.call(
+                        new ToolCall("echo", Map.of("text", "运行测试")),
+                        "call-" + round, null);
+            }
+            return ChatClient.ToolCallResponse.answer("已看到测试结果，这是最终回答", null);
+        }, deltas -> { });
+        // 超过 reactAgent 辅助方法中 ConversationCompactor 的 1_000 字符预算。
+        String oversizedObjective = "排查测试失败原因。工作区上下文：\n" + "x".repeat(2_000);
+
+        AgentState result = reactAgent(chatClient, tool("echo", call -> {
+                    toolExecutions.incrementAndGet();
+                    return ToolResult.success("BUILD FAILURE: 期望失败");
+                }),
+                AgentExecutionLimits.defaults())
+                .run(AgentRequest.of("session-oversized", oversizedObjective),
+                        InvocationContext.of(ReactAgent.ID),
+                        AgentState.ready().startNextIteration(),
+                        events -> { });
+
+        assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
+        assertThat(result.output()).isEqualTo("已看到测试结果，这是最终回答");
+        // 工具只执行一次：第二轮模型看到了观察并收敛，而不是失忆重复调用。
+        assertThat(toolExecutions).hasValue(1);
     }
 
     /**

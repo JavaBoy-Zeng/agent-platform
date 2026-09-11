@@ -25,6 +25,11 @@ public final class SessionAuthorization {
         return sessions.findByUser(sessionId, userId).orElseThrow(SessionAuthorization::notFound);
     }
 
+    /** 当前请求是否持有指定活跃会话；软删除会话返回 false。 */
+    public boolean owns(String sessionId, HttpServletRequest request) {
+        return sessions.findByUser(sessionId, RequestIdentity.from(request).userId()).isPresent();
+    }
+
     /** 为当前请求创建新会话，或确认已有会话归属。 */
     public Session claim(String sessionId, HttpServletRequest request) {
         String userId = RequestIdentity.from(request).userId();

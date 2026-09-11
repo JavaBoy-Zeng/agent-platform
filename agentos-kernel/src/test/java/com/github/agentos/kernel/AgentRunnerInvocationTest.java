@@ -19,9 +19,9 @@ class AgentRunnerInvocationTest {
         });
         AgentRequest request = AgentRequest.of("same-session", "test");
 
-        runner.run(request, InvocationContext.of("main-agent"));
+        runner.run(request, InvocationContext.of("plan-execute-agent"));
         String firstId = runner.latestInvocation("same-session").orElseThrow().invocationId();
-        runner.run(request, InvocationContext.of("main-agent"));
+        runner.run(request, InvocationContext.of("plan-execute-agent"));
         AgentInvocation second = runner.latestInvocation("same-session").orElseThrow();
 
         assertThat(contexts).extracting(InvocationContext::invocationId)
@@ -48,7 +48,7 @@ class AgentRunnerInvocationTest {
                 new InMemoryCheckpointStore(), sessions, limits);
 
         runner.run(AgentRequest.of("session-1", "test"),
-                InvocationContext.scoped("default-team", "unknown-user", "main-agent", ""));
+                InvocationContext.scoped("default-team", "unknown-user", "plan-execute-agent", ""));
 
         InvocationContext bound = contexts.getFirst();
         assertThat(bound.session()).isNotNull();
@@ -59,7 +59,7 @@ class AgentRunnerInvocationTest {
 
     @Test
     void contextWithoutSessionExposesEmptyState() {
-        InvocationContext context = InvocationContext.of("main-agent");
+        InvocationContext context = InvocationContext.of("plan-execute-agent");
 
         assertThat(context.session()).isNull();
         assertThat(context.sessionState().asMap()).isEmpty();

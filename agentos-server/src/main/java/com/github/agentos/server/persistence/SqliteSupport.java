@@ -54,6 +54,63 @@ final class SqliteSupport {
                 "CREATE INDEX IF NOT EXISTS idx_agent_events_invocation "
                         + "ON agent_events(invocation_id, timestamp_ms)",
                 """
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    -- 一次完整 Agent 执行的唯一标识；SQLite 无法持久化字段注释。
+                    run_id TEXT PRIMARY KEY,
+                    -- Run 所属持续对话会话标识；SQLite 无法持久化字段注释。
+                    session_id TEXT NOT NULL,
+                    -- 创建 Run 的账户标识，用于数据隔离；SQLite 无法持久化字段注释。
+                    user_id TEXT NOT NULL,
+                    -- Run 状态机枚举值；SQLite 无法持久化字段注释。
+                    status TEXT NOT NULL,
+                    -- Run 创建时间（Unix 毫秒）；SQLite 无法持久化字段注释。
+                    created_at_ms INTEGER NOT NULL,
+                    -- Run 最近更新时间（Unix 毫秒）；SQLite 无法持久化字段注释。
+                    updated_at_ms INTEGER NOT NULL,
+                    -- Run 最终事实快照 JSON；SQLite 无法持久化字段注释。
+                    snapshot_payload TEXT NOT NULL
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_agent_runs_owner_created "
+                        + "ON agent_runs(user_id, created_at_ms DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_agent_runs_session_created "
+                        + "ON agent_runs(session_id, created_at_ms)",
+                """
+                CREATE TABLE IF NOT EXISTS agent_stream_events (
+                    -- 全局唯一事件标识；SQLite 无法持久化字段注释。
+                    event_id TEXT PRIMARY KEY,
+                    -- Agent 流协议版本号；SQLite 无法持久化字段注释。
+                    schema_version TEXT NOT NULL,
+                    -- 稳定的点分事件名；SQLite 无法持久化字段注释。
+                    event_name TEXT NOT NULL,
+                    -- 事件所属 Run 标识；SQLite 无法持久化字段注释。
+                    run_id TEXT NOT NULL,
+                    -- 事件所属对话轮次标识；SQLite 无法持久化字段注释。
+                    turn_id TEXT NOT NULL,
+                    -- 事件所属会话标识；SQLite 无法持久化字段注释。
+                    session_id TEXT NOT NULL,
+                    -- 消息、工具或产物对象标识；SQLite 无法持久化字段注释。
+                    item_id TEXT NOT NULL,
+                    -- 产生事件的 Agent 标识；SQLite 无法持久化字段注释。
+                    agent_id TEXT NOT NULL,
+                    -- 父 Run 标识，根 Run 为空；SQLite 无法持久化字段注释。
+                    parent_run_id TEXT NOT NULL DEFAULT '',
+                    -- 单个 Run 内严格递增序号；SQLite 无法持久化字段注释。
+                    event_seq INTEGER NOT NULL,
+                    -- 事件发生时间（Unix 毫秒）；SQLite 无法持久化字段注释。
+                    occurred_at_ms INTEGER NOT NULL,
+                    -- USER 或 INTERNAL 可见性；SQLite 无法持久化字段注释。
+                    visibility TEXT NOT NULL,
+                    -- 有界结构化事件数据 JSON；SQLite 无法持久化字段注释。
+                    event_data TEXT NOT NULL,
+                    UNIQUE(run_id, event_seq)
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_agent_stream_events_run_seq "
+                        + "ON agent_stream_events(run_id, event_seq)",
+                "CREATE INDEX IF NOT EXISTS idx_agent_stream_events_session_time "
+                        + "ON agent_stream_events(session_id, occurred_at_ms, event_seq)",
+                """
                 CREATE TABLE IF NOT EXISTS agent_checkpoints (
                     invocation_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL,
@@ -122,8 +179,10 @@ final class SqliteSupport {
     /** 为旧库的 agent_sessions 补充软删除时间列。 */
     private static void upgradeLegacySessionTable(Statement statement) {
         try {
-            // SQLite 无法持久化字段注释；该列保存软删除时间（Unix 毫秒）。
-            statement.execute("ALTER TABLE agent_sessions ADD COLUMN deleted_at_ms INTEGER");
+            statement.execute("""
+                    -- 会话软删除时间（Unix 毫秒）；SQLite 无法持久化字段注释。
+                    ALTER TABLE agent_sessions ADD COLUMN deleted_at_ms INTEGER
+                    """);
         } catch (SQLException ignored) {
             // 列已存在或表为新建结构，无需升级。
         }

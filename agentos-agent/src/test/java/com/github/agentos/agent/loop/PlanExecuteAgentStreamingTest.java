@@ -29,7 +29,7 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class MainAgentStreamingTest {
+class PlanExecuteAgentStreamingTest {
 
     @Test
     void forwardsProviderDeltasWithoutRechunkingAfterTheFullAnswer() {
@@ -70,7 +70,7 @@ class MainAgentStreamingTest {
         List<AgentRunEvent> events = new ArrayList<>();
 
         try (MemoryService memory = MemoryService.inMemory()) {
-            MainAgent agent = new MainAgent(
+            PlanExecuteAgent agent = new PlanExecuteAgent(
                     planner,
                     new PlanExecutor(
                             new ToolDispatcher(new ToolRegistry(List.of()), List.of()),
@@ -82,7 +82,7 @@ class MainAgentStreamingTest {
 
             AgentRunner.AgentRunResult result = runner.runDetailed(
                     AgentRequest.of("stream-main", "完成复杂任务"),
-                    InvocationContext.of("main-agent"),
+                    InvocationContext.of("plan-execute-agent"),
                     event -> {
                         if (event.type() == AgentRunEvent.Type.OUTPUT_DELTA) {
                             assertThat(streamReturned).isFalse();

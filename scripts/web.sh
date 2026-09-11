@@ -178,11 +178,24 @@ assert_safe_catalog() {
         fi
     done
 
-    for forbidden_tool in run_command git_commit execute_code; do
-        if grep -q "\"$forbidden_tool\"" <<< "$catalog"; then
-            fail "严格模式下仍注册了危险工具 $forbidden_tool"
-        fi
-    done
+    # Desktop manifests must never be mistaken for enabled server process tools.
+    if ! printf '%s' "$catalog" | node -e '
+        let text = "";
+        process.stdin.on("data", chunk => text += chunk);
+        process.stdin.on("end", () => {
+            const tools = JSON.parse(text).tools;
+            if (!Array.isArray(tools)) process.exit(1);
+            for (const name of ["run_command", "git_commit", "execute_code"]) {
+                const tool = tools.find(item => item.name === name);
+                if (tool && (name === "execute_code" || tool.desktopOnly !== true)) {
+                    console.error("严格模式下仍启用了服务端进程工具：" + name);
+                    process.exit(1);
+                }
+            }
+        });
+    '; then
+        fail "服务端工具执行边界检查失败"
+    fi
 }
 
 validate_frontend_dist() {

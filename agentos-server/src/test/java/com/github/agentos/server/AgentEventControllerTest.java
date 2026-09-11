@@ -77,7 +77,7 @@ class AgentEventControllerTest {
     void queryByInvocationId_returnsTraceWithActions() throws Exception {
         AgentEventStore store = new InMemoryAgentEventStore();
         store.append(new DefaultAgentEvent(
-                "e1", "sess-1", "inv-1", "main-agent", BASE,
+                "e1", "sess-1", "inv-1", "plan-execute-agent", BASE,
                 AgentEventType.HUMAN_ACTION_REQUIRED, "需要审批",
                 Map.of("pendingActionId", "pa-1"), EventActions.approval()));
 
@@ -86,7 +86,7 @@ class AgentEventControllerTest {
         mvc.perform(get("/api/events/{invocationId}", "inv-1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.sessionId").value("sess-1"))
-                .andExpect(jsonPath("$.agentId").value("main-agent"))
+                .andExpect(jsonPath("$.agentId").value("plan-execute-agent"))
                 .andExpect(jsonPath("$.eventCount").value(1))
                 .andExpect(jsonPath("$.terminalType").value(""))
                 .andExpect(jsonPath("$.events[0].data.pendingActionId").value("pa-1"))
@@ -105,7 +105,7 @@ class AgentEventControllerTest {
             String eventId, String sessionId, String invocationId,
             AgentEventType type, long offsetMillis) {
         return new DefaultAgentEvent(
-                eventId, sessionId, invocationId, "main-agent",
+                eventId, sessionId, invocationId, "plan-execute-agent",
                 BASE.plusMillis(offsetMillis), type, "message", Map.of());
     }
 

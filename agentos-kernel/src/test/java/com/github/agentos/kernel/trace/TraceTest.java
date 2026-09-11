@@ -16,7 +16,7 @@ class TraceTest {
         Instant end = start.plusMillis(200);
         Span root = new Span("trace-1", "span-root", "", "agent-run",
                 Span.Kind.ROOT, start, end, Span.Status.OK,
-                Map.of("sessionId", "sess-1", "agentId", "main-agent"), Map.of());
+                Map.of("sessionId", "sess-1", "agentId", "plan-execute-agent"), Map.of());
         Span child = new Span("trace-1", "span-child", "span-root", "model-call",
                 Span.Kind.MODEL, start.plusMillis(50), start.plusMillis(100),
                 Span.Status.OK, Map.of(), Map.of());
@@ -25,7 +25,7 @@ class TraceTest {
 
         assertThat(trace.traceId()).isEqualTo("trace-1");
         assertThat(trace.sessionId()).isEqualTo("sess-1");
-        assertThat(trace.agentId()).isEqualTo("main-agent");
+        assertThat(trace.agentId()).isEqualTo("plan-execute-agent");
         assertThat(trace.spans()).hasSize(2);
         assertThat(trace.startTime()).isEqualTo(start);
         assertThat(trace.endTime()).isEqualTo(end);

@@ -32,7 +32,7 @@ class AgentEventPublisherTest {
         };
         AgentRunner runner = new AgentRunner(loop, publisher);
 
-        runner.run(AgentRequest.of("session-1", "test"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "test"), InvocationContext.of("plan-execute-agent"));
 
         assertThat(events).extracting(AgentEvent::type).containsExactly(
                 AgentEventType.AGENT_STARTED,
@@ -41,6 +41,6 @@ class AgentEventPublisherTest {
         assertThat(events).extracting(AgentEvent::invocationId).doesNotContain("");
         assertThat(events.stream().map(AgentEvent::invocationId).distinct()).hasSize(1);
         assertThat(events).extracting(AgentEvent::sessionId).containsOnly("session-1");
-        assertThat(events).extracting(AgentEvent::agentId).containsOnly("main-agent");
+        assertThat(events).extracting(AgentEvent::agentId).containsOnly("plan-execute-agent");
     }
 }

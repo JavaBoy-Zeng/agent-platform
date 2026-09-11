@@ -17,7 +17,7 @@ public interface AgentFinalizer {
      * 是否需要为最终回答额外消费一次模型调用预算。
      *
      * <p>纯校验型终结器返回 {@code false}；真正调用模型生成最终文本的流式终结器
-     * 必须返回 {@code true}，让 MainAgent 在调用前执行预算检查和记账。</p>
+     * 必须返回 {@code true}，让 PlanExecuteAgent 在调用前执行预算检查和记账。</p>
      */
     default boolean requiresModelCall() {
         return false;

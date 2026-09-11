@@ -23,6 +23,57 @@ COMMENT ON COLUMN agent_events.event_actions IS '事件状态变更指令的 JSO
 CREATE INDEX IF NOT EXISTS idx_agent_events_invocation ON agent_events(invocation_id, occurred_at, event_sequence);
 CREATE INDEX IF NOT EXISTS idx_agent_events_session ON agent_events(session_id, occurred_at, event_sequence);
 
+CREATE TABLE IF NOT EXISTS agent_runs (
+    run_id VARCHAR(128) PRIMARY KEY,
+    session_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    snapshot_payload TEXT NOT NULL
+);
+COMMENT ON COLUMN agent_runs.run_id IS '一次完整 Agent 执行的唯一标识';
+COMMENT ON COLUMN agent_runs.session_id IS 'Run 所属持续对话会话标识';
+COMMENT ON COLUMN agent_runs.user_id IS '创建 Run 的账户标识，用于数据隔离与授权';
+COMMENT ON COLUMN agent_runs.status IS 'Run 状态机枚举：CREATED、RUNNING、WAITING、COMPLETED、FAILED 或 CANCELLED';
+COMMENT ON COLUMN agent_runs.created_at IS 'Run 创建时间，使用带时区时间戳';
+COMMENT ON COLUMN agent_runs.updated_at IS 'Run 快照最近更新时间，使用带时区时间戳';
+COMMENT ON COLUMN agent_runs.snapshot_payload IS 'Run 最终事实快照的 JSON 文本，包含游标、输出、错误、审批和用量';
+CREATE INDEX IF NOT EXISTS idx_agent_runs_owner_created ON agent_runs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session_created ON agent_runs(session_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS agent_stream_events (
+    event_id VARCHAR(128) PRIMARY KEY,
+    schema_version VARCHAR(16) NOT NULL,
+    event_name VARCHAR(64) NOT NULL,
+    run_id VARCHAR(128) NOT NULL,
+    turn_id VARCHAR(128) NOT NULL,
+    session_id VARCHAR(128) NOT NULL,
+    item_id VARCHAR(128) NOT NULL,
+    agent_id VARCHAR(128) NOT NULL,
+    parent_run_id VARCHAR(128) NOT NULL DEFAULT '',
+    event_seq BIGINT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    visibility VARCHAR(16) NOT NULL,
+    event_data TEXT NOT NULL,
+    CONSTRAINT uk_agent_stream_events_run_seq UNIQUE (run_id, event_seq)
+);
+COMMENT ON COLUMN agent_stream_events.event_id IS '全局唯一事件标识，用于跨连接幂等去重';
+COMMENT ON COLUMN agent_stream_events.schema_version IS 'Agent 流协议版本号';
+COMMENT ON COLUMN agent_stream_events.event_name IS '稳定的点分事件名，例如 message.completed 或 tool.failed';
+COMMENT ON COLUMN agent_stream_events.run_id IS '事件所属 Agent Run 标识';
+COMMENT ON COLUMN agent_stream_events.turn_id IS '事件所属 user 到 assistant 对话轮次标识';
+COMMENT ON COLUMN agent_stream_events.session_id IS '事件所属持续对话会话标识';
+COMMENT ON COLUMN agent_stream_events.item_id IS '消息、工具调用、产物或 Run 生命周期对象标识';
+COMMENT ON COLUMN agent_stream_events.agent_id IS '产生事件的 Agent 标识';
+COMMENT ON COLUMN agent_stream_events.parent_run_id IS '父 Agent Run 标识，根 Run 使用空字符串';
+COMMENT ON COLUMN agent_stream_events.event_seq IS '事件在单个 Run 内严格递增的排序序号';
+COMMENT ON COLUMN agent_stream_events.occurred_at IS '事件发生时间，使用带时区时间戳';
+COMMENT ON COLUMN agent_stream_events.visibility IS '事件可见性：USER 可发送给客户端，INTERNAL 仅服务端诊断';
+COMMENT ON COLUMN agent_stream_events.event_data IS '事件类型对应的结构化业务数据 JSON 文本，不保存无限长度原始输出';
+CREATE INDEX IF NOT EXISTS idx_agent_stream_events_run_seq ON agent_stream_events(run_id, event_seq);
+CREATE INDEX IF NOT EXISTS idx_agent_stream_events_session_time ON agent_stream_events(session_id, occurred_at, event_seq);
+
 CREATE TABLE IF NOT EXISTS agent_checkpoints (
     invocation_id VARCHAR(128) PRIMARY KEY,
     payload TEXT NOT NULL,
@@ -38,7 +89,7 @@ CREATE TABLE IF NOT EXISTS agent_continuations (
     saved_at TIMESTAMPTZ NOT NULL
 );
 COMMENT ON COLUMN agent_continuations.invocation_id IS '等待续跑的 Agent 调用唯一标识';
-COMMENT ON COLUMN agent_continuations.payload IS 'MainAgent 或 ReactAgent 续跑状态的 JSON 快照';
+COMMENT ON COLUMN agent_continuations.payload IS 'PlanExecuteAgent 或 ReactAgent 续跑状态的 JSON 快照';
 COMMENT ON COLUMN agent_continuations.saved_at IS '续跑状态最近保存时间';
 
 CREATE TABLE IF NOT EXISTS session_usage (
@@ -174,7 +225,7 @@ CREATE TABLE IF NOT EXISTS automation_tasks (
     user_id VARCHAR(128) NOT NULL,
     name VARCHAR(80) NOT NULL,
     prompt TEXT NOT NULL,
-    agent_id VARCHAR(128) NOT NULL DEFAULT 'main-agent',
+    agent_id VARCHAR(128) NOT NULL DEFAULT 'plan-execute-agent',
     model_id VARCHAR(256) NOT NULL,
     approval_mode VARCHAR(32) NOT NULL,
     desktop_client_id VARCHAR(128) NOT NULL,
@@ -194,7 +245,7 @@ COMMENT ON COLUMN automation_tasks.team_id IS '任务所属团队标识，用于
 COMMENT ON COLUMN automation_tasks.user_id IS '任务创建和管理用户标识';
 COMMENT ON COLUMN automation_tasks.name IS '用户可见的自动化任务名称，长度不超过 80 字符';
 COMMENT ON COLUMN automation_tasks.prompt IS '每次触发时交给 Agent 的任务指令，长度不超过 2000 字符';
-COMMENT ON COLUMN automation_tasks.agent_id IS '执行任务使用的 Agent 标识，首版固定为 main-agent';
+COMMENT ON COLUMN automation_tasks.agent_id IS '执行任务使用的 Agent 标识，首版固定为 plan-execute-agent';
 COMMENT ON COLUMN automation_tasks.model_id IS '执行任务使用的已配置平台模型标识';
 COMMENT ON COLUMN automation_tasks.approval_mode IS '工具权限模式：REQUEST_APPROVAL、RISK_BASED 或 FULL_ACCESS';
 COMMENT ON COLUMN automation_tasks.desktop_client_id IS '负责读取本地工作区并派发执行的桌面客户端稳定标识';

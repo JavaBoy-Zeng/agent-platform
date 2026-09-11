@@ -36,7 +36,7 @@
 ## 迭代流程
 
 ```text
-User → MainAgent → Planner → Tool → Observation → Decision
+User → PlanExecuteAgent → Planner → Tool → Observation → Decision
                                                   ├── 信息充分 → COMPLETE → Finalizer
                                                   └── 信息不足 → REPLAN → 下一份计划
 ```

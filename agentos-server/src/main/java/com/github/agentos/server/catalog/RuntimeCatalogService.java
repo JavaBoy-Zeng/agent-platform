@@ -47,7 +47,8 @@ public final class RuntimeCatalogService {
     }
 
     public CatalogSnapshot snapshot() {
-        List<ToolView> tools = toolRegistry.definitions().stream().map(ToolView::from).toList();
+        List<ToolView> tools = toolRegistry.definitions().stream().map(definition -> ToolView.from(definition,
+                toolRegistry.require(definition.name()) instanceof com.github.agentos.server.workspace.DesktopOnlyTool)).toList();
         SkillRegistry skills = skillRegistry.getIfAvailable();
         List<SkillView> skillViews = skills == null ? List.of()
                 : skills.all().stream().map(SkillView::from).toList();
@@ -86,7 +87,7 @@ public final class RuntimeCatalogService {
     private List<AgentView> agents() {
         AgentRegistry registry = agentRegistry.getIfAvailable();
         if (registry == null || registry.all().isEmpty()) {
-            return List.of(new AgentView("main-agent", "Main Agent", "READY",
+            return List.of(new AgentView("plan-execute-agent", "Plan Execute Agent", "READY",
                     "规划、工具调用、记忆与审批编排入口", "planner", false, 0));
         }
         Set<String> exposed = exposedToolNames();
@@ -129,11 +130,14 @@ public final class RuntimeCatalogService {
 
     public record ToolView(
             String name, String description, String riskLevel, int parameterCount,
-            List<String> parameters) {
-        static ToolView from(ToolDefinition definition) {
+            List<String> parameters, boolean desktopOnly) {
+        public ToolView(String name, String description, String riskLevel, int parameterCount, List<String> parameters) {
+            this(name, description, riskLevel, parameterCount, parameters, false);
+        }
+        static ToolView from(ToolDefinition definition, boolean desktopOnly) {
             return new ToolView(definition.name(), definition.description(),
                     definition.riskLevel().name(), definition.parameters().size(),
-                    definition.parameters().stream().map(parameter -> parameter.name()).toList());
+                    definition.parameters().stream().map(parameter -> parameter.name()).toList(), desktopOnly);
         }
     }
 
@@ -164,7 +168,7 @@ public final class RuntimeCatalogService {
         if (agent instanceof ConfigDrivenAgent driven) return driven.definition().kind();
         if (agent instanceof BaseAgent base && !base.subAgents().isEmpty()) return "workflow";
         return switch (agent.id()) {
-            case "main-agent" -> "planner";
+            case "plan-execute-agent" -> "planner";
             case "supervisor-agent" -> "supervisor";
             case "simple-qa-agent" -> "direct";
             default -> "specialist";

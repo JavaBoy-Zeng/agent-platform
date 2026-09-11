@@ -1,23 +1,31 @@
 package com.github.agentos.server.run;
 
-import com.github.agentos.kernel.InvocationContext;
-import com.github.agentos.kernel.AgentInvocation;
+import com.github.agentos.kernel.AgentCheckpoint;
 import com.github.agentos.kernel.AgentEventPublisher;
+import com.github.agentos.kernel.AgentInvocation;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunEvent;
 import com.github.agentos.kernel.AgentRunner;
+import com.github.agentos.kernel.AgentRunStatus;
 import com.github.agentos.kernel.AgentState;
-import com.github.agentos.kernel.ChatStreamEvent;
+import com.github.agentos.kernel.AgentStreamEvent;
+import com.github.agentos.kernel.InvocationContext;
 import com.github.agentos.kernel.PendingAction;
+import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.server.registry.AgentRunTaskRegistry;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -25,87 +33,82 @@ import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 
 /**
- * 管理与浏览器连接解耦的后台 Agent 运行，并保存可按序号补播的运行事件。
- *
- * <p>当前实现使用进程内存保存运行和事件。客户端断开只移除订阅者，不会取消任务；
- * 任务只能通过显式取消接口中断。</p>
+ * 管理与连接解耦的 Agent Run，并以 {@link AgentStreamEvent} 作为唯一客户端协议。
+ * 关键生命周期和快照写入 Run Store，高频 status/delta 仅保留在有界内存窗口。
  */
 public final class AgentRunCoordinator {
-
     private static final int DEFAULT_MAX_RETAINED_RUNS = 1_000;
     private static final int DEFAULT_MAX_EVENTS_PER_RUN = 2_000;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.github.agentos.server.workspace.DesktopWorkspaceBridge workspaceBridge;
 
     private final AgentRunner runner;
     private final ExecutorService executor;
     private final AgentRunTaskRegistry taskRegistry;
+    private final AgentRunStore store;
     private final ConcurrentMap<String, ManagedRun> runs = new ConcurrentHashMap<>();
     private final int maxRetainedRuns;
     private final int maxEventsPerRun;
 
-    /**
-     * 创建后台运行协调器。
-     */
     public AgentRunCoordinator(
-            AgentRunner runner,
-            ExecutorService executor,
-            AgentRunTaskRegistry taskRegistry) {
-        this(runner, executor, taskRegistry,
+            AgentRunner runner, ExecutorService executor, AgentRunTaskRegistry taskRegistry) {
+        this(runner, executor, taskRegistry, new InMemoryAgentRunStore(),
                 DEFAULT_MAX_RETAINED_RUNS, DEFAULT_MAX_EVENTS_PER_RUN);
     }
 
-    /**
-     * 创建带运行记录和单次事件保留上限的后台运行协调器。
-     */
     public AgentRunCoordinator(
-            AgentRunner runner,
-            ExecutorService executor,
-            AgentRunTaskRegistry taskRegistry,
-            int maxRetainedRuns,
-            int maxEventsPerRun) {
+            AgentRunner runner, ExecutorService executor, AgentRunTaskRegistry taskRegistry,
+            int maxRetainedRuns, int maxEventsPerRun) {
+        this(runner, executor, taskRegistry, new InMemoryAgentRunStore(),
+                maxRetainedRuns, maxEventsPerRun);
+    }
+
+    public AgentRunCoordinator(
+            AgentRunner runner, ExecutorService executor, AgentRunTaskRegistry taskRegistry,
+            AgentRunStore store, int maxRetainedRuns, int maxEventsPerRun) {
         if (maxRetainedRuns <= 0 || maxEventsPerRun <= 0) {
             throw new IllegalArgumentException("run and event retention limits must be positive");
         }
         this.runner = Objects.requireNonNull(runner, "runner must not be null");
         this.executor = Objects.requireNonNull(executor, "executor must not be null");
-        this.taskRegistry = Objects.requireNonNull(
-                taskRegistry, "taskRegistry must not be null");
+        this.taskRegistry = Objects.requireNonNull(taskRegistry, "taskRegistry must not be null");
+        this.store = Objects.requireNonNull(store, "store must not be null");
         this.maxRetainedRuns = maxRetainedRuns;
         this.maxEventsPerRun = maxEventsPerRun;
     }
 
-    /**
-     * 创建后台任务并立即返回可持久化的运行快照。
-     */
-    public synchronized RunSnapshot start(AgentRequest request, InvocationContext context) {
+    public synchronized AgentRunSnapshot start(AgentRequest request, InvocationContext context) {
         return start(request, context, ignored -> { });
     }
 
-    /** 创建后台运行，并在运行进入终态后回调最终快照。 */
-    public synchronized RunSnapshot start(
-            AgentRequest request,
-            InvocationContext context,
-            Consumer<RunSnapshot> completionListener) {
+    public synchronized AgentRunSnapshot start(
+            AgentRequest request, InvocationContext context,
+            Consumer<AgentRunSnapshot> completionListener) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(completionListener, "completionListener must not be null");
-        makeRoomForRun();
-        String runId = UUID.randomUUID().toString();
         if (!runner.ensureSessionOwner(request.sessionId(), context.userId())) {
             throw new SessionAccessDeniedException(request.sessionId());
         }
-        AgentState initialState = runner.state(request.sessionId(), context.userId())
-                .orElseGet(AgentState::ready)
-                .startNextIteration();
+        if (runs.values().stream().anyMatch(run -> run.sessionId().equals(request.sessionId())
+                && !run.terminal())) {
+            throw new SessionAlreadyRunningException(request.sessionId());
+        }
+        makeRoomForRun();
+        AgentRequest executionRequest = workspaceBridge == null
+                ? request : workspaceBridge.prepare(request, context.userId());
+        String runId = "run_" + UUID.randomUUID();
         ManagedRun run = new ManagedRun(
-                runId, request.sessionId(), context.userId(), initialState,
-                maxEventsPerRun, completionListener);
+                runId, "turn_" + UUID.randomUUID(), "", request.sessionId(),
+                context.agentId(), context.userId(), request.objective(), "",
+                AgentState.ready(), maxEventsPerRun, completionListener);
         runs.put(runId, run);
-
+        store.save(run.snapshot((AgentInvocation) null));
         boolean started;
         try {
             started = taskRegistry.start(request.sessionId(), executor,
-                    () -> execute(run, request, context)
-            );
+                    () -> execute(run, executionRequest, context));
         } catch (RuntimeException exception) {
             runs.remove(runId, run);
             throw exception;
@@ -114,134 +117,158 @@ public final class AgentRunCoordinator {
             runs.remove(runId, run);
             throw new SessionAlreadyRunningException(request.sessionId());
         }
-        return run.snapshot(null);
+        return run.snapshot((AgentInvocation) null);
     }
 
-    private void makeRoomForRun() {
-        while (runs.size() >= maxRetainedRuns) {
-            ManagedRun oldestTerminal = runs.values().stream()
-                    .filter(ManagedRun::terminal)
-                    .min(java.util.Comparator.comparing(ManagedRun::createdAt))
-                    .orElseThrow(() -> new RunCapacityExceededException(maxRetainedRuns));
-            runs.remove(oldestTerminal.runId(), oldestTerminal);
+    /** 审批在原 Run 上从 WAITING 恢复，保持 runId、turnId 和 seq 连续。 */
+    public synchronized AgentRunSnapshot resume(
+            String invocationId, PendingActionResolution resolution, String userId) {
+        Objects.requireNonNull(resolution, "resolution must not be null");
+        String invocationKey = requireText(invocationId, "invocationId");
+        String owner = requireText(userId, "userId");
+        ManagedRun managed = runs.values().stream()
+                .filter(candidate -> candidate.invocationId().equals(invocationKey))
+                .findFirst().orElse(null);
+        if (managed != null) {
+            if (!managed.userId().equals(owner)) {
+                throw new SessionAccessDeniedException(managed.sessionId());
+            }
+            if (managed.status() != AgentRunStatus.WAITING) {
+                throw new SessionAlreadyRunningException(managed.sessionId());
+            }
         }
-    }
-
-    /**
-     * 查询后台运行快照。
-     */
-    public Optional<RunSnapshot> find(String runId) {
-        ManagedRun run = runs.get(requireText(runId, "runId"));
-        if (run == null) {
-            return Optional.empty();
+        AgentCheckpoint checkpoint = runner.checkpoint(invocationKey)
+                .orElseThrow(() -> new ResumeNotFoundException(invocationKey));
+        if (!runner.ownsSession(checkpoint.sessionId(), owner)) {
+            throw new SessionAccessDeniedException(checkpoint.sessionId());
         }
-        return Optional.of(run.snapshot(currentInvocation(run)));
-    }
-
-    /** 仅向后台运行所属用户返回快照。 */
-    public Optional<RunSnapshot> find(String runId, String userId) {
-        ManagedRun run = runs.get(requireText(runId, "runId"));
-        if (run == null || !run.userId().equals(userId)) return Optional.empty();
-        return Optional.of(run.snapshot(currentInvocation(run)));
-    }
-
-    /**
-     * 列出当前进程内保留的全部后台运行，按创建时间倒序。
-     *
-     * <p>供管理面板展示运行台账；进程重启后列表清空。</p>
-     */
-    public List<RunSnapshot> list() {
-        return runs.values().stream()
-                .map(run -> run.snapshot(currentInvocation(run)))
-                .sorted(java.util.Comparator.comparing(
-                        RunSnapshot::createdAt).reversed())
-                .toList();
-    }
-
-    /** 列出指定用户创建的后台运行。 */
-    public List<RunSnapshot> list(String userId) {
-        return runs.values().stream()
-                .filter(run -> run.userId().equals(userId))
-                .map(run -> run.snapshot(currentInvocation(run)))
-                .sorted(java.util.Comparator.comparing(RunSnapshot::createdAt).reversed())
-                .toList();
-    }
-
-    /**
-     * 从指定事件序号之后订阅运行事件；历史事件会先补播，然后继续发送实时事件。
-     */
-    public Optional<SseEmitter> stream(String runId, long afterSequence) {
-        if (afterSequence < 0) {
-            throw new IllegalArgumentException("after sequence must not be negative");
+        PendingAction pending = Objects.requireNonNull(
+                checkpoint.pendingAction(), "checkpoint has no pending action");
+        if (!pending.pendingActionId().equals(resolution.pendingActionId())) {
+            throw new IllegalArgumentException("pending action id does not match checkpoint");
         }
-        ManagedRun run = runs.get(requireText(runId, "runId"));
-        if (run == null) {
-            return Optional.empty();
+        ManagedRun run = managed;
+        if (run == null) throw new ResumeNotFoundException(invocationKey);
+        synchronized (run) {
+            boolean started = taskRegistry.start(checkpoint.sessionId(), executor,
+                    () -> executeResume(run, invocationKey, resolution));
+            if (!started) throw new SessionAlreadyRunningException(checkpoint.sessionId());
+            // 在恢复线程能够发布下一条事件前，先把 WAITING 状态与审批生命周期原子推进。
+            run.resolveApproval(resolution);
         }
+        return run.snapshot(runner.invocation(invocationKey).orElse(null));
+    }
+
+    public Optional<AgentRunSnapshot> find(String runId) {
+        String id = requireText(runId, "runId");
+        ManagedRun run = runs.get(id);
+        return run == null ? store.find(id) : Optional.of(run.snapshot(currentInvocation(run)));
+    }
+
+    public Optional<AgentRunSnapshot> find(String runId, String userId) {
+        return find(runId).filter(snapshot -> snapshot.userId().equals(userId));
+    }
+
+    public List<AgentRunSnapshot> list() {
+        return runs.values().stream().map(run -> run.snapshot(currentInvocation(run)))
+                .sorted(Comparator.comparing(AgentRunSnapshot::createdAt).reversed()).toList();
+    }
+
+    public List<AgentRunSnapshot> list(String userId) { return store.listByUser(userId); }
+
+    /** 只返回可重建 conversation history 的持久化用户事件。 */
+    public List<AgentStreamEvent> history(String sessionId) {
+        return store.eventsBySession(requireText(sessionId, "sessionId")).stream()
+                .filter(event -> event.visibility() == AgentStreamEvent.Visibility.USER).toList();
+    }
+
+    public Optional<SseEmitter> stream(String runId, long afterSeq) {
+        if (afterSeq < 0) throw new IllegalArgumentException("afterSeq must not be negative");
+        String id = requireText(runId, "runId");
+        ManagedRun run = runs.get(id);
+        AgentRunSnapshot snapshot = find(id).orElse(null);
+        if (snapshot == null) return Optional.empty();
         SseEmitter emitter = new SseEmitter(0L);
         Subscriber subscriber = new Subscriber(emitter);
+        if (run == null) {
+            store.eventsAfter(id, afterSeq).forEach(subscriber::send);
+            subscriber.complete();
+            return Optional.of(emitter);
+        }
         Runnable detach = () -> run.remove(subscriber);
         emitter.onCompletion(detach);
         emitter.onTimeout(detach);
         emitter.onError(ignored -> detach.run());
-        run.subscribe(afterSequence, subscriber);
+        run.subscribe(afterSeq, store.eventsAfter(id, afterSeq), subscriber);
         return Optional.of(emitter);
     }
 
-    /** 仅允许后台运行所属用户订阅事件。 */
-    public Optional<SseEmitter> stream(String runId, long afterSequence, String userId) {
-        ManagedRun run = runs.get(requireText(runId, "runId"));
-        if (run == null || !run.userId().equals(userId)) return Optional.empty();
-        return stream(runId, afterSequence);
+    public Optional<SseEmitter> stream(String runId, long afterSeq, String userId) {
+        if (find(runId, userId).isEmpty()) return Optional.empty();
+        return stream(runId, afterSeq);
     }
 
-    /**
-     * 显式请求取消指定 run，不受页面连接状态影响。
-     *
-     * <p>双通道取消：先设置 Runner 的协作式令牌（步骤/工具边界感知），
-     * 再中断执行线程（唤醒阻塞 I/O）；任一通道命中即视为取消已受理。</p>
-     */
     public Optional<CancelResult> cancel(String runId) {
         ManagedRun run = runs.get(requireText(runId, "runId"));
-        if (run == null) {
-            return Optional.empty();
+        if (run == null) return Optional.empty();
+        if (run.status() == AgentRunStatus.WAITING) {
+            run.cancelWaiting();
+            run.notifyCompletion();
+            return Optional.of(new CancelResult(true, run.snapshot(currentInvocation(run))));
         }
-        boolean tokenCancelled = !run.terminal()
-                && runner.cancel(run.sessionId(), "cancelled by user");
-        boolean interruptRequested = !run.terminal()
-                && taskRegistry.cancel(run.sessionId());
-        return Optional.of(new CancelResult(
-                tokenCancelled || interruptRequested, run.snapshot(currentInvocation(run))));
+        boolean token = !run.terminal() && runner.cancel(run.sessionId(), "cancelled by user");
+        boolean interrupt = !run.terminal() && taskRegistry.cancel(run.sessionId());
+        return Optional.of(new CancelResult(token || interrupt, run.snapshot(currentInvocation(run))));
     }
 
-    /** 仅允许后台运行所属用户取消任务。 */
     public Optional<CancelResult> cancel(String runId, String userId) {
-        ManagedRun run = runs.get(requireText(runId, "runId"));
-        if (run == null || !run.userId().equals(userId)) return Optional.empty();
+        if (find(runId, userId).isEmpty()) return Optional.empty();
         return cancel(runId);
     }
 
     private void execute(ManagedRun run, AgentRequest request, InvocationContext context) {
+        run.startExecution();
+        boolean terminal;
         try {
             AgentRunner.AgentRunResult result = runner.runDetailed(
-                    request, context, run::publish,
-                    AgentEventPublisher.NOOP);
-            run.finish(
-                    result.state(),
+                    request, context, run::publish, AgentEventPublisher.NOOP);
+            terminal = run.finish(result.state(),
                     runner.invocation(result.invocationId()).orElse(null));
         } catch (RuntimeException exception) {
-            String message = exception.getMessage() == null
-                    ? exception.getClass().getSimpleName()
-                    : exception.getMessage();
-            run.finish(run.state().fail(message), currentInvocation(run));
+            terminal = run.failUnexpected(exception, currentInvocation(run));
         }
-        run.notifyCompletion();
+        if (terminal) run.notifyCompletion();
+    }
+
+    private void executeResume(
+            ManagedRun run, String invocationId, PendingActionResolution resolution) {
+        boolean terminal;
+        try {
+            AgentState state = runner.resume(invocationId, resolution, run::publish);
+            terminal = run.finish(state, runner.invocation(invocationId).orElse(null));
+        } catch (RuntimeException exception) {
+            terminal = run.failUnexpected(exception, runner.invocation(invocationId).orElse(null));
+        }
+        if (terminal) run.notifyCompletion();
     }
 
     private AgentInvocation currentInvocation(ManagedRun run) {
+        if (!run.invocationId().isBlank()) {
+            Optional<AgentInvocation> exact = runner.invocation(run.invocationId());
+            if (exact.isPresent()) return exact.get();
+        }
         return runner.latestInvocation(run.sessionId())
                 .filter(invocation -> !invocation.startedAt().isBefore(run.createdAt()))
                 .orElse(null);
+    }
+
+    private void makeRoomForRun() {
+        while (runs.size() >= maxRetainedRuns) {
+            ManagedRun oldest = runs.values().stream().filter(ManagedRun::terminal)
+                    .min(Comparator.comparing(ManagedRun::createdAt))
+                    .orElseThrow(() -> new RunCapacityExceededException(maxRetainedRuns));
+            runs.remove(oldest.runId(), oldest);
+        }
     }
 
     private static String requireText(String value, String field) {
@@ -251,309 +278,325 @@ public final class AgentRunCoordinator {
         return value.trim();
     }
 
-    /**
-     * 可供页面恢复的后台运行快照。
-     */
-    public record RunSnapshot(
-            String runId,
-            String sessionId,
-            String invocationId,
-            AgentState state,
-            PendingAction pendingAction,
-            long lastSequence,
-            Instant createdAt,
-            Instant updatedAt) {
-    }
+    public record CancelResult(boolean interruptRequested, AgentRunSnapshot run) { }
 
-    /**
-     * 可断点补播的事件信封。
-     */
-    public record SequencedRunEvent(
-            long sequence,
-            String type,
-            Instant createdAt,
-            Object data) {
-    }
-
-    /**
-     * 显式取消请求结果。
-     */
-    public record CancelResult(boolean interruptRequested, RunSnapshot run) {
-    }
-
-    /**
-     * 同一 session 已有后台或兼容流任务。
-     */
-    public static final class SessionAlreadyRunningException extends RuntimeException {
-        public SessionAlreadyRunningException(String sessionId) {
-            super("session already has a running task: " + sessionId);
-        }
-    }
-
-    /**
-     * 保留表已满且没有可淘汰的终态运行。
-     */
-    public static final class RunCapacityExceededException extends RuntimeException {
-        public RunCapacityExceededException(int capacity) {
-            super("agent run retention capacity exceeded: " + capacity);
-        }
-    }
-
-    /** 请求复用了其他用户持有的会话标识。 */
-    public static final class SessionAccessDeniedException extends RuntimeException {
-        public SessionAccessDeniedException(String sessionId) {
-            super("session not found: " + sessionId);
-        }
-    }
-
-    /**
-     * 单次后台运行的进程内可变状态，负责事件留存、SSE 订阅和终态收口。
-     *
-     * <p>除创建后不再变化的标识和保留上限外，其余字段都由本对象的监视器保护。
-     * 发布事件、生成快照、订阅补播和结束运行均通过 {@code synchronized} 方法串行化，
-     * 从而保证事件序号单调递增，并避免订阅者错过“历史补播到实时推送”之间的事件。</p>
-     */
-    private static final class ManagedRun {
-        /**
-         * 后台运行的唯一标识，对应 {@code /api/agent-runs/{runId}}。
-         */
+    private final class ManagedRun {
         private final String runId;
-        /**
-         * Agent 会话标识，同时也是任务注册表中的并发互斥键。
-         */
+        private final String turnId;
+        private final String parentRunId;
         private final String sessionId;
-        /** 创建该运行的可信用户标识。 */
+        private final String rootAgentId;
         private final String userId;
-        /**
-         * 当前运行最多保留的事件数量；超出后淘汰最早事件。
-         */
+        private final String objective;
         private final int maxEvents;
-        /**
-         * 运行记录创建时间，用于排序和过滤创建前的 Invocation。
-         */
+        private final Consumer<AgentRunSnapshot> completionListener;
         private final Instant createdAt = Instant.now();
-        /**
-         * 按序号升序保存的可补播事件窗口。
-         */
-        private final List<SequencedRunEvent> events = new ArrayList<>();
-        /**
-         * 当前仍保持连接、等待实时事件的 SSE 订阅者。
-         */
+        private final String messageItemId = "msg_" + UUID.randomUUID();
+        private final List<AgentStreamEvent> events = new ArrayList<>();
         private final List<Subscriber> subscribers = new ArrayList<>();
-        /**
-         * 最近一次可见的 Agent 运行状态。
-         */
+        private String invocationId;
+        private AgentRunStatus status = AgentRunStatus.CREATED;
         private AgentState state;
-        /**
-         * 与本次后台运行关联的 Invocation 标识；尚未观察到时为空。
-         */
-        private String invocationId = "";
-        /**
-         * 当前等待处理的人工审批动作；没有待审批动作时为空。
-         */
         private PendingAction pendingAction;
-        /**
-         * 已分配的最后事件序号，在本次运行内严格单调递增。
-         */
-        private long sequence;
-        /**
-         * 状态或事件最后更新时间。
-         */
-        private Instant updatedAt;
-        /**
-         * 是否已经写入最终状态事件并关闭全部订阅者。
-         */
+        private AgentRunUsage usage = AgentRunUsage.ZERO;
+        private final StringBuilder messageContent = new StringBuilder();
+        private long seq;
+        private Instant startedAt;
+        private Instant updatedAt = createdAt;
+        private Instant completedAt;
+        private boolean messageStarted;
+        private boolean messageCompleted;
         private boolean terminal;
-        /** 自动化等调用方使用的可选终态监听器。 */
-        private final Consumer<RunSnapshot> completionListener;
 
-        /**
-         * 创建一条尚未结束、事件窗口为空的后台运行记录。
-         */
         ManagedRun(
-                String runId,
-                String sessionId,
-                String userId,
-                AgentState initialState,
-                int maxEvents,
-                Consumer<RunSnapshot> completionListener) {
+                String runId, String turnId, String parentRunId, String sessionId,
+                String rootAgentId, String userId, String objective, String invocationId,
+                AgentState state, int maxEvents,
+                Consumer<AgentRunSnapshot> completionListener) {
             this.runId = runId;
+            this.turnId = turnId;
+            this.parentRunId = parentRunId;
             this.sessionId = sessionId;
+            this.rootAgentId = rootAgentId;
             this.userId = userId;
-            this.state = initialState;
+            this.objective = objective == null ? "" : objective;
+            this.invocationId = invocationId == null ? "" : invocationId;
+            this.state = state;
             this.maxEvents = maxEvents;
-            this.updatedAt = createdAt;
             this.completionListener = completionListener;
         }
 
-        void notifyCompletion() {
-            try {
-                completionListener.accept(snapshot(null));
-            } catch (RuntimeException ignored) {
-                // 终态持久化监听失败不能反向破坏已经完成的 Agent Run。
-            }
-        }
-
-        /**
-         * 将内核事件映射为对话展示事件后加入补播窗口，并实时广播给当前订阅者。
-         *
-         * <p>映射由 {@link ChatEventMapper} 完成：与对话展示无关的事件（用量统计等）
-         * 不会占用事件窗口；映射失败不会中断运行。</p>
-         */
-        synchronized void publish(AgentRunEvent event) {
-            ChatStreamEvent chatEvent;
-            try {
-                chatEvent = ChatEventMapper.map(event);
-            } catch (RuntimeException exception) {
-                return;
-            }
-            if (chatEvent != null) {
-                append(ChatEventMapper.eventName(chatEvent), chatEvent);
-            }
-        }
-
-        /**
-         * 原子地收口运行：更新最终状态、追加最终快照事件并完成全部 SSE 连接。
-         * 重复调用会被忽略，确保终态事件只发布一次。
-         */
-        synchronized void finish(AgentState finalState, AgentInvocation invocation) {
-            if (terminal) {
-                return;
-            }
-            state = Objects.requireNonNull(finalState, "finalState must not be null");
-            observe(invocation);
-            terminal = true;
+        synchronized void startExecution() {
+            if (terminal) return;
+            if (startedAt == null) startedAt = Instant.now();
+            status = AgentRunStatus.RUNNING;
+            pendingAction = null;
             updatedAt = Instant.now();
-            long nextSequence = ++sequence;
-            RunSnapshot snapshot = snapshot(invocation);
-            SequencedRunEvent event = new SequencedRunEvent(
-                    nextSequence, "state", updatedAt, snapshot);
-            addRetainedEvent(event);
+            append(AgentStreamEvent.Type.RUN_STARTED, runId, rootAgentId, parentRunId,
+                    Map.of("objective", objective, "status", status.name()));
+            append(AgentStreamEvent.Type.STATUS, runId, rootAgentId, parentRunId,
+                    Map.of("text", "正在启动任务"));
+            persistSnapshot(null);
+        }
+
+        synchronized void resolveApproval(PendingActionResolution resolution) {
+            if (terminal || status != AgentRunStatus.WAITING) return;
+            String toolCallId = pendingAction == null ? "" : String.valueOf(
+                    pendingAction.payload().getOrDefault("toolCallId", pendingAction.pendingActionId()));
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("toolCallId", toolCallId);
+            data.put("pendingActionId", resolution.pendingActionId());
+            data.put("approved", resolution.approved());
+            if (resolution.approved()) {
+                append(AgentStreamEvent.Type.TOOL_APPROVED, toolCallId, rootAgentId, parentRunId, data);
+            } else {
+                data.put("error", Map.of("code", "TOOL_APPROVAL_REJECTED",
+                        "message", "用户拒绝了工具调用", "retryable", false));
+                append(AgentStreamEvent.Type.TOOL_FAILED, toolCallId, rootAgentId, parentRunId, data);
+            }
+            status = AgentRunStatus.RUNNING;
+            pendingAction = null;
+            append(AgentStreamEvent.Type.STATUS, runId, rootAgentId, parentRunId,
+                    Map.of("text", resolution.approved() ? "已批准，正在恢复任务" : "正在处理拒绝操作"));
+            persistSnapshot(null);
+        }
+
+        synchronized void publish(AgentRunEvent source) {
+            if (terminal || source == null) return;
+            if (source.type() == AgentRunEvent.Type.OUTPUT_DELTA) {
+                ensureMessageStarted(agent(source));
+                int offset = messageContent.length();
+                messageContent.append(source.message());
+                append(AgentStreamEvent.Type.MESSAGE_DELTA, messageItemId, agent(source), parent(source),
+                        Map.of("delta", source.message(), "offset", offset,
+                                "contentLength", messageContent.length()));
+                return;
+            }
+            if (source.type() == AgentRunEvent.Type.RUN_COMPLETED) {
+                completeMessage(source.message(), agent(source));
+                return;
+            }
+            for (RuntimeStreamEventMapper.MappedEvent mapped : RuntimeStreamEventMapper.map(source)) {
+                if (mapped.type() == AgentStreamEvent.Type.USAGE) {
+                    usage = usage.plus(number(mapped.data().get("inputTokens")),
+                            number(mapped.data().get("outputTokens")),
+                            number(mapped.data().get("cachedTokens")));
+                    Map<String, Object> data = new LinkedHashMap<>(mapped.data());
+                    data.put("aggregate", usage);
+                    append(mapped.type(), mapped.itemId(), mapped.agentId(), mapped.parentRunId(), data);
+                } else {
+                    append(mapped.type(), mapped.itemId(), mapped.agentId(),
+                            mapped.parentRunId(), mapped.data());
+                }
+            }
+        }
+
+        synchronized boolean finish(AgentState finalState, AgentInvocation invocation) {
+            if (terminal) return true;
+            state = Objects.requireNonNull(finalState);
+            observe(invocation);
+            if (finalState.status() == AgentState.Status.WAITING) {
+                status = AgentRunStatus.WAITING;
+                pendingAction = invocation == null ? null : invocation.pendingAction();
+                updatedAt = Instant.now();
+                appendSnapshotEvent(AgentStreamEvent.Type.RUN_WAITING, runId, null);
+                return false;
+            }
+            status = switch (finalState.status()) {
+                case COMPLETED -> AgentRunStatus.COMPLETED;
+                case CANCELLED -> AgentRunStatus.CANCELLED;
+                default -> AgentRunStatus.FAILED;
+            };
+            if (status == AgentRunStatus.COMPLETED) completeMessage(finalState.output(), rootAgentId);
+            completedAt = Instant.now();
+            updatedAt = completedAt;
+            AgentRunError error = status == AgentRunStatus.FAILED
+                    ? runError(finalState.error(), false) : null;
+            if (error != null) {
+                append(AgentStreamEvent.Type.ERROR, runId, rootAgentId, parentRunId,
+                        Map.of("error", error));
+            }
+            terminal = true;
+            AgentStreamEvent.Type type = switch (status) {
+                case COMPLETED -> AgentStreamEvent.Type.RUN_COMPLETED;
+                case CANCELLED -> AgentStreamEvent.Type.RUN_CANCELLED;
+                default -> AgentStreamEvent.Type.RUN_FAILED;
+            };
+            appendSnapshotEvent(type, runId, error);
+            completeSubscribers();
+            return true;
+        }
+
+        synchronized boolean failUnexpected(RuntimeException exception, AgentInvocation invocation) {
+            if (terminal) return true;
+            observe(invocation);
+            String message = exception.getMessage() == null
+                    ? exception.getClass().getSimpleName() : exception.getMessage();
+            state = state == null ? AgentState.ready().fail(message) : state.fail(message);
+            status = AgentRunStatus.FAILED;
+            completedAt = Instant.now();
+            updatedAt = completedAt;
+            AgentRunError error = new AgentRunError("RUN_INTERNAL_ERROR", message, false);
+            append(AgentStreamEvent.Type.ERROR, runId, rootAgentId, parentRunId,
+                    Map.of("error", error));
+            terminal = true;
+            appendSnapshotEvent(AgentStreamEvent.Type.RUN_FAILED, runId,
+                    error);
+            completeSubscribers();
+            return true;
+        }
+
+        synchronized void cancelWaiting() {
+            if (terminal || status != AgentRunStatus.WAITING) return;
+            state = state.cancel("cancelled by user");
+            status = AgentRunStatus.CANCELLED;
+            completedAt = Instant.now();
+            updatedAt = completedAt;
+            terminal = true;
+            appendSnapshotEvent(AgentStreamEvent.Type.RUN_CANCELLED, runId, null);
+            completeSubscribers();
+        }
+
+        synchronized void subscribe(
+                long afterSeq, List<AgentStreamEvent> durable, Subscriber subscriber) {
+            TreeMap<Long, AgentStreamEvent> merged = new TreeMap<>();
+            durable.forEach(event -> merged.put(event.seq(), event));
+            events.stream().filter(event -> event.seq() > afterSeq)
+                    .forEach(event -> merged.put(event.seq(), event));
+            for (AgentStreamEvent event : merged.values()) {
+                if (!subscriber.send(event)) return;
+            }
+            if (terminal) subscriber.complete();
+            else subscribers.add(subscriber);
+        }
+
+        synchronized void remove(Subscriber subscriber) { subscribers.remove(subscriber); }
+
+        synchronized AgentRunSnapshot snapshot(AgentInvocation invocation) {
+            observe(invocation);
+            return buildSnapshot(runErrorFromState());
+        }
+
+        private AgentRunSnapshot buildSnapshot(AgentRunError error) {
+            long duration = startedAt == null ? 0 : Math.max(0, Duration.between(startedAt,
+                    completedAt == null ? updatedAt : completedAt).toMillis());
+            return new AgentRunSnapshot(
+                    AgentStreamEvent.SCHEMA_VERSION, runId, turnId, parentRunId, sessionId,
+                    rootAgentId, userId, invocationId, status, pendingAction, seq,
+                    createdAt, startedAt, updatedAt, completedAt, duration,
+                    state == null ? "" : state.output(), error, usage);
+        }
+
+        private void ensureMessageStarted(String agentId) {
+            if (messageStarted) return;
+            messageStarted = true;
+            append(AgentStreamEvent.Type.MESSAGE_STARTED, messageItemId, agentId, parentRunId,
+                    Map.of("role", "assistant"));
+        }
+
+        private void completeMessage(String content, String agentId) {
+            if (messageCompleted) return;
+            ensureMessageStarted(agentId);
+            String answer = content == null ? "" : content;
+            messageContent.setLength(0);
+            messageContent.append(answer);
+            messageCompleted = true;
+            append(AgentStreamEvent.Type.MESSAGE_COMPLETED, messageItemId, agentId, parentRunId,
+                    Map.of("role", "assistant", "content", answer));
+        }
+
+        private void appendSnapshotEvent(
+                AgentStreamEvent.Type type, String itemId, AgentRunError error) {
+            updatedAt = Instant.now();
+            long nextSeq = ++seq;
+            AgentRunSnapshot snapshot = buildSnapshot(error);
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("snapshot", snapshot);
+            if (error != null) data.put("error", error);
+            AgentStreamEvent event = event(type, itemId, rootAgentId, parentRunId, nextSeq, data);
+            retain(event);
+            if (type.durable()) store.append(event);
+            store.save(snapshot);
             broadcast(event);
+        }
+
+        private void append(
+                AgentStreamEvent.Type type, String itemId, String agentId,
+                String parentId, Map<String, Object> data) {
+            if (terminal) return;
+            updatedAt = Instant.now();
+            AgentStreamEvent event = event(type,
+                    itemId == null || itemId.isBlank() ? runId : itemId,
+                    agentId == null || agentId.isBlank() ? rootAgentId : agentId,
+                    parentId == null ? "" : parentId, ++seq, data);
+            retain(event);
+            if (type.durable()) store.append(event);
+            broadcast(event);
+        }
+
+        private AgentStreamEvent event(
+                AgentStreamEvent.Type type, String itemId, String agentId,
+                String parentId, long eventSeq, Map<String, Object> data) {
+            return new AgentStreamEvent(
+                    AgentStreamEvent.SCHEMA_VERSION, type.wireName(),
+                    "evt_" + UUID.randomUUID(), runId, turnId, sessionId, itemId,
+                    agentId, parentId, eventSeq, updatedAt,
+                    AgentStreamEvent.Visibility.USER, data);
+        }
+
+        private void retain(AgentStreamEvent event) {
+            events.add(event);
+            if (events.size() > maxEvents) events.removeFirst();
+        }
+
+        private void broadcast(AgentStreamEvent event) {
+            subscribers.removeIf(subscriber -> !subscriber.send(event));
+        }
+
+        private void completeSubscribers() {
             List.copyOf(subscribers).forEach(Subscriber::complete);
             subscribers.clear();
         }
 
-        /**
-         * 先补播指定游标之后的历史事件，再将连接加入实时订阅列表。
-         * 若运行已经结束，则补播完成后立即关闭连接。
-         */
-        synchronized void subscribe(long afterSequence, Subscriber subscriber) {
-            for (SequencedRunEvent event : events) {
-                if (event.sequence() > afterSequence && !subscriber.send(event)) {
-                    return;
-                }
-            }
-            if (terminal) {
-                subscriber.complete();
-            } else {
-                subscribers.add(subscriber);
-            }
-        }
+        private void persistSnapshot(AgentInvocation invocation) { store.save(snapshot(invocation)); }
 
-        /**
-         * 移除已经完成、超时或断开的订阅者。
-         */
-        synchronized void remove(Subscriber subscriber) {
-            subscribers.remove(subscriber);
-        }
-
-        /**
-         * 观察最新 Invocation 信息并生成不会暴露内部集合的运行快照。
-         */
-        synchronized RunSnapshot snapshot(AgentInvocation invocation) {
-            observe(invocation);
-            return new RunSnapshot(
-                    runId, sessionId, invocationId, state, pendingAction,
-                    sequence, createdAt, updatedAt);
-        }
-
-        synchronized AgentState state() {
-            return state;
-        }
-
-        synchronized boolean terminal() {
-            return terminal;
-        }
-
-        String sessionId() {
-            return sessionId;
-        }
-
-        String userId() {
-            return userId;
-        }
-
-        Instant createdAt() {
-            return createdAt;
-        }
-
-        String runId() {
-            return runId;
-        }
-
-        /**
-         * 分配新序号、保留事件并广播；调用方必须持有本对象监视器。
-         */
-        private void append(String type, Object data) {
-            updatedAt = Instant.now();
-            SequencedRunEvent event = new SequencedRunEvent(
-                    ++sequence, type, updatedAt, data);
-            addRetainedEvent(event);
-            broadcast(event);
-        }
-
-        /**
-         * 将事件加入有界补播窗口；调用方必须持有本对象监视器。
-         */
-        private void addRetainedEvent(SequencedRunEvent event) {
-            events.add(event);
-            if (events.size() > maxEvents) {
-                events.remove(0);
-            }
-        }
-
-        /**
-         * 广播事件，并清理发送失败的订阅者；调用方必须持有本对象监视器。
-         */
-        private void broadcast(SequencedRunEvent event) {
-            subscribers.removeIf(subscriber -> !subscriber.send(event));
-        }
-
-        /**
-         * 采纳属于本次运行的 Invocation 标识和待审批动作。
-         * 已绑定 Invocation 后会拒绝其他 Invocation，防止同一 Session 的后续运行污染快照。
-         */
         private void observe(AgentInvocation invocation) {
-            if (invocation == null) {
-                return;
-            }
-            if (!invocationId.isEmpty()
-                    && !invocationId.equals(invocation.invocationId())) {
-                return;
-            }
+            if (invocation == null) return;
+            if (!invocationId.isBlank() && !invocationId.equals(invocation.invocationId())) return;
             invocationId = invocation.invocationId();
             pendingAction = invocation.pendingAction();
         }
+
+        private AgentRunError runErrorFromState() {
+            return status == AgentRunStatus.FAILED && state != null
+                    ? runError(state.error(), false) : null;
+        }
+
+        void notifyCompletion() {
+            try { completionListener.accept(snapshot((AgentInvocation) null)); }
+            catch (RuntimeException ignored) { /* 回调不能反向破坏已落库终态。 */ }
+        }
+
+        synchronized boolean terminal() { return terminal; }
+        synchronized AgentRunStatus status() { return status; }
+        synchronized String invocationId() { return invocationId; }
+        String runId() { return runId; }
+        String sessionId() { return sessionId; }
+        String userId() { return userId; }
+        Instant createdAt() { return createdAt; }
     }
 
     private static final class Subscriber {
         private final SseEmitter emitter;
         private boolean connected = true;
 
-        Subscriber(SseEmitter emitter) {
-            this.emitter = emitter;
-        }
+        Subscriber(SseEmitter emitter) { this.emitter = emitter; }
 
-        synchronized boolean send(SequencedRunEvent event) {
-            if (!connected) {
-                return false;
-            }
+        synchronized boolean send(AgentStreamEvent event) {
+            if (!connected || event.visibility() != AgentStreamEvent.Visibility.USER) return false;
             try {
-                emitter.send(SseEmitter.event()
-                        .id(Long.toString(event.sequence()))
-                        .name(event.type())
-                        .data(event));
+                emitter.send(SseEmitter.event().id(Long.toString(event.seq()))
+                        .name(event.event()).data(event));
                 return true;
             } catch (IOException | IllegalStateException exception) {
                 connected = false;
@@ -562,11 +605,56 @@ public final class AgentRunCoordinator {
         }
 
         synchronized void complete() {
-            if (!connected) {
-                return;
-            }
+            if (!connected) return;
             connected = false;
             emitter.complete();
+        }
+    }
+
+    private static String agent(AgentRunEvent source) {
+        Object value = source.data().get("agentId");
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private static String parent(AgentRunEvent source) {
+        Object value = source.data().get("parentRunId");
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private static long number(Object value) {
+        if (value instanceof Number number) return Math.max(0, number.longValue());
+        try { return Math.max(0, Long.parseLong(String.valueOf(value))); }
+        catch (RuntimeException ignored) { return 0; }
+    }
+
+    private static AgentRunError runError(String message, boolean retryable) {
+        String text = message == null ? "" : message;
+        String code = "human approval rejected".equals(text)
+                ? "APPROVAL_REJECTED" : "RUN_FAILED";
+        return new AgentRunError(code, text, retryable);
+    }
+
+    public static final class SessionAlreadyRunningException extends RuntimeException {
+        public SessionAlreadyRunningException(String sessionId) {
+            super("session already has a running task: " + sessionId);
+        }
+    }
+
+    public static final class RunCapacityExceededException extends RuntimeException {
+        public RunCapacityExceededException(int capacity) {
+            super("agent run retention capacity exceeded: " + capacity);
+        }
+    }
+
+    public static final class SessionAccessDeniedException extends RuntimeException {
+        public SessionAccessDeniedException(String sessionId) {
+            super("session not found: " + sessionId);
+        }
+    }
+
+    public static final class ResumeNotFoundException extends RuntimeException {
+        public ResumeNotFoundException(String invocationId) {
+            super("waiting run not found for invocation: " + invocationId);
         }
     }
 }

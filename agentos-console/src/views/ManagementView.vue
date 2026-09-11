@@ -93,10 +93,10 @@ const runRows = computed(() => (data.value?.runs || []).map(run => ({
   sessionId: run.sessionId,
   invocationId: run.invocationId,
   title: sessions.value.find(item => item.id === run.sessionId)?.title || run.sessionId,
-  status: run.state?.status || 'UNKNOWN',
-  iteration: run.state?.iteration || 0,
+  status: run.status || 'UNKNOWN',
+  iteration: 0,
   updatedAt: run.updatedAt,
-  lastSequence: run.lastSequence,
+  lastSeq: run.lastSeq,
   pendingAction: run.pendingAction,
   usage: data.value?.usage?.[run.sessionId]
 })).filter(row => !normalizedQuery.value || JSON.stringify(row).toLowerCase().includes(normalizedQuery.value)))

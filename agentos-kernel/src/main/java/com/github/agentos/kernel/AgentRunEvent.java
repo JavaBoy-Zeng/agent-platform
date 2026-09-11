@@ -39,20 +39,35 @@ public record AgentRunEvent(
 
     /** Agent 主链路中的可观察阶段。 */
     public enum Type {
+        /** Agent 单次 run 开始；每个会话首次执行时最先发出。 */
         RUN_STARTED,
+        /** 主循环已生成执行计划（包含步骤列表）。 */
         PLAN_CREATED,
+        /** 工具调用开始：附带工具名与入参。 */
         TOOL_STARTED,
+        /** 工具调用结束：附带成功状态与结果摘要。 */
         TOOL_FINISHED,
+        /** 工具结果/环境观察回流到主循环，作为下一步推理的输入。 */
         OBSERVATION,
+        /** 模型产生的下一步决策（行动、思考或最终回答）。 */
         DECISION,
+        /** 路由阶段已选定一个目标 specialist / 子 Agent。 */
         ROUTE_DECIDED,
+        /** 路由阶段拒绝当前候选 specialist，需要重新选路。 */
         ROUTE_REJECTED,
+        /** 路由阶段判定信息不足，需要向用户发起澄清问询。 */
         ROUTE_CLARIFICATION_REQUIRED,
+        /** 主循环判定需要重新生成计划。 */
         REPLAN,
+        /** 模型调用的 token 用量与计费计量事件。 */
         USAGE,
+        /** 流式输出的增量片段（用于逐 token 推送）。 */
         OUTPUT_DELTA,
+        /** Agent run 正常完成，附带最终结果。 */
         RUN_COMPLETED,
+        /** Agent run 被外部取消（用户中断或上游超时）。 */
         RUN_CANCELLED,
+        /** Agent run 因异常而失败，附带错误信息。 */
         RUN_FAILED
     }
 }

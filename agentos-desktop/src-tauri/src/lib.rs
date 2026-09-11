@@ -7,6 +7,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -23,11 +24,15 @@ pub fn run() {
             app.manage(automation::AutomationRuntimeState::new(
                 config_dir.join("automation-preferences.json"),
             ));
+            app.manage(workspace::execution::ExecutionState::default());
             workspace::start_grant_reaper(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                window
+                    .state::<workspace::execution::ExecutionState>()
+                    .cleanup_window(window.label());
                 window
                     .state::<workspace::WorkspaceState>()
                     .cleanup_window(window.label());
@@ -43,6 +48,11 @@ pub fn run() {
             workspace::list_directory,
             workspace::read_file,
             workspace::workspace_context,
+            workspace::execution::workspace_execution_info,
+            workspace::execution::workspace_execution_heartbeat,
+            workspace::execution::workspace_execution_lock,
+            workspace::execution::execute_workspace_operation,
+            workspace::execution::cancel_workspace_operation,
             workspace::workspace_file_index,
             workspace::git_status,
             workspace::git_branches,

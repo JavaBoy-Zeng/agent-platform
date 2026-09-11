@@ -31,7 +31,7 @@ class MemoryControllerTest {
 
     @Test
     void returnsReadOnlyLayeredMemorySnapshot() throws Exception {
-        MemoryScope scope = MemoryScope.defaultScope("main-agent", "session-1");
+        MemoryScope scope = MemoryScope.defaultScope("plan-execute-agent", "session-1");
 
         try (MemoryService memoryService = MemoryService.inMemory()) {
             memoryService.capture(CompletedTurn.success(
@@ -51,7 +51,7 @@ class MemoryControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.scope.teamId").value("default-team"))
                     .andExpect(jsonPath("$.scope.userId").value("default-user"))
-                    .andExpect(jsonPath("$.scope.agentId").value("main-agent"))
+                    .andExpect(jsonPath("$.scope.agentId").value("plan-execute-agent"))
                     .andExpect(jsonPath("$.scope.sessionId").value("session-1"))
                     .andExpect(jsonPath("$.counts.l0").value(1))
                     .andExpect(jsonPath("$.counts.l1").value(1))
@@ -59,7 +59,7 @@ class MemoryControllerTest {
                     .andExpect(jsonPath("$.counts.l3").value(1))
                     .andExpect(jsonPath("$.recentTurns[0].userInput").value("I prefer Java."))
                     .andExpect(jsonPath("$.atomicMemories[0].content").value("I prefer Java."))
-                    .andExpect(jsonPath("$.scenarios[0].name").value("agent:main-agent"))
+                    .andExpect(jsonPath("$.scenarios[0].name").value("agent:plan-execute-agent"))
                     .andExpect(jsonPath("$.profile.content").isNotEmpty());
         }
     }

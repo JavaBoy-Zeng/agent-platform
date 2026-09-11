@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(properties = {
         "agentos.memory.mode=memory",
-        // 本测试断言 MainAgent 的计划-执行事件流，锁定 plan 模式，
+        // 本测试断言 PlanExecuteAgent 的计划-执行事件流，锁定 plan 模式，
         // 与默认 loop 模式（agentos.agent.loop.mode）解耦。
         "agentos.agent.loop.mode=plan"
 })
@@ -52,14 +52,14 @@ class AgentRunnerIntegrationTest {
     private AgentEventStore eventStore;
 
     /**
-     * 强制让路由层走 fallback，专注于 Runner + MainAgent + 模型脚本之间的协作。
+     * 强制让路由层走 fallback，专注于 Runner + PlanExecuteAgent + 模型脚本之间的协作。
      *
      * <p>输入 {@code "I prefer Java"}（12 字符、无工具关键词）默认会被
      * {@code HeuristicIntentClassifier} 短路返回 canned answer，从而绕过 LLM 调用；
      * 这里 mock 出固定的 fallback，让既有对完整 plan-and-execute 周期的断言仍然成立。</p>
      *
      * <p>同时 mock {@link ChatClient} 让 {@link com.github.agentos.agent.specialist.SupervisorAgent}
-     * 始终回退到 MainAgent，跳过 LLM 分类。</p>
+     * 始终回退到 PlanExecuteAgent，跳过 LLM 分类。</p>
      */
     @MockitoBean
     private IntentClassifier intentClassifier;
@@ -76,7 +76,7 @@ class AgentRunnerIntegrationTest {
         org.mockito.Mockito.when(chatClient.chat(
                         org.mockito.ArgumentMatchers.any(),
                         org.mockito.ArgumentMatchers.any()))
-                .thenReturn("main-agent");
+                .thenReturn("plan-execute-agent");
         org.mockito.Mockito.when(chatClient.chatStream(
                         org.mockito.ArgumentMatchers.any(),
                         org.mockito.ArgumentMatchers.any(),
@@ -88,7 +88,7 @@ class AgentRunnerIntegrationTest {
                     return new ChatClient.ChatResponse("I prefer Java", null);
                 });
         AgentRequest request = AgentRequest.of("session-1", "I prefer Java");
-        InvocationContext context = InvocationContext.of("main-agent");
+        InvocationContext context = InvocationContext.of("plan-execute-agent");
 
         List<AgentRunEvent> events = new CopyOnWriteArrayList<>();
         AgentState result = runner.run(request, context, events::add);
@@ -109,7 +109,7 @@ class AgentRunnerIntegrationTest {
                 AgentRunEvent.Type.RUN_COMPLETED);
         assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.REPLAN)
                 .hasSize(1);
-        assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.DECISION)
+        assertThat(events).filteredOn(event -> event.type() == AgentRunEvent.Type.DECISION && !event.data().containsKey("traceKind"))
                 .extracting(event -> event.data().get("outcome"))
                 .containsExactly("REPLAN", "COMPLETE");
         String invocationId = runner.latestInvocation("session-1").orElseThrow().invocationId();
@@ -135,13 +135,13 @@ class AgentRunnerIntegrationTest {
         });
         assertThat(memoryService.awaitIdle(Duration.ofSeconds(2))).isTrue();
 
-        MemoryScope scope = MemoryScope.defaultScope("main-agent", "session-1");
+        MemoryScope scope = MemoryScope.defaultScope("plan-execute-agent", "session-1");
         assertThat(memoryService.recentTurns(scope, 10)).singleElement().satisfies(turn -> {
             assertThat(turn.userInput()).isEqualTo("I prefer Java");
             assertThat(turn.assistantOutput()).isEqualTo("I prefer Java");
             assertThat(turn.toolOutputs()).containsExactly(
-                    "echo: discovered Maven workspace",
-                    "echo: I prefer Java");
+                    "echo-agent: discovered Maven workspace",
+                    "echo-agent: I prefer Java");
         });
         assertThat(memoryService.atomicMemories(scope)).isNotEmpty();
         assertThat(memoryService.scenarios(scope)).isNotEmpty();
@@ -150,6 +150,17 @@ class AgentRunnerIntegrationTest {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class ScriptedModelConfiguration {
+
+        @Bean
+        com.github.agentos.agent.workflow.AgentToolAdapter echoAgentTool() {
+            return new com.github.agentos.agent.workflow.AgentToolAdapter(
+                    new com.github.agentos.agent.workflow.BaseAgent("echo-agent", "deterministic test agent", List.of()) {
+                        @Override public AgentState run(AgentRequest request, InvocationContext context,
+                                AgentState state, com.github.agentos.kernel.AgentEventSink sink) {
+                            return state.complete(request.objective());
+                        }
+                    });
+        }
 
         @Bean
         @Primary
@@ -164,8 +175,8 @@ class AgentRunnerIntegrationTest {
                                     "step-1",
                                     "Produce a deterministic discovery observation",
                                     false,
-                                    "echo",
-                                    Map.of("message", "discovered Maven workspace"))),
+                                    "echo-agent",
+                                    Map.of("objective", "discovered Maven workspace"))),
                             null);
                 }
                 if (request.executionSnapshot().reason()
@@ -178,8 +189,8 @@ class AgentRunnerIntegrationTest {
                                     "step-2",
                                     "Produce the requested result",
                                     false,
-                                    "echo",
-                                    Map.of("message", request.agentRequest().objective()))),
+                                    "echo-agent",
+                                    Map.of("objective", request.agentRequest().objective()))),
                             null);
                 }
                 return new ModelPlan(

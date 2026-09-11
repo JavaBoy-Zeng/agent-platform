@@ -17,8 +17,14 @@ import java.util.Objects;
  *   <li>超限时：从最旧的可压缩工具结果开始，压到 {@code compressedChars} 并打上
  *       {@code [compressed]} 标记；</li>
  *   <li>仍超限：从最旧的工具调用对（assistant 请求 + user 结果）开始整对丢弃，
- *       目标消息永不丢弃。</li>
+ *       目标消息与<b>最新一轮调用对</b>永不丢弃。</li>
  * </ul>
+ *
+ * <p>最新一轮调用对（最近一次工具请求 + 结果）是模型对“刚执行了什么、观察到
+ * 什么”的唯一记忆，丢弃它会让模型每轮都只看到目标消息，重复发起完全相同的
+ * 工具调用（观察丢失型死循环）。即使目标消息本身超预算（如前端注入完整
+ * workspace 上下文导致种子消息达数十 KB），也宁可让序列暂时超预算，
+ * 也不能让模型失忆。</p>
  *
  * <p>压缩是有损的：被压缩的旧观察只剩摘要性前缀，模型若需要完整细节应重新
  * 调用工具获取。这与业界“上下文满即压缩/丢弃”的主流做法一致。</p>
@@ -83,8 +89,9 @@ public final class ConversationCompactor {
         if (text.length() <= maxToolResultChars) {
             return header + text;
         }
-        return header + text.substring(0, maxToolResultChars) + "\n…(截断，原文 "
-                + text.length() + " 字符)";
+        return header + text.substring(0, maxToolResultChars / 2)
+                + "\n…(截断，原文 " + text.length() + " 字符)\n"
+                + text.substring(text.length() - (maxToolResultChars - maxToolResultChars / 2));
     }
 
     /**
@@ -123,7 +130,10 @@ public final class ConversationCompactor {
      */
     public static int totalChars(List<LlmMessage> messages) {
         return messages.stream()
-                .mapToInt(message -> message.content().strip().length())
+                .mapToInt(message -> message.content().strip().length()
+                        + (message.reasoningContent() == null ? 0 : message.reasoningContent().length())
+                        + message.toolCalls().stream().mapToInt(call ->
+                                call.id().length() + call.name().length() + call.argumentsJson().length()).sum())
                 .sum();
     }
 
@@ -148,7 +158,9 @@ public final class ConversationCompactor {
 
     /** 找最旧的可压缩工具结果：{@code subagentOnly=true} 只找子代理工具，否则找普通工具。 */
     private int oldestCompressibleMatching(List<LlmMessage> messages, boolean subagentOnly) {
+        int latestPair = latestToolCallPairIndex(messages);
         for (int index = 0; index < messages.size(); index++) {
+            if (latestPair >= 0 && index == latestPair + 1) continue;
             LlmMessage message = messages.get(index);
             if (message.role() != LlmMessage.Role.TOOL) {
                 continue;
@@ -173,18 +185,44 @@ public final class ConversationCompactor {
     private static boolean isSubagentToolResult(String content) {
         return content.startsWith(SUBAGENT_TOOL_PREFIX)
                 || content.startsWith(SUBAGENT_TOOL_PREFIX_ALT)
-                || content.startsWith(SUBAGENT_TOOL_PREFIX_REPORT);
+                || content.startsWith(SUBAGENT_TOOL_PREFIX_REPORT)
+                || content.startsWith("[tool] workspace-agent")
+                || content.startsWith("[tool] utility-agent");
     }
 
+    /**
+     * 找最旧的可整对丢弃的工具调用对（assistant 请求 + TOOL 结果）。
+     *
+     * <p><b>最新一轮调用对永不丢弃</b>：若目标消息本身超预算（如注入了完整
+     * workspace 上下文），把唯一调用对也丢掉会让模型每轮只看到目标消息，
+     * 重复发起相同工具调用（死循环）。此时宁可序列暂时超预算，也保留最新
+     * 观察；更旧的调用对仍可正常丢弃腾出空间。</p>
+     */
     private int oldestDroppablePair(List<LlmMessage> messages) {
-        for (int index = 1; index < messages.size() - 1; index++) {
-            if (messages.get(index).role() == LlmMessage.Role.ASSISTANT
-                    && !messages.get(index).toolCalls().isEmpty()
-                    && messages.get(index + 1).role() == LlmMessage.Role.TOOL) {
+        int latestPairIndex = latestToolCallPairIndex(messages);
+        for (int index = 1; index < latestPairIndex; index++) {
+            if (isToolCallPair(messages, index)) {
                 return index;
             }
         }
         return -1;
+    }
+
+    /** 最新一轮工具调用对（assistant 工具调用 + 相邻 TOOL 结果）的下标；不存在时 -1。 */
+    private static int latestToolCallPairIndex(List<LlmMessage> messages) {
+        for (int index = messages.size() - 2; index >= 1; index--) {
+            if (isToolCallPair(messages, index)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /** 下标 index 处是否为工具调用对（assistant 携带 toolCalls 且紧邻 TOOL 结果）。 */
+    private static boolean isToolCallPair(List<LlmMessage> messages, int index) {
+        return messages.get(index).role() == LlmMessage.Role.ASSISTANT
+                && !messages.get(index).toolCalls().isEmpty()
+                && messages.get(index + 1).role() == LlmMessage.Role.TOOL;
     }
 
     private LlmMessage compressMessage(LlmMessage message) {

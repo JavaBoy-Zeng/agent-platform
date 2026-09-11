@@ -23,6 +23,23 @@ const meta = computed(() =>
   GROUP_META[props.kind] || { label: '已执行', unit: '项操作' })
 const failedCount = computed(() =>
   props.items.filter(item => !item.success).length)
+const activeCount = computed(() =>
+  props.items.filter(item => ['RUNNING', 'APPROVED'].includes(item.status)).length)
+const waitingCount = computed(() =>
+  props.items.filter(item => item.status === 'WAITING').length)
+const groupLabel = computed(() => {
+  if (waitingCount.value) return '等待批准'
+  if (activeCount.value) return '正在执行'
+  return meta.value.label
+})
+
+function statusText(item) {
+  if (!item.success) return t('失败')
+  if (item.status === 'RUNNING' || item.status === 'APPROVED') return t('执行中')
+  if (item.status === 'WAITING') return t('等待批准')
+  if (item.status === 'FAILED') return t('失败')
+  return t('完成')
+}
 
 function entryTarget(item) {
   const args = item.arguments || {}
@@ -37,7 +54,7 @@ function argumentEntries(item) {
 </script>
 
 <template>
-  <div class="op-group" :class="[`op-${kind}`, { expanded, 'has-failures': failedCount }]">
+  <div class="op-group" :class="[`op-${kind}`, { expanded, 'has-failures': failedCount, active: activeCount, waiting: waitingCount }]">
     <button
       class="op-summary"
       type="button"
@@ -58,7 +75,7 @@ function argumentEntries(item) {
           <path d="M8.5 4.5h7v3h3v7h-3v3h-7v-3h-3v-7h3zM10 9.5h4v4h-4z" />
         </svg>
       </span>
-      <span class="op-label">{{ t(meta.label) }}</span>
+      <span class="op-label">{{ t(groupLabel) }}</span>
       <span class="op-separator" aria-hidden="true"></span>
       <span class="op-count"><strong>{{ items.length }}</strong> {{ t(meta.unit) }}</span>
       <span v-if="failedCount" class="op-failed-count">
@@ -70,12 +87,14 @@ function argumentEntries(item) {
     </button>
     <Transition name="op-reveal">
       <div v-if="expanded" class="op-details">
-        <div v-for="(item, index) in items" :key="index"
-             class="op-item" :class="{ failed: !item.success }">
+        <div v-for="(item, index) in items" :key="item.toolCallId || index"
+             class="op-item" :class="{ failed: !item.success, running: item.status === 'RUNNING', waiting: item.status === 'WAITING' }">
           <header class="op-item-head">
             <code class="op-tool">{{ item.toolName }}</code>
             <code v-if="entryTarget(item)" class="op-target">{{ entryTarget(item) }}</code>
-            <span v-if="!item.success" class="op-failed-badge">{{ t('失败') }}</span>
+            <span class="op-status-badge" :class="String(item.status || 'COMPLETED').toLowerCase()">
+              {{ statusText(item) }}
+            </span>
           </header>
           <dl v-if="argumentEntries(item).length" class="op-args">
             <template v-for="[key, value] in argumentEntries(item)" :key="key">

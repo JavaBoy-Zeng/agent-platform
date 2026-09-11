@@ -37,6 +37,10 @@ public final class PlanExecutor {
                 failureClassifier, "failureClassifier must not be null");
     }
 
+    public void discardPending(com.github.agentos.kernel.PendingAction action) {
+        toolDispatcher.discardPending(action);
+    }
+
     /**
      * 在剩余运行预算内执行计划。步骤预算按实际处理的步骤计算，工具预算包含重试。
      */

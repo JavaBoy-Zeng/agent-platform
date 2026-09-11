@@ -9,8 +9,6 @@ import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
 import com.github.agentos.kernel.AgentRunner;
 import com.github.agentos.kernel.AgentState;
-import com.github.agentos.kernel.CheckpointStore;
-import com.github.agentos.kernel.InMemoryCheckpointStore;
 import com.github.agentos.kernel.PendingActionResolution;
 import com.github.agentos.memory.MemoryService;
 import com.github.agentos.planner.AgentDecision;
@@ -26,49 +24,23 @@ import com.github.agentos.planner.PlanType;
 import com.github.agentos.tool.api.AgentTool;
 import com.github.agentos.tool.api.ToolCall;
 import com.github.agentos.tool.api.ToolContext;
-import com.github.agentos.tool.api.ToolResult;
 import com.github.agentos.tool.runtime.ToolDispatcher;
 import com.github.agentos.tool.runtime.ToolRegistry;
+import com.github.agentos.tool.api.ToolResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * 模拟进程重启后的审批恢复：新 MainAgent + 新 AgentRunner，
- * 只有 CheckpointStore 与 ContinuationStore 跨“重启”共享。
- */
-class MainAgentRestartResumeTest {
-
-    /** 跨实例共享的内存版续跑存储，模拟 SQLite 持久化。 */
-    private static final class SharedContinuationStore implements ContinuationStore {
-        private final ConcurrentMap<String, PersistedContinuation> storage =
-                new ConcurrentHashMap<>();
-
-        @Override
-        public void save(String invocationId, PersistedContinuation continuation) {
-            storage.put(invocationId, continuation);
-        }
-
-        @Override
-        public Optional<PersistedContinuation> load(String invocationId) {
-            return Optional.ofNullable(storage.get(invocationId));
-        }
-
-        @Override
-        public void delete(String invocationId) {
-            storage.remove(invocationId);
-        }
-    }
+class PlanExecuteAgentApprovalResumeTest {
 
     @Test
-    void resumesApprovedInvocationAfterSimulatedRestart() {
+    void resumesWriteThenCommitAcrossTwoApprovalsWithoutPlanningLoop() {
+        AtomicInteger planCalls = new AtomicInteger();
+        AtomicInteger decisionCalls = new AtomicInteger();
         AtomicInteger writes = new AtomicInteger();
         AtomicInteger commits = new AtomicInteger();
         AgentTool writeTool = new AgentTool() {
@@ -99,6 +71,7 @@ class MainAgentRestartResumeTest {
                 new DefaultFailureClassifier());
         AgentPlanner planner = new AgentPlanner() {
             @Override public AgentPlan createPlan(AgentRequest request, InvocationContext context) {
+                planCalls.incrementAndGet();
                 return AgentPlan.create(
                         PlanType.EXECUTION, PlanOrigin.INITIAL, PlanOutcome.CONTINUE,
                         "write requested file",
@@ -124,67 +97,60 @@ class MainAgentRestartResumeTest {
             @Override public AgentDecision decide(
                     AgentRequest request, InvocationContext context, AgentPlan previousPlan,
                     PlanExecutionSnapshot snapshot) {
+                decisionCalls.incrementAndGet();
                 return AgentDecision.from(AgentPlan.create(
                         PlanType.EXECUTION, PlanOrigin.REPLANNED, PlanOutcome.COMPLETE,
-                        "file written", List.of(), "文件已写入并提交。"));
+                        "file written", List.of(), "文件已写入。"));
             }
         };
 
-        CheckpointStore checkpointStore = new InMemoryCheckpointStore();
-        SharedContinuationStore continuationStore = new SharedContinuationStore();
-
-        // 第一次进程：任务挂起等待审批。
-        String invocationId;
         try (MemoryService memory = MemoryService.inMemory()) {
-            MainAgent firstAgent = new MainAgent(
+            PlanExecuteAgent agent = new PlanExecuteAgent(
                     planner, executor, memory, new DefaultAgentFinalizer(),
-                    new AgentExecutionLimits(3, 10, 10, 5),
-                    new com.github.agentos.planner.DefaultObservationSummarizer(),
-                    continuationStore);
-            AgentRunner firstRuntime = new AgentRunner(firstAgent,
-                    com.github.agentos.kernel.AgentEventPublisher.NOOP, checkpointStore);
-            AgentState waiting = firstRuntime.run(
-                    AgentRequest.of("session-restart", "write and commit file"),
-                    InvocationContext.of("main-agent"));
-            invocationId = firstRuntime.latestInvocation("session-restart")
-                    .orElseThrow().invocationId();
+                    new AgentExecutionLimits(3, 10, 10, 5));
+            AgentRunner runtime = new AgentRunner(agent);
+            AgentState waiting = runtime.run(
+                    AgentRequest.of("session-1", "write file"),
+                    InvocationContext.of("plan-execute-agent"));
+            var invocation = runtime.latestInvocation("session-1").orElseThrow();
 
             assertThat(waiting.status()).isEqualTo(AgentState.Status.WAITING);
             assertThat(writes).hasValue(0);
-        }
+            assertThat(planCalls).hasValue(1);
+            assertThat(invocation.steps()).isZero();
+            assertThat(invocation.toolCalls()).isZero();
+            assertThat(runtime.checkpoint(invocation.invocationId())).get().satisfies(checkpoint -> {
+                assertThat(checkpoint.currentPlanId()).isNotBlank();
+                assertThat(checkpoint.currentStepId()).isEqualTo("write-step");
+            });
 
-        // 模拟重启：全新 MainAgent 与 AgentRunner，仅两个 Store 保留数据。
-        String pendingActionId = checkpointStore.load(invocationId)
-                .orElseThrow().pendingAction().pendingActionId();
-        assertThat(continuationStore.load(invocationId)).isPresent();
+            AgentState resumed = runtime.resume(
+                    invocation.invocationId(),
+                    PendingActionResolution.approved(
+                            invocation.pendingAction().pendingActionId()));
 
-        try (MemoryService memory = MemoryService.inMemory()) {
-            MainAgent secondAgent = new MainAgent(
-                    planner, executor, memory, new DefaultAgentFinalizer(),
-                    new AgentExecutionLimits(3, 10, 10, 5),
-                    new com.github.agentos.planner.DefaultObservationSummarizer(),
-                    continuationStore);
-            AgentRunner secondRuntime = new AgentRunner(secondAgent,
-                    com.github.agentos.kernel.AgentEventPublisher.NOOP, checkpointStore);
-
-            AgentState resumed = secondRuntime.resume(
-                    invocationId, PendingActionResolution.approved(pendingActionId));
-
-            // 已批准的写文件步骤直接执行；下一个高危步骤（提交）再次挂起等待审批。
             assertThat(resumed.status()).isEqualTo(AgentState.Status.WAITING);
             assertThat(writes).hasValue(1);
             assertThat(commits).hasValue(0);
+            assertThat(planCalls).hasValue(1);
+            assertThat(decisionCalls).hasValue(0);
+            assertThat(invocation.steps()).isEqualTo(1);
+            assertThat(invocation.toolCalls()).isEqualTo(1);
 
-            String secondActionId = secondRuntime.invocation(invocationId)
-                    .orElseThrow().pendingAction().pendingActionId();
-            AgentState committed = secondRuntime.resume(
-                    invocationId, PendingActionResolution.approved(secondActionId));
+            AgentState committed = runtime.resume(
+                    invocation.invocationId(),
+                    PendingActionResolution.approved(
+                            invocation.pendingAction().pendingActionId()));
 
             assertThat(committed.status()).isEqualTo(AgentState.Status.COMPLETED);
-            assertThat(committed.output()).isEqualTo("文件已写入并提交。");
+            assertThat(committed.output()).isEqualTo("文件已写入。");
+            assertThat(writes).hasValue(1);
             assertThat(commits).hasValue(1);
-            assertThat(checkpointStore.load(invocationId)).isEmpty();
-            assertThat(continuationStore.load(invocationId)).isEmpty();
+            assertThat(planCalls).hasValue(1);
+            assertThat(decisionCalls).hasValue(1);
+            assertThat(invocation.steps()).isEqualTo(2);
+            assertThat(invocation.toolCalls()).isEqualTo(2);
+            assertThat(runtime.checkpoint(invocation.invocationId())).isEmpty();
         }
     }
 }

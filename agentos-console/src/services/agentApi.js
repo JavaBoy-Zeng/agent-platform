@@ -85,33 +85,6 @@ async function consumeEventStream(response, onEvent, finalValue) {
   return finalResponse
 }
 
-/**
- * 使用 POST + SSE 流式执行 Agent。浏览器原生 EventSource 仅支持 GET，因此这里直接解析
- * fetch 的 ReadableStream，同时保留结构化 POST 请求体。
- */
-export async function runAgentStream(payload, onEvent = () => {}) {
-  const response = await apiFetch(apiUrl('/api/agents/runs/stream'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      ...authHeaders()
-    },
-    body: JSON.stringify(payload)
-  })
-
-  if (!response.ok) {
-    const body = await readBody(response)
-    throw new AgentApiError(body?.detail || 'Agent 流式运行请求失败', response.status)
-  }
-  const finalResponse = await consumeEventStream(
-    response, onEvent, parsed => parsed.event === 'state' ? parsed.data : null)
-  if (!finalResponse) {
-    throw new AgentApiError('SSE 连接结束前未收到 Agent 最终状态', response.status)
-  }
-  return finalResponse
-}
-
 /** 创建与页面连接解耦的后台 Agent 运行。 */
 export async function createAgentRun(payload) {
   const response = await apiFetch(apiUrl('/api/agent-runs'), {
@@ -161,9 +134,9 @@ export async function uploadSessionAttachments(sessionId, files) {
 
 /** 从指定序号之后补播事件，并继续订阅实时事件。 */
 export async function streamAgentRun(
-  runId, afterSequence = 0, onEvent = () => {}, signal
+  runId, afterSeq = 0, onEvent = () => {}, signal
 ) {
-  const query = new URLSearchParams({ after: String(Math.max(0, afterSequence || 0)) })
+  const query = new URLSearchParams({ afterSeq: String(Math.max(0, afterSeq || 0)) })
   const response = await fetch(
     apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}/events?${query}`),
     { headers: { Accept: 'text/event-stream', ...authHeaders() }, signal }
@@ -175,7 +148,9 @@ export async function streamAgentRun(
   const finalResponse = await consumeEventStream(
     response,
     onEvent,
-    parsed => parsed.event === 'state' ? parsed.data?.data : null
+    parsed => ['run.completed', 'run.failed', 'run.cancelled'].includes(parsed.event)
+      ? parsed.data?.data?.snapshot
+      : null
   )
   if (!finalResponse) {
     throw new AgentApiError('后台事件流已断开，将尝试恢复', response.status)
@@ -223,8 +198,8 @@ export async function getPendingAction(sessionId) {
 }
 
 export async function resolvePendingAction(invocationId, pendingActionId, approved) {
-  const response = await fetch(
-    apiUrl(`/api/agents/invocations/${encodeURIComponent(invocationId)}/resolution`),
+  const response = await apiFetch(
+    apiUrl(`/api/agent-runs/invocations/${encodeURIComponent(invocationId)}/resolution`),
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -233,7 +208,7 @@ export async function resolvePendingAction(invocationId, pendingActionId, approv
   )
   const body = await readBody(response)
   if (!response.ok) {
-    throw new AgentApiError(body?.detail || '处理审批操作失败', response.status)
+    throw new AgentApiError(body?.detail || '无法提交审批恢复任务', response.status)
   }
   return body
 }

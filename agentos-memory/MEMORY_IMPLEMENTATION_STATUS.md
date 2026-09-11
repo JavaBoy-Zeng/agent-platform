@@ -59,7 +59,7 @@ LlmAgentPlanner
 Agent 执行计划
     │
     ▼
-MainAgent
+PlanExecuteAgent
     │
     └── 成功后调用 MemoryService.capture()
             ├── 按稳定 businessKey 幂等、同事务保存 L0 + Pipeline Job
@@ -112,7 +112,7 @@ MainAgent
 | JDBC/SQLite 持久化 | 已实现 | [`JdbcMemoryStore`](src/main/java/com/github/agentos/memory/JdbcMemoryStore.java)、[`SqliteMemoryStore`](src/main/java/com/github/agentos/memory/SqliteMemoryStore.java) | 提供事务写入、幂等和版本保护、作用域查询与任务恢复。当前 JDBC 实现使用 SQLite 方言。 |
 | 数据库迁移与索引 | 已实现 | [`migration`](src/main/resources/com/github/agentos/memory/migration) | 内置 schema 历史、L0-L3/Job 建表和作用域/恢复队列索引，初始化时事务化执行。 |
 | 规划前记忆召回 | 已接入 | [`LlmAgentPlanner`](../agentos-planner/src/main/java/com/github/agentos/planner/LlmAgentPlanner.java) | 初始规划和重规划前调用 `MemoryService.recall()`。 |
-| 成功后记忆捕获 | 已接入 | [`MainAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/MainAgent.java) | Agent 执行成功后保存本轮输入、输出和工具结果。 |
+| 成功后记忆捕获 | 已接入 | [`PlanExecuteAgent`](../agentos-agent/src/main/java/com/github/agentos/agent/PlanExecuteAgent.java) | Agent 执行成功后保存本轮输入、输出和工具结果。 |
 | Spring 运行配置 | 已接入 | [`AgentOsConfiguration`](../agentos-server/src/main/java/com/github/agentos/server/config/AgentOsConfiguration.java) | 支持三种存储模式，并可通过 `processor.mode`、`embedding.mode` 正式切换规则/Hashing 与 OpenAI-compatible 模型。 |
 
 ## 5. 已实现能力的类级入口
@@ -130,7 +130,7 @@ MemoryService.capture(CompletedTurn turn)
 调用链：
 
 ```text
-MainAgent.run()
+PlanExecuteAgent.run()
   -> MemoryService.capture()
   -> MemoryPipeline.capture()
   -> MemoryStore.captureTurn() // L0 + Pipeline Job 同事务/outbox

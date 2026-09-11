@@ -52,8 +52,8 @@ class EventActionsTest {
 
     @Test
     void defaultEventCarriesActions() {
-        InvocationContext context = InvocationContext.of("main-agent").withInvocation(
-                new AgentInvocation("inv-1", "session-1", "main-agent", "", java.time.Instant.now()));
+        InvocationContext context = InvocationContext.of("plan-execute-agent").withInvocation(
+                new AgentInvocation("inv-1", "session-1", "plan-execute-agent", "", java.time.Instant.now()));
 
         DefaultAgentEvent plain = DefaultAgentEvent.of(
                 context, AgentEventType.STEP_STARTED, "step", Map.of());

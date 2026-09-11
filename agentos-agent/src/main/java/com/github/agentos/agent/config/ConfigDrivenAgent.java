@@ -2,7 +2,7 @@ package com.github.agentos.agent.config;
 
 import com.github.agentos.agent.Agent;
 import com.github.agentos.agent.AgentExecutionResult;
-import com.github.agentos.agent.workflow.BaseAgent;
+import com.github.agentos.agent.workflow.ResumableSpecialist;
 import com.github.agentos.kernel.AgentEventSink;
 import com.github.agentos.kernel.AgentExecutionLimits;
 import com.github.agentos.kernel.AgentRequest;
@@ -38,7 +38,7 @@ import java.util.UUID;
  *
  * <p>通过 {@link com.github.agentos.agent.workflow.AgentToolAdapter} 可暴露为工具。</p>
  */
-public final class ConfigDrivenAgent extends BaseAgent implements Agent {
+public final class ConfigDrivenAgent extends ResumableSpecialist implements Agent {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConfigDrivenAgent.class);
 
@@ -67,7 +67,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
             ChatClient chatClient,
             LlmFlow llmFlow,
             List<AgentTool> tools) {
-        super(definition.id(), definition.description(), List.of());
+        super(definition.id(), definition.description());
         this.definition = Objects.requireNonNull(definition, "definition must not be null");
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
         this.llmFlow = Objects.requireNonNull(llmFlow, "llmFlow must not be null");
@@ -89,7 +89,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
     }
 
     @Override
-    public AgentState run(
+    protected AgentState runWorkflow(
             AgentRequest request,
             InvocationContext context,
             AgentState runningState,
@@ -133,7 +133,8 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                                 + "可用工具：" + tools.stream().map(AgentTool::name).toList() + "\n"
                                 + "如果需要使用工具，请只返回工具名（不含参数）；"
                                 + "如果不需要工具，请直接返回最终答案。")));
-                String decision = chatClient.chat(request.sessionId(), planRequest).trim();
+                String decision = modelResult("decision", context,
+                        () -> chatClient.chat(request.sessionId(), planRequest)).trim();
 
                 // 尝试匹配工具名
                 AgentTool matched = tools.stream()
@@ -177,7 +178,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                     List.of(LlmMessage.user(answerPrompt))).withRouting(request);
             java.util.concurrent.atomic.AtomicInteger deltaSequence =
                     new java.util.concurrent.atomic.AtomicInteger();
-            String answer = chatClient.chatStream(
+            String answer = modelResult("answer", context, () -> chatClient.chatStream(
                     request.sessionId(),
                     answerRequest,
                     delta -> eventSink.emit(AgentRunEvent.of(
@@ -188,7 +189,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                                     "agentId", definition.id(),
                                     "sequence", deltaSequence.getAndIncrement(),
                                     "source", "model-sse"))))
-                    .answer();
+                    .answer());
 
             // 如果定义了 saveOutput，写入文件
             if (definition.saveOutput()) {
@@ -196,7 +197,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                         .filter(t -> "file_write".equals(t.name()))
                         .findFirst().orElse(null);
                 if (fileWrite != null) {
-                    String filename = definition.id() + "-" + System.currentTimeMillis() + ".md";
+                    String filename = remember("filename", () -> definition.id() + "-" + UUID.randomUUID() + ".md");
                     callObservedTool(fileWrite, "file_write",
                             Map.of("path", filename, "content", answer),
                             request, context, eventSink, planId, "save-output",
@@ -215,6 +216,8 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
                     answer,
                     Map.of("agentId", definition.id())));
             return runningState.complete(answer);
+        } catch (Suspended suspended) {
+            throw suspended;
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();
@@ -308,16 +311,7 @@ public final class ConfigDrivenAgent extends BaseAgent implements Agent {
             AgentTool tool, String toolName,
             Map<String, Object> arguments,
             AgentRequest request, InvocationContext context) {
-        try {
-            ToolContext toolContext = new ToolContext(
-                    request, context, "", "",
-                    AgentExecutionLimits.defaults(), Map.of(), tool);
-            return tool.execute(toolContext, new ToolCall(toolName, arguments));
-        } catch (Exception exception) {
-            LOGGER.warn("[{}] tool {} failed: {}",
-                    definition.id(), toolName, exception.getMessage());
-            return ToolResult.failure(ToolFailureType.TOOL_INTERNAL_ERROR, exception.getMessage());
-        }
+        return dispatchTool(tool, new ToolCall(toolName, arguments), request, context);
     }
 
     /** 返回 Agent 定义。 */

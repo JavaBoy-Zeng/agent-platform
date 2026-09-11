@@ -36,6 +36,12 @@ describe('renderMarkdown inline code 增强', () => {
     expect(html).not.toContain('<code>')
   })
 
+  it('裸 URL 保持完整并渲染为链接，不被文件路径规则拆分', () => {
+    const html = renderMarkdown('https://m.cq.bendibao.com/live/67253.shtm 总结一下')
+    expect(html).toContain('<a href="https://m.cq.bendibao.com/live/67253.shtm">')
+    expect(html).not.toContain('<code>/m.cq.bendibao.com/live/67253.shtm</code>')
+  })
+
   it('中文语境下的标识符正确识别', () => {
     const html = renderMarkdown('先看ChatStreamEvent.java再调用run_command即可')
     expect(html).toContain('<code>ChatStreamEvent.java</code>')

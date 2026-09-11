@@ -26,7 +26,7 @@ class PolicyDrivenAgentLoopTest {
 
         AgentState result = router.run(
                 new AgentRequest("s1", "run", Map.of("mode", "REACT")),
-                InvocationContext.of("main-agent"), AgentState.ready().startNextIteration());
+                InvocationContext.of("plan-execute-agent"), AgentState.ready().startNextIteration());
 
         assertThat(result.output()).isEqualTo("react");
     }

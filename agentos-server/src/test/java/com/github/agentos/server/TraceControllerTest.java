@@ -26,7 +26,7 @@ class TraceControllerTest {
         Instant t2 = t0.plusMillis(100);
         store.append(new Span("inv-1", "s0", "", "agent-run", Span.Kind.ROOT,
                 t0, t2, Span.Status.OK,
-                Map.of("sessionId", "sess-1", "agentId", "main-agent"), Map.of()));
+                Map.of("sessionId", "sess-1", "agentId", "plan-execute-agent"), Map.of()));
         store.append(new Span("inv-1", "s1", "s0", "model-call", Span.Kind.MODEL,
                 t1, t2, Span.Status.OK, Map.of("model", "gpt-4"), Map.of()));
 
@@ -36,7 +36,7 @@ class TraceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.traceId").value("inv-1"))
                 .andExpect(jsonPath("$.sessionId").value("sess-1"))
-                .andExpect(jsonPath("$.agentId").value("main-agent"))
+                .andExpect(jsonPath("$.agentId").value("plan-execute-agent"))
                 .andExpect(jsonPath("$.spanCount").value(2))
                 .andExpect(jsonPath("$.finishedSpanCount").value(2))
                 .andExpect(jsonPath("$.spans[0].spanId").value("s0"))

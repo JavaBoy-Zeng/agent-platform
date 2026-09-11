@@ -34,6 +34,7 @@ public final class UsageRecorder implements AgentPlugin {
     /** 记录一次调用并累计到会话账本。 */
     @Override
     public void onModelUsage(String sessionId, ModelUsage usage) {
+        sessionId = com.github.agentos.kernel.ModelUsageScope.sessionId(sessionId);
         if (sessionId == null || sessionId.isBlank() || usage == null) {
             return;
         }

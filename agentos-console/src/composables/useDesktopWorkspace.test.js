@@ -10,6 +10,14 @@ vi.mock('../services/desktopApi.js', () => ({
   invokeDesktop: (...args) => desktop.invoke(...args)
 }))
 
+vi.mock('../services/workspaceBridge.js', () => ({
+  createWorkspaceBridge: () => ({
+    connect: vi.fn(async (sessionId, workspaceId) => ({ workspaceId, workspaceSessionId: sessionId,
+      root: '/local/repo', branch: 'main', device: 'test Mac', osName: 'macos' })),
+    dispose: vi.fn(async () => {}), lockSession: vi.fn(async () => {})
+  })
+}))
+
 describe('desktop workspace state', () => {
   it('authorizes ADMIN users and stores task associations locally', async () => {
     desktop.invoke.mockImplementation(async command => {

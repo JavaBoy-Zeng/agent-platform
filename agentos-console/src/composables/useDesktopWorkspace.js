@@ -1,6 +1,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getAuthToken, getAuthUser, getServerUrl } from '../services/apiConfig.js'
 import { invokeDesktop, isDesktop } from '../services/desktopApi.js'
+import { createWorkspaceBridge } from '../services/workspaceBridge.js'
 
 const SESSION_WORKSPACES_KEY_PREFIX = 'agentos.session-workspaces.v3'
 const LEGACY_SESSION_WORKSPACE_KEYS = [
@@ -71,6 +72,24 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
   const gitBranchLoading = ref(false)
   const gitBranchError = ref('')
   const error = ref('')
+  const runtimeStorageKey = `agentos.workspace-runtime.v1.${encodeURIComponent(ownerId)}.${encodeURIComponent(getServerUrl())}`
+  let rememberedRuntimes = {}
+  try {
+    const saved = JSON.parse(localStorage.getItem(runtimeStorageKey) || '{}')
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      rememberedRuntimes = Object.fromEntries(Object.entries(saved)
+        .filter(([, value]) => value?.workspaceId && value?.root)
+        .map(([id, value]) => [id, { ...value, online: false, running: false, error: '请重新连接本机工作区' }]))
+    }
+  } catch { /* invalid local cache is ignored; the server retains the binding */ }
+  const executionRuntimes = ref(rememberedRuntimes)
+  const executionBridge = createWorkspaceBridge({
+    ensureGrant,
+    onChange(sessionId, runtime) {
+      executionRuntimes.value = { ...executionRuntimes.value, [sessionId]: runtime }
+      try { localStorage.setItem(runtimeStorageKey, JSON.stringify(executionRuntimes.value)) } catch { /* local only */ }
+    }
+  })
   const inspectorMode = ref('')
   const terminalOpen = ref(false)
   let refreshTimer
@@ -88,6 +107,10 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
   const currentWorkspaceId = computed(() => currentWorkspaceIds.value[0] || '')
   const currentWorkspace = computed(() => currentWorkspaces.value[0] || null)
   const available = computed(() => desktop && hasRole.value)
+  const executionRuntime = computed(() => executionRuntimes.value[currentSessionId.value] || null)
+  const workspaceRunning = computed(() => Boolean(agentConsole.busy?.value)
+    || Object.values(executionRuntimes.value).some(runtime =>
+      runtime.workspaceId === currentWorkspaceId.value && runtime.running))
 
   function serverUrl() {
     return getServerUrl() || import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8080'
@@ -259,12 +282,28 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
   }
 
   async function buildRunContext(mentionedPaths = []) {
-    if (!currentWorkspace.value) return null
+    if (!currentWorkspace.value) {
+      if (currentWorkspaceId.value) {
+        error.value = '任务绑定目录不可用，请重新连接本机工作区'
+        throw new Error(error.value)
+      }
+      return null
+    }
     if (contextLoading.value) throw new Error('正在读取本地项目上下文')
     contextLoading.value = true
     error.value = ''
     try {
-      return await call('workspace_context', { mentionedPaths })
+      const boundSessionId = currentSessionId.value
+      const boundWorkspaceId = currentWorkspaceId.value
+      const runtime = await executionBridge.connect(boundSessionId, boundWorkspaceId)
+      const context = await invokeDesktop('workspace_context', {
+        grantId: await ensureGrant(), workspaceId: boundWorkspaceId, mentionedPaths
+      })
+      if (boundSessionId !== currentSessionId.value || boundWorkspaceId !== currentWorkspaceId.value) {
+        throw new Error('任务已切换，请在当前任务重新发送')
+      }
+      return { ...context, workspaceId: boundWorkspaceId, workspaceRuntime: runtime }
+
     } catch (cause) {
       error.value = String(cause).replace(/^Error:\s*/, '') || '无法读取本地项目上下文'
       throw cause
@@ -314,6 +353,10 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
   }
 
   async function switchGitBranch(branch) {
+    if (workspaceRunning.value) {
+      gitBranchError.value = '该目录有任务正在运行，不能切换分支'
+      return false
+    }
     if (!currentWorkspace.value?.gitRepository || gitBranchLoading.value) return false
     const target = String(branch || '').trim()
     if (!target) return false
@@ -357,6 +400,7 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
 
   async function dispose() {
     clearInterval(refreshTimer)
+    await executionBridge.dispose()
     const active = grant.value
     grant.value = null
     inspectorMode.value = ''
@@ -399,6 +443,10 @@ export function useDesktopWorkspace(agentConsole, options = {}) {
 
   return {
     desktop,
+    executionRuntime,
+    workspaceRunning,
+    lockExecution: (locked, sessionId = currentSessionId.value) => executionBridge.lockSession(sessionId, locked),
+    reconnectExecution: () => buildRunContext(),
     available,
     hasRole,
     grant,

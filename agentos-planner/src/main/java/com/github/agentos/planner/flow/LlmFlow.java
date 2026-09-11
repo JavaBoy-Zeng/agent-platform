@@ -30,6 +30,6 @@ public final class LlmFlow {
         for (LlmRequestProcessor processor : processors) {
             request = processor.process(request, agentRequest);
         }
-        return request;
+        return request.withWorkspace(agentRequest);
     }
 }

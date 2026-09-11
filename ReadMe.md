@@ -36,7 +36,7 @@ flowchart LR
 一次请求从 HTTP 入口到最终回答的端到端链路（类名后标注所属模块）：
 
 ```text
-HTTP POST /api/agents/runs | /api/agent-runs | /api/agents/runs/stream
+HTTP POST /api/agents/runs | /api/agent-runs
     │
     ▼
 AgentController / BackgroundAgentRunController（server）
@@ -55,7 +55,7 @@ RoutingAgentLoop（agent·routing）三级路由
     │     └─► SimpleQaAgent（agent·loop）
     │             └─► LlmFlow 组装请求（planner·flow）
     │                     └─► ChatClient 单轮直答（server）────► 返回
-    └─ 任务请求 ──► MainAgent 规划循环（agent·loop）
+    └─ 任务请求 ──► PlanExecuteAgent 规划循环（agent·loop）
                       │
                       ▼
               ┌── 规划 ────────────────────────────┐
@@ -174,15 +174,6 @@ curl -X POST http://localhost:8080/api/agents/runs \
   -d '{"sessionId":"session-1","input":"hello agentos"}'
 ```
 
-实时查看规划、工具、Observation 和 Decision：
-
-```bash
-curl -N -X POST http://localhost:8080/api/agents/runs/stream \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"sessionId":"session-1","input":"hello agentos"}'
-```
-
 控制台默认使用与浏览器连接解耦的后台运行接口。创建后会返回 `runId`，页面刷新时可以查询快照，
 再从最后处理的事件序号继续补播和订阅：
 
@@ -192,12 +183,14 @@ curl -X POST http://localhost:8080/api/agent-runs \
   -d '{"sessionId":"session-1","input":"hello agentos"}'
 
 curl http://localhost:8080/api/agent-runs/{runId}
-curl -N "http://localhost:8080/api/agent-runs/{runId}/events?after=0"
+curl -N "http://localhost:8080/api/agent-runs/{runId}/events?afterSeq=0"
 curl -X POST http://localhost:8080/api/agent-runs/{runId}/cancel
 ```
 
-事件使用单调递增的 `sequence` 作为 SSE ID。断开或刷新页面只会移除订阅，不会取消后台任务；
+事件使用 Run 内单调递增的 `seq` 作为 SSE ID，并统一携带 `schemaVersion/eventId/runId/turnId/itemId`。
+断开或刷新页面只会移除订阅，不会取消后台任务；
 `cancel` 接口触发协作式取消，运行在下一个检查点进入 `CANCELLED` 终态。
+完整协议见 [`AgentStreamEvent 流式协议`](docs/AGENT_CONTROLLER_RUNS_STREAM_FLOW.md)。
 
 查询会话状态：
 

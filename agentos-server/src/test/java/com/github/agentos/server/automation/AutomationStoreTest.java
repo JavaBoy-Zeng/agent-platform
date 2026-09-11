@@ -23,7 +23,7 @@ class AutomationStoreTest {
         TriggerDefinition trigger = new TriggerDefinition(TriggerType.PERIOD, PeriodMode.BASIC,
                 PeriodUnit.DAILY, "09:00", null, null, null, null, null, "Asia/Shanghai");
         AutomationTask task = new AutomationTask("task-1", "team", "alice", "日报", "生成日报",
-                "main-agent", "model", "RISK_BASED", "desktop", "workspace", "project",
+                "plan-execute-agent", "model", "RISK_BASED", "desktop", "workspace", "project",
                 trigger, true, now.plusSeconds(60), null, null, now, now, 0);
         store.save(task);
 

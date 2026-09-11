@@ -10,7 +10,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/** 进程内线程安全 AgentRegistry，默认可只注册 main-agent。 */
+/** 进程内线程安全 AgentRegistry，默认可只注册 plan-execute-agent。 */
 public final class InMemoryAgentRegistry implements AgentRegistry {
 
     private final ConcurrentMap<String, Agent> agents = new ConcurrentHashMap<>();
@@ -37,7 +37,11 @@ public final class InMemoryAgentRegistry implements AgentRegistry {
     /** 返回已注册 Agent。 */
     @Override
     public Optional<Agent> find(String agentId) {
-        return Optional.ofNullable(agents.get(agentId));
+        Agent agent = agents.get(agentId);
+        if (agent == null && "main-agent".equals(agentId)) {
+            agent = agents.get("plan-execute-agent");
+        }
+        return Optional.ofNullable(agent);
     }
 
     /** 按标识排序返回全部已注册 Agent，使管理面板展示顺序稳定。 */

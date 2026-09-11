@@ -75,7 +75,7 @@ class ToolTrajectoryTest {
             payload.put("toolName", toolName);
         }
         return new DefaultAgentEvent(
-                "event-" + Math.random(), "session-1", "inv-1", "main-agent",
+                "event-" + Math.random(), "session-1", "inv-1", "plan-execute-agent",
                 Instant.now(), type, "", payload);
     }
 }

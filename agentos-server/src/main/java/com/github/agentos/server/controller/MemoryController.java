@@ -69,7 +69,7 @@ public class MemoryController {
             HttpServletRequest request,
             @RequestParam(required = false) String teamId,
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "main-agent") String agentId,
+            @RequestParam(defaultValue = "plan-execute-agent") String agentId,
             @RequestParam String sessionId,
             @RequestParam(defaultValue = "") String taskId,
             @RequestParam(defaultValue = "20") int recentLimit,

@@ -33,7 +33,7 @@ class SystemCatalogRoutingIntegrationTest {
 
         AgentState result = runner.run(
                 AgentRequest.of("catalog-routing-session", "AgentOS 现在有哪些工具"),
-                InvocationContext.of("main-agent"), events::add);
+                InvocationContext.of("plan-execute-agent"), events::add);
 
         assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
         assertThat(result.output()).contains(

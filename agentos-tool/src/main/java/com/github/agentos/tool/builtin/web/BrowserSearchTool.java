@@ -19,6 +19,8 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -46,8 +48,8 @@ public final class BrowserSearchTool implements AgentTool {
             Duration requestTimeout) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
-        this.endpoint = Objects.requireNonNull(endpoint, "endpoint must not be null");
-        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
+        this.endpoint = validEndpoint(endpoint);
+        this.requestTimeout = positiveDuration(requestTimeout);
     }
 
     @Override
@@ -57,9 +59,9 @@ public final class BrowserSearchTool implements AgentTool {
 
     @Override
     public String description() {
-        return "主要的网页浏览器搜索工具：通过自部署 SearXNG 元搜索引擎聚合 Google、Bing、"
-                + "DuckDuckGo 等来源，返回带标题、链接和摘要的结果列表。"
-                + "适合回答需要最新信息、实时数据或项目外知识的问题。";
+        return "根据关键词搜索公开互联网，返回候选页面的标题、URL 和摘要。"
+                + "它只负责发现来源，不读取网页正文；已知目标 URL 时使用 web_fetch，"
+                + "需要遍历一个网站的多个页面时使用 web_crawl。";
     }
 
     @Override
@@ -75,10 +77,11 @@ public final class BrowserSearchTool implements AgentTool {
 
     @Override
     public ToolResult execute(ToolContext context, ToolCall call) {
-        String query = requiredString(call.arguments().get("query"), "query");
+        String query = requiredString(call.arguments().get("query"), "query").trim();
         int maxResults = maxResults(call.arguments().get("max_results"));
+        String separator = endpoint.contains("?") ? "&" : "?";
         HttpRequest request = HttpRequest.newBuilder(
-                        URI.create(endpoint + "?q=" + encode(query) + "&format=json"))
+                        URI.create(endpoint + separator + "q=" + encode(query) + "&format=json"))
                 .timeout(requestTimeout)
                 .header("Accept", "application/json")
                 .GET()
@@ -114,6 +117,7 @@ public final class BrowserSearchTool implements AgentTool {
                     ToolFailureType.TOOL_INTERNAL_ERROR, "web search returned invalid JSON");
         }
         StringBuilder output = new StringBuilder();
+        List<Map<String, String>> results = new ArrayList<>();
         int count = 0;
         for (JsonNode result : root.path("results")) {
             if (count >= maxResults) {
@@ -122,10 +126,18 @@ public final class BrowserSearchTool implements AgentTool {
             String title = result.path("title").asString("");
             String url = result.path("url").asString("");
             String content = result.path("content").asString("");
+            if (url.isBlank()) {
+                continue;
+            }
             output.append(count + 1).append(". ").append(title)
                     .append("\n   ").append(url)
                     .append("\n   ").append(content.isBlank() ? "" : abbreviate(content))
                     .append('\n');
+            Map<String, String> structuredResult = new LinkedHashMap<>();
+            structuredResult.put("title", title);
+            structuredResult.put("url", url);
+            structuredResult.put("snippet", abbreviate(content));
+            results.add(Map.copyOf(structuredResult));
             count++;
         }
         if (count == 0) {
@@ -133,7 +145,8 @@ public final class BrowserSearchTool implements AgentTool {
         }
         return ToolResult.success(
                 output.toString().stripTrailing(),
-                "", Map.of("resultCount", count), com.github.agentos.tool.api.ToolActions.none());
+                "", Map.of("resultCount", count, "results", List.copyOf(results)),
+                com.github.agentos.tool.api.ToolActions.none());
     }
 
     private static ToolFailureType failureTypeForStatus(int statusCode) {
@@ -178,6 +191,29 @@ public final class BrowserSearchTool implements AgentTool {
 
     private static String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static String validEndpoint(String endpoint) {
+        String value = Objects.requireNonNull(endpoint, "endpoint must not be null").trim();
+        URI uri;
+        try {
+            uri = URI.create(value);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("endpoint must be a valid http(s) URL", exception);
+        }
+        if (!("http".equalsIgnoreCase(uri.getScheme())
+                || "https".equalsIgnoreCase(uri.getScheme())) || uri.getHost() == null) {
+            throw new IllegalArgumentException("endpoint must be a valid http(s) URL");
+        }
+        return value;
+    }
+
+    private static Duration positiveDuration(Duration value) {
+        Objects.requireNonNull(value, "requestTimeout");
+        if (value.isZero() || value.isNegative()) {
+            throw new IllegalArgumentException("requestTimeout must be positive");
+        }
+        return value;
     }
 
     private static String abbreviate(String value) {

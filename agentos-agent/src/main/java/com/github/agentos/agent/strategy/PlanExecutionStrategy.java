@@ -8,7 +8,7 @@ import com.github.agentos.kernel.AgentState;
 
 import java.util.Objects;
 
-/** 将既有 Plan-and-Execute 流程（如 MainAgent）提升为可路由执行策略。 */
+/** 将既有 Plan-and-Execute 流程（如 PlanExecuteAgent）提升为可路由执行策略。 */
 public final class PlanExecutionStrategy implements AgentLoop {
 
     private final AgentLoop delegate;

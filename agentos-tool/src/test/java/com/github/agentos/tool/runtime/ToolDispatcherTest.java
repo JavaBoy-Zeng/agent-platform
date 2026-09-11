@@ -178,9 +178,9 @@ class ToolDispatcherTest {
                 new InMemoryCheckpointStore(), sessions);
 
         String first = runner.run(
-                AgentRequest.of("session-1", "first"), InvocationContext.of("main-agent")).output();
+                AgentRequest.of("session-1", "first"), InvocationContext.of("plan-execute-agent")).output();
         String second = runner.run(
-                AgentRequest.of("session-1", "second"), InvocationContext.of("main-agent")).output();
+                AgentRequest.of("session-1", "second"), InvocationContext.of("plan-execute-agent")).output();
 
         assertThat(first).isEqualTo("seen=0");
         // 工具写入的 stateDelta 经事件合并进会话状态，下一次运行的工具能读到。
@@ -195,7 +195,7 @@ class ToolDispatcherTest {
 
     private static ToolDispatcher.ToolContextFactory contextFactory() {
         return tool -> new ToolContext(
-                AgentRequest.of("session-1", "test"), InvocationContext.of("main-agent"),
+                AgentRequest.of("session-1", "test"), InvocationContext.of("plan-execute-agent"),
                 "plan-1", "step-1", AgentExecutionLimits.defaults(), Map.of(), tool);
     }
 

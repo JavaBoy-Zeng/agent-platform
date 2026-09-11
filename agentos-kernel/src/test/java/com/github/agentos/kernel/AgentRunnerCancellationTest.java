@@ -20,7 +20,7 @@ class AgentRunnerCancellationTest {
 
         assertThat(runner.cancel("missing-session", "nope")).isFalse();
 
-        runner.run(AgentRequest.of("session-1", "objective"), InvocationContext.of("main-agent"));
+        runner.run(AgentRequest.of("session-1", "objective"), InvocationContext.of("plan-execute-agent"));
 
         assertThat(runner.cancel("session-1", "too late")).isFalse();
     }
@@ -35,7 +35,7 @@ class AgentRunnerCancellationTest {
 
         Thread worker = new Thread(() -> runner.run(
                 AgentRequest.of("session-cancel", "objective"),
-                InvocationContext.of("main-agent")));
+                InvocationContext.of("plan-execute-agent")));
         worker.start();
         assertThat(enteredLoop.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -69,7 +69,7 @@ class AgentRunnerCancellationTest {
 
         Thread worker = new Thread(() -> runner.run(
                 AgentRequest.of("session-interrupt", "objective"),
-                InvocationContext.of("main-agent")));
+                InvocationContext.of("plan-execute-agent")));
         worker.start();
         assertThat(enteredLoop.await(5, TimeUnit.SECONDS)).isTrue();
         worker.interrupt();
@@ -97,7 +97,7 @@ class AgentRunnerCancellationTest {
                 AgentExecutionLimits.defaults(), AgentPluginManager.of(plugin));
 
         AgentState result = runner.run(
-                AgentRequest.of("session-ok", "objective"), InvocationContext.of("main-agent"));
+                AgentRequest.of("session-ok", "objective"), InvocationContext.of("plan-execute-agent"));
 
         assertThat(result.status()).isEqualTo(AgentState.Status.COMPLETED);
         assertThat(plugin.calls).containsSubsequence("beforeRun", "afterRun:COMPLETED");

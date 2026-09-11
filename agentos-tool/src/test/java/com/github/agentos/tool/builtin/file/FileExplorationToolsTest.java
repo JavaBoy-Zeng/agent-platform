@@ -76,8 +76,8 @@ class FileExplorationToolsTest {
     void searchesByNameAndLiteralContent() throws Exception {
         Files.createDirectories(directory.resolve("src"));
         Files.writeString(
-                directory.resolve("src/MainAgent.java"),
-                "line one\nclass MainAgent {}\n",
+                directory.resolve("src/PlanExecuteAgent.java"),
+                "line one\nclass PlanExecuteAgent {}\n",
                 StandardCharsets.UTF_8);
         FileSearchTool tool = new FileSearchTool(new AllowAllReadableFileAccessPolicy());
 
@@ -88,13 +88,13 @@ class FileExplorationToolsTest {
         ToolResult contents = tool.execute(ToolContexts.testContext(tool), new ToolCall("file_search", Map.of(
                 "path", directory.toString(),
                 "mode", "CONTENT",
-                "query", "class mainagent",
+                "query", "class planexecuteagent",
                 "caseSensitive", false)));
 
         assertThat(names.success()).isTrue();
-        assertThat(names.output()).contains("MainAgent.java");
+        assertThat(names.output()).contains("PlanExecuteAgent.java");
         assertThat(contents.success()).isTrue();
-        assertThat(contents.output()).contains("MainAgent.java:2", "class MainAgent");
+        assertThat(contents.output()).contains("PlanExecuteAgent.java:2", "class PlanExecuteAgent");
     }
 
     @Test

@@ -147,7 +147,7 @@ public final class LlmAgentPlanner implements AgentPlanner {
                 memoryContext,
                 previousPlan,
                 snapshot,
-                toolRegistry.definitions(),
+                toolRegistry.definitions(context),
                 Math.clamp(remainingSteps, 0, planValidator.maxSteps()));
 
         ModelPlan modelPlan = Objects.requireNonNull(
@@ -160,6 +160,14 @@ public final class LlmAgentPlanner implements AgentPlanner {
                     "[agent-grounding] replaced model plan sessionId={} originalOutcome={} enforcedOutcome={} enforcedSteps={}",
                     request.sessionId(), modelPlan.outcome(), groundedPlan.outcome(),
                     groundedPlan.steps() == null ? 0 : groundedPlan.steps().size());
+        }
+        if (toolRegistry.isOrchestrator(context) && groundedPlan != modelPlan
+                && groundedPlan.steps() != null) {
+            groundedPlan = new ModelPlan(groundedPlan.type(), groundedPlan.outcome(), groundedPlan.objective(),
+                    groundedPlan.steps().stream().map(step -> "file_read".equals(step.toolName())
+                            ? new ModelPlan.Step(step.id(), step.description(), step.optional(), "workspace-agent",
+                                    java.util.Map.of("objective", "读取文件并返回原文证据与续读元数据，严格使用参数："
+                                            + step.arguments())) : step).toList(), groundedPlan.finalAnswer());
         }
         AgentPlan plan = toAgentPlan(groundedPlan, origin);
         if (plan.steps().size() > planningRequest.maxSteps()) {

@@ -39,6 +39,10 @@ public class ConfigAgentConfiguration implements SmartInitializingSingleton {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConfigAgentConfiguration.class);
 
+    private final com.github.agentos.tool.runtime.ToolDispatcher dispatcher;
+    private final com.github.agentos.agent.loop.ContinuationStore continuations;
+    private final com.github.agentos.kernel.CheckpointStore checkpoints;
+    private final com.github.agentos.kernel.AgentExecutionLimits limits;
     private final ChatClient chatClient;
     private final ToolRegistry toolRegistry;
     private final AgentRegistry agentRegistry;
@@ -48,11 +52,19 @@ public class ConfigAgentConfiguration implements SmartInitializingSingleton {
 
     public ConfigAgentConfiguration(
             ChatClient chatClient,
+            com.github.agentos.tool.runtime.ToolDispatcher dispatcher,
+            com.github.agentos.agent.loop.ContinuationStore continuations,
+            com.github.agentos.kernel.CheckpointStore checkpoints,
+            com.github.agentos.kernel.AgentExecutionLimits limits,
             ToolRegistry toolRegistry,
             AgentRegistry agentRegistry,
             ObjectMapper objectMapper,
             @Qualifier("rootedFileAccessPolicy") FileAccessPolicy fileAccessPolicy,
             @Value("${agentos.agents.config-file:}") String configFile) {
+        this.dispatcher = dispatcher;
+        this.continuations = continuations;
+        this.checkpoints = checkpoints;
+        this.limits = limits;
         this.chatClient = chatClient;
         this.toolRegistry = toolRegistry;
         this.agentRegistry = agentRegistry;
@@ -83,12 +95,15 @@ public class ConfigAgentConfiguration implements SmartInitializingSingleton {
             List<Agent> agents = factory.buildAll(definitions);
 
             for (Agent agent : agents) {
+                if (agent instanceof ConfigDrivenAgent driven) {
+                    driven.configureExecution(dispatcher, continuations, limits);
+                }
                 agentRegistry.register(agent);
                 LOGGER.info("[config-agents] registered agent id={}", agent.id());
 
                 // 暴露为工具
                 if (agent instanceof ConfigDrivenAgent driven && driven.definition().exposeAsTool()) {
-                    AgentToolAdapter adapter = new AgentToolAdapter(driven);
+                    AgentToolAdapter adapter = new AgentToolAdapter(driven, com.github.agentos.tool.api.AgentTool.RiskLevel.LOW, checkpoints);
                     try {
                         toolRegistry.register(adapter);
                         LOGGER.info("[config-agents] exposed agent as tool name={}", agent.id());

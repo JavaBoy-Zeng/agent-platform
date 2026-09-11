@@ -35,7 +35,7 @@ AgentOS 已经形成独立的架构方向，以下能力应作为自身特点保
 | 运行入口 | `Runner`、`InMemoryRunner` | `AgentRunner`、`AgentRunCoordinator` | 一次运行如何创建、串行化、结束和清理 |
 | 调用上下文 | `InvocationContext`、`RunConfig` | `InvocationContext`、`AgentExecutionLimits` | 身份、预算、取消、事件、产物如何传递 |
 | Agent 抽象 | `BaseAgent`、`LlmAgent` | `AgentLoop`、`Agent`、`workflow.BaseAgent` | Agent 的最小职责和扩展边界是什么 |
-| Agent 循环 | `BaseLlmFlow`、`SingleFlow`、`AutoFlow` | `MainAgent`、`LlmAgentPlanner`、`LlmFlow` | 模型调用、工具调用和停止判断如何闭环 |
+| Agent 循环 | `BaseLlmFlow`、`SingleFlow`、`AutoFlow` | `PlanExecuteAgent`、`LlmAgentPlanner`、`LlmFlow` | 模型调用、工具调用和停止判断如何闭环 |
 | 工具系统 | `BaseTool`、`FunctionTool`、`ToolContext` | `AgentTool`、`ToolDispatcher`、`ToolContext` | Schema、校验、执行、错误、确认如何统一 |
 | 事件模型 | `Event`、`EventActions` | `AgentRunEvent`、`EventActions`、`AgentEventPublisher` | 事件是否可持久化、重放和恢复状态 |
 | 会话状态 | `Session`、`BaseSessionService` | `Session`、`SessionService`、`SessionState` | 历史、状态和运行事件的边界是什么 |
@@ -78,7 +78,7 @@ AgentOS 已经形成独立的架构方向，以下能力应作为自身特点保
 
 **AgentOS 对照范围**
 
-- `SimpleQaAgent`、`MainAgent`；
+- `SimpleQaAgent`、`PlanExecuteAgent`；
 - `AgentTool`、`ToolDefinition`、`ToolDispatcher`、`ToolResult`；
 - `OpenAiCompatibleModelClient`。
 
@@ -138,7 +138,7 @@ AgentOS 已经形成独立的架构方向，以下能力应作为自身特点保
 
 - `LlmFlow` 及其 processors；
 - `LlmAgentPlanner`、`PlanValidator`、`PlanExecutor`；
-- `MainAgent` 的 Observation、Decision 和 Replan 循环。
+- `PlanExecuteAgent` 的 Observation、Decision 和 Replan 循环。
 
 **研究问题**
 

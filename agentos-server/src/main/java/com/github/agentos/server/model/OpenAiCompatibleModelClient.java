@@ -110,6 +110,11 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
 //        """;
 
     private static final String SYSTEM_PROMPT = """
+        编排边界：只能调用 availableTools 中实际提供的能力。生产 PlanExecuteAgent 的能力都是 Agent 委派，
+        通过 objective 描述子任务；文件读取、修改、命令执行交给 workspace-agent，
+        日期、天气和外部集成交给 utility-agent，检索和文档生成优先使用对应专才。
+        下文提到 file_read 等原始工具时，编排层应委派专才执行并返回证据，不得生成未提供的工具调用。
+
         你是 Agent Runtime 的任务规划器。
 
         你的职责是根据当前证据生成下一份可执行计划，或者在信息充分时返回最终回答。
@@ -219,7 +224,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         23. 区分“打开界面”和“获取内容”这两类动作：
             用 run_command 启动浏览器只产生 GUI 副作用，页面内容不会回到你的上下文。
             当用户要求基于网上资料回答时，必须用已注册的搜索工具
-            （browser_search 或 web_search）真实取回结果，再基于返回内容作答。
+            （browser_search、web_fetch 或 web_crawl）真实取回结果，再基于返回内容作答。
             禁止在没有取回内容的情况下声称已经检索、已参考资料或已核对来源；
             若只用内部知识作答，必须如实说明这一点。
             同时，工具清单里存在联网工具时，不得声称“当前环境不支持联网检索”。
@@ -316,13 +321,16 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         }
 
         String model = modelFor(request);
-        HttpRequest httpRequest = createHttpRequest(request);
+        String traceCallId = java.util.UUID.randomUUID().toString();
+        StringBuilder traceBody = new StringBuilder();
+        HttpRequest httpRequest = createHttpRequest(request, traceCallId);
         long requestStarted = System.nanoTime();
         LOGGER.info("[model-call] started sessionId={} model={} endpoint={} replanning={}",
                 request.agentRequest().sessionId(), model, properties.getEndpoint(),
                 request.replanning());
         try {
             HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            traceBody.append(response.body());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new ModelClientException("Model endpoint returned HTTP " + response.statusCode() + errorDetail(response.body()));
             }
@@ -334,10 +342,15 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                     elapsedMillis(requestStarted));
             return plan;
         } catch (InterruptedException exception) {
+            traceBody.append("\n[interrupted] ").append(exception.getMessage());
             Thread.currentThread().interrupt();
             throw new ModelClientException("Model request was interrupted", exception);
         } catch (IOException exception) {
+            traceBody.append("\n[transport error] ").append(exception.getMessage());
             throw new ModelClientException("Model endpoint request failed: " + exception.getMessage(), exception);
+        } finally {
+            com.github.agentos.kernel.ExecutionTrace.recordCurrent(traceCallId, "model_response",
+                    "规划模型返回 · " + model, traceBody.toString());
         }
     }
 
@@ -359,7 +372,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         }
     }
 
-    private HttpRequest createHttpRequest(PlanningRequest request) {
+    private HttpRequest createHttpRequest(PlanningRequest request, String traceCallId) {
         String body;
         try {
             body = objectMapper.writeValueAsString(requestBody(request));
@@ -367,6 +380,8 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
             throw new ModelClientException("Failed to serialize the model planning request", exception);
         }
 
+        com.github.agentos.kernel.ExecutionTrace.recordCurrent(traceCallId, "model_request",
+                "规划模型请求 · " + modelFor(request), body);
         HttpRequest.Builder builder = HttpRequest.newBuilder(properties.getEndpoint()).timeout(properties.getRequestTimeout()).header("Content-Type", "application/json").header("Accept", "application/json").POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
         if (properties.getApiKey() != null && !properties.getApiKey().isBlank()) {
             builder.header("Authorization", "Bearer " + properties.getApiKey().trim());
@@ -485,7 +500,14 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 "taskId", request.agentContext().taskId()));
         context.put("memory", request.memoryContext().formattedContext());
         context.put("memoryDegraded", request.memoryContext().degraded());
-        context.put("runtimeEnvironment", runtimeEnvironment());
+        if (request.agentRequest().attributes().get("workspaceRuntime") instanceof Map<?, ?> workspace) {
+            context.put("runtimeEnvironment", Map.of(
+                    "workingDirectory", workspace.get("root"), "osName", workspace.get("osName"),
+                    "workspace", workspace, "toolExecutionHost", "文件、命令、Git 工具在绑定的桌面本机执行，子 Agent 继承；其他工具仍按其定义执行。",
+                    "fileAccess", Map.of("mode", "ROOTED", "allowedRoot", workspace.get("root"))));
+        } else {
+            context.put("runtimeEnvironment", runtimeEnvironment());
+        }
         context.put("availableTools", request.availableTools());
         context.put("maxSteps", request.maxSteps());
 
@@ -590,7 +612,9 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
                 "properties", completeProperties,
                 "required", List.of("type", "outcome", "objective", "finalAnswer"),
                 "additionalProperties", false));
-        return Map.of("oneOf", planVariants);
+        return Map.of(
+                "type", "object",
+                "oneOf", planVariants);
     }
 
     private Map<String, Object> continueSchema(

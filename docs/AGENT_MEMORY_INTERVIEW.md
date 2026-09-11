@@ -75,7 +75,7 @@ flowchart TD
     Request["用户请求"] --> Planner["LlmAgentPlanner"]
     Planner -->|"规划前召回"| Recall["MemoryService.recall"]
     Recall -->|"返回 MemoryContext"| Planner
-    Planner --> Agent["MainAgent 执行"]
+    Planner --> Agent["PlanExecuteAgent 执行"]
     Agent -->|"仅成功后捕获"| Capture["MemoryService.capture"]
 
     Capture --> L0["L0 成功轮次快照"]
@@ -150,7 +150,7 @@ L0 的来源关联，但还没有实现上游短期记忆中的 Mermaid 画布�
 
 ```mermaid
 sequenceDiagram
-    participant A as MainAgent
+    participant A as PlanExecuteAgent
     participant S as MemoryService
     participant P as MemoryPipeline
     participant DB as MemoryStore

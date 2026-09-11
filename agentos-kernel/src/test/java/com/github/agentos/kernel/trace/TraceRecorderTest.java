@@ -24,8 +24,8 @@ class TraceRecorderTest {
 
         String invocationId = "inv-1";
         AgentInvocation invocation = new AgentInvocation(
-                invocationId, "session-1", "main-agent", "task-1", Instant.now());
-        InvocationContext context = InvocationContext.of("main-agent")
+                invocationId, "session-1", "plan-execute-agent", "task-1", Instant.now());
+        InvocationContext context = InvocationContext.of("plan-execute-agent")
                 .withInvocation(invocation);
         AgentRequest request = AgentRequest.of("session-1", "tell me the weather");
 
@@ -48,7 +48,7 @@ class TraceRecorderTest {
 
         Span root = spans.stream().filter(s -> s.kind() == Span.Kind.ROOT).findFirst().orElseThrow();
         assertThat(root.status()).isEqualTo(Span.Status.OK);
-        assertThat(root.attributes()).containsEntry("agentId", "main-agent");
+        assertThat(root.attributes()).containsEntry("agentId", "plan-execute-agent");
         assertThat(root.attributes()).containsEntry("finalStatus", "COMPLETED");
         assertThat(root.attributes()).containsEntry("output", "28℃ sunny");
         assertThat(root.parentSpanId()).isEmpty();

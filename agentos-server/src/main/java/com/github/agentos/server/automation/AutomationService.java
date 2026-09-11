@@ -18,6 +18,7 @@ import com.github.agentos.server.automation.AutomationModels.WorkspaceContextFil
 import com.github.agentos.server.history.SessionHistoryService;
 import com.github.agentos.server.model.ModelProviderService;
 import com.github.agentos.server.run.AgentRunCoordinator;
+import com.github.agentos.server.run.AgentRunSnapshot;
 import com.github.agentos.server.security.RequestIdentity;
 import org.springframework.scheduling.annotation.Scheduled;
 
@@ -36,7 +37,11 @@ public final class AutomationService {
     private static final Duration CLAIM_LEASE = Duration.ofSeconds(60);
     private static final int MAX_CONTEXT_FILES = 8;
     private static final int MAX_CONTEXT_FILE_CHARS = 12 * 1024;
-    private static final int MAX_CONTEXT_TOTAL_CHARS = 28 * 1024;
+    // 与 ReactLoopConfiguration.agentos.agent.react.max-context-chars（默认 24 KB）对齐。
+    // buildRunInput 还会拼上 head + tree 等说明（数百字符），为此正文总长预留约 1 KB
+    // 头部空间，确保拼出的种子消息 ≤ 24 KB，ConversationCompactor 永远不需要为了
+    // 给头部腾位置而丢弃最新工具观察，避免模型失忆型死循环。
+    private static final int MAX_CONTEXT_TOTAL_CHARS = 23 * 1024;
 
     private final AutomationStore store;
     private final AutomationScheduleCalculator calculator;
@@ -73,7 +78,7 @@ public final class AutomationService {
         Instant now = Instant.now();
         boolean enabled = request.enabled() == null || request.enabled();
         AutomationTask task = new AutomationTask(UUID.randomUUID().toString(), identity.teamId(),
-                identity.userId(), value.name(), value.prompt(), "main-agent", value.modelId(),
+                identity.userId(), value.name(), value.prompt(), "plan-execute-agent", value.modelId(),
                 value.approvalMode(), value.desktopClientId(), value.workspaceId(), value.workspaceName(),
                 value.trigger(), enabled, enabled ? calculator.next(value.trigger(), now) : null,
                 null, null, now, now, 0);
@@ -90,7 +95,7 @@ public final class AutomationService {
         Instant next = !enabled ? null : scheduleChanged || !current.enabled()
                 ? calculator.next(value.trigger(), now) : current.nextTriggerAt();
         AutomationTask updated = new AutomationTask(current.automationId(), current.teamId(),
-                current.userId(), value.name(), value.prompt(), "main-agent", value.modelId(),
+                current.userId(), value.name(), value.prompt(), "plan-execute-agent", value.modelId(),
                 value.approvalMode(), value.desktopClientId(), value.workspaceId(), value.workspaceName(),
                 value.trigger(), enabled, next, current.lastTriggerAt(), null, current.createdAt(),
                 now, current.version() + 1);
@@ -200,7 +205,7 @@ public final class AutomationService {
         AutomationExecution running = copyExecution(execution, ExecutionStatus.RUNNING, now, null,
                 sessionId, "", "", "", "", now);
         store.save(running);
-        AgentRunCoordinator.RunSnapshot run;
+        AgentRunSnapshot run;
         try {
             run = coordinator.start(request, invocation,
                     snapshot -> finishExecution(execution.executionId(), identity, snapshot));
@@ -287,10 +292,9 @@ public final class AutomationService {
     }
 
     private void finishExecution(
-            String executionId, RequestIdentity identity, AgentRunCoordinator.RunSnapshot snapshot) {
+            String executionId, RequestIdentity identity, AgentRunSnapshot snapshot) {
         store.execution(executionId, identity.teamId(), identity.userId()).ifPresent(current -> {
-            AgentState state = snapshot.state();
-            ExecutionStatus status = switch (state.status()) {
+            ExecutionStatus status = switch (snapshot.status()) {
                 case COMPLETED -> ExecutionStatus.COMPLETED;
                 case WAITING -> ExecutionStatus.WAITING;
                 case CANCELLED -> ExecutionStatus.CANCELLED;
@@ -299,7 +303,8 @@ public final class AutomationService {
             Instant now = Instant.now();
             store.save(copyExecution(current, status, current.startedAt(), now,
                     current.sessionId(), snapshot.runId(), snapshot.invocationId(),
-                    text(state.output(), 1000), text(state.error(), 1000), now));
+                    text(snapshot.output(), 1000),
+                    text(snapshot.error() == null ? "" : snapshot.error().message(), 1000), now));
         });
     }
 
@@ -325,18 +330,25 @@ public final class AutomationService {
         List<String> tree = context.tree() == null ? List.of() : context.tree().stream()
                 .limit(400).map(value -> text(value, 500)).toList();
         int total = 0;
+        int droppedOrTruncatedByServer = 0;
         java.util.ArrayList<WorkspaceContextFile> files = new java.util.ArrayList<>();
         for (WorkspaceContextFile file : context.files() == null ? List.<WorkspaceContextFile>of() : context.files()) {
-            if (files.size() >= MAX_CONTEXT_FILES || total >= MAX_CONTEXT_TOTAL_CHARS) break;
+            if (files.size() >= MAX_CONTEXT_FILES || total >= MAX_CONTEXT_TOTAL_CHARS) {
+                droppedOrTruncatedByServer++;
+                continue;
+            }
             String content = text(file.content(), Math.min(MAX_CONTEXT_FILE_CHARS,
                     MAX_CONTEXT_TOTAL_CHARS - total));
             total += content.length();
+            boolean serverTruncated = content.length() < (file.content() == null ? 0 : file.content().length());
             files.add(new WorkspaceContextFile(text(file.path(), 500), content,
-                    file.truncated() || content.length() < (file.content() == null ? 0 : file.content().length()),
-                    file.mentioned()));
+                    file.truncated() || serverTruncated, file.mentioned()));
         }
+        boolean serverTruncated = droppedOrTruncatedByServer > 0
+                || total >= MAX_CONTEXT_TOTAL_CHARS;
         return new WorkspaceContext(text(context.name(), 256).isBlank() ? fallbackName
-                : text(context.name(), 256), tree, List.copyOf(files), context.truncated());
+                : text(context.name(), 256), tree, List.copyOf(files),
+                context.truncated() || serverTruncated);
     }
 
     private static String buildRunInput(String prompt, WorkspaceContext context) {
@@ -351,6 +363,9 @@ public final class AutomationService {
             input.append("\n--- BEGIN ").append(file.mentioned() ? "MENTIONED LOCAL FILE: " : "LOCAL FILE: ")
                     .append(safeLabel(file.path())).append(file.truncated() ? "（内容已截断）" : "")
                     .append(" ---\n").append(file.content()).append("\n--- END LOCAL FILE ---\n");
+        }
+        if (context.truncated()) {
+            input.append("\n(部分文件超出上下文预算已被裁剪或丢弃，需要完整内容时调用 file_read 等工具读取。)\n");
         }
         return input.toString();
     }

@@ -68,8 +68,9 @@ public final class WebCrawlTool implements AgentTool {
 
     @Override
     public String description() {
-        return "从指定入口遍历网站并抓取多个页面的 Markdown 正文。适合文档站、帮助中心"
-                + "等多页资料；已知单页 URL 时应优先使用 web_fetch。";
+        return "从网站入口遍历并抓取多个页面的 Markdown 正文，适合文档站、帮助中心"
+                + "等多页资料。调用耗时和输出量通常较大；关键词检索使用 browser_search，"
+                + "单个已知 URL 使用 web_fetch。";
     }
 
     @Override

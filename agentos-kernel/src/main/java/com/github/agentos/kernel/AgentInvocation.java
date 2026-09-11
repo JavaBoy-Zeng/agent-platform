@@ -20,6 +20,44 @@ public final class AgentInvocation {
     private final AtomicInteger toolCalls = new AtomicInteger();
     private final AtomicInteger replans = new AtomicInteger();
     private final AtomicInteger steps = new AtomicInteger();
+    private String modelUsageSessionId;
+    private boolean delegatedBudget;
+    private ModelCallBudget modelCallBudget = new ModelCallBudget();
+
+    /** 子任务保留自己的计数，但与父任务共享模型调用总预算。 */
+    public void shareModelCallBudget(AgentInvocation parent) {
+        this.modelCallBudget = Objects.requireNonNull(parent).modelCallBudget;
+        this.delegatedBudget = true;
+        this.modelUsageSessionId = parent.modelUsageSessionId;
+    }
+
+    public void configureModelCallBudget(int limit, int consumed) {
+        modelCallBudget.configure(limit, consumed);
+    }
+
+    public boolean reserveModelCall() { return modelCallBudget.reserve(0); }
+    /** 子任务为根 Agent 留一次整理已有证据的调用。 */
+    public boolean reserveSpecialistModelCall() { return modelCallBudget.reserve(delegatedBudget ? 1 : 0); }
+    public String modelUsageSessionId() { return modelUsageSessionId; }
+    public int totalModelCalls() { return modelCallBudget.used(); }
+    public int remainingModelCalls() { return modelCallBudget.remaining(); }
+
+    private static final class ModelCallBudget {
+        private int limit = Integer.MAX_VALUE;
+        private int used;
+        synchronized void configure(int value, int consumed) {
+            if (limit == Integer.MAX_VALUE) limit = value;
+            used = Math.max(used, consumed);
+        }
+        synchronized boolean reserve(int leave) {
+            if (used >= limit - leave) return false;
+            used++;
+            return true;
+        }
+        synchronized int used() { return used; }
+        synchronized int remaining() { return Math.max(0, limit - used); }
+    }
+
     private volatile Instant finishedAt;
     private volatile AgentRunStatus status;
     private volatile Throwable error;
@@ -31,6 +69,7 @@ public final class AgentInvocation {
             String invocationId, String sessionId, String agentId, String taskId, Instant startedAt) {
         this.invocationId = requireText(invocationId, "invocationId");
         this.sessionId = requireText(sessionId, "sessionId");
+        this.modelUsageSessionId = this.sessionId;
         this.agentId = requireText(agentId, "agentId");
         this.taskId = taskId == null ? "" : taskId.trim();
         this.startedAt = Objects.requireNonNull(startedAt, "startedAt must not be null");

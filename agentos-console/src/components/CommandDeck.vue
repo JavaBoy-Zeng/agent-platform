@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useLocale } from '../composables/useLocale.js'
+import { openExternalUrl } from '../services/desktopApi.js'
 import WorkspaceContextPicker from './WorkspaceContextPicker.vue'
 
 const { t } = useLocale()
@@ -29,6 +30,7 @@ const props = defineProps({
   workspaceFilesLoading: { type: Boolean, default: false },
   workspaceBusy: { type: Boolean, default: false },
   workspaceError: { type: String, default: '' },
+  workspaceRunning: { type: Boolean, default: false },
   gitBranches: { type: Array, default: () => [] },
   gitBranchLoading: { type: Boolean, default: false },
   gitBranchError: { type: String, default: '' }
@@ -42,6 +44,7 @@ const emit = defineEmits([
 ])
 
 const promptInput = ref(null)
+const promptHighlight = ref(null)
 const deck = ref(null)
 const branchMenu = ref(null)
 const branchSearchInput = ref(null)
@@ -50,6 +53,35 @@ const mentionState = ref(null)
 const mentionActiveIndex = ref(0)
 const branchQuery = ref('')
 const modelSelectionError = ref(false)
+
+const promptSegments = computed(() => {
+  const value = String(props.prompt || '')
+  const segments = []
+  const urlPattern = /(?:https?:\/\/|www\.)[^\s<>"'，。！？；：、]+/gi
+  let cursor = 0
+
+  for (const match of value.matchAll(urlPattern)) {
+    const start = match.index ?? 0
+    if (start > cursor) segments.push({ text: value.slice(cursor, start), link: false })
+
+    const matchedValue = match[0]
+    const trailingPunctuation = matchedValue.match(/[.,!?;:，。！？；：、)\]}]+$/)?.[0] || ''
+    const linkText = trailingPunctuation
+      ? matchedValue.slice(0, -trailingPunctuation.length)
+      : matchedValue
+
+    if (linkText) segments.push({
+      text: linkText,
+      link: true,
+      href: /^www\./i.test(linkText) ? `https://${linkText}` : linkText
+    })
+    if (trailingPunctuation) segments.push({ text: trailingPunctuation, link: false })
+    cursor = start + matchedValue.length
+  }
+
+  if (cursor < value.length) segments.push({ text: value.slice(cursor), link: false })
+  return segments
+})
 
 const selectedModelLabel = computed(() => props.currentModel?.name || t('选择模型'))
 const builtInModels = computed(() => props.models.filter(model => model.modelType === 'BUILT_IN'))
@@ -81,7 +113,7 @@ const mentionCandidates = computed(() => {
 const permissionOptions = computed(() => [
   { id: 'REQUEST_APPROVAL', label: t('请求批准'), description: t('编辑外部文件和使用互联网时始终询问') },
   { id: 'RISK_BASED', label: t('帮我批准'), description: t('仅对检测到的风险操作请求批准') },
-  { id: 'FULL_ACCESS', label: t('完全访问权限'), description: t('可不受限制地访问互联网和共奏目录中的文件') }
+  { id: 'FULL_ACCESS', label: t('完全访问权限'), description: t('可不受限制地访问互联网和共享目录中的文件') }
 ])
 
 const selectedPermission = computed(() =>
@@ -90,6 +122,17 @@ const selectedPermission = computed(() =>
 
 function scrollToTop() {
   if (promptInput.value) promptInput.value.scrollTop = 0
+  syncPromptScroll()
+}
+
+function syncPromptScroll() {
+  if (!promptInput.value || !promptHighlight.value) return
+  promptHighlight.value.scrollTop = promptInput.value.scrollTop
+  promptHighlight.value.scrollLeft = promptInput.value.scrollLeft
+}
+
+function openPromptLink(href) {
+  openExternalUrl(href).catch(error => console.error('打开链接失败', error))
 }
 
 function onInput(event) {
@@ -207,7 +250,7 @@ function requestRun() {
 }
 
 function selectBranch(name) {
-  if (!name || currentBranch.value?.name === name) return
+  if (props.busy || props.workspaceRunning || !name || currentBranch.value?.name === name) return
   emit('select-branch', name)
 }
 
@@ -295,11 +338,20 @@ onUnmounted(() => {
         </div>
       </div>
       <label for="promptInput">{{ t('任务指令') }}</label>
-      <textarea id="promptInput" ref="promptInput" :value="prompt" rows="3" maxlength="2000"
-                :placeholder="t('描述目标、限制条件和期望结果……')" required
-                :aria-expanded="Boolean(mentionState)" aria-controls="projectFileMentions"
-                :aria-activedescendant="mentionState && mentionCandidates.length ? `projectFileMention-${mentionActiveIndex}` : undefined"
-                @input="onInput" @click="syncMentionFromCursor" @keydown="onKeydown"></textarea>
+      <div class="prompt-editor">
+        <div ref="promptHighlight" class="prompt-highlight" aria-hidden="true">
+          <template v-for="(segment, index) in promptSegments" :key="index">
+            <a v-if="segment.link" class="prompt-link" :href="segment.href" target="_blank" rel="noopener noreferrer"
+               @click.prevent="openPromptLink(segment.href)">{{ segment.text }}</a>
+            <span v-else>{{ segment.text }}</span>
+          </template>
+        </div>
+        <textarea id="promptInput" ref="promptInput" :value="prompt" rows="3" maxlength="2000"
+                  :placeholder="t('描述目标、限制条件和期望结果……')" required
+                  :aria-expanded="Boolean(mentionState)" aria-controls="projectFileMentions"
+                  :aria-activedescendant="mentionState && mentionCandidates.length ? `projectFileMention-${mentionActiveIndex}` : undefined"
+                  @input="onInput" @scroll="syncPromptScroll" @click="syncMentionFromCursor" @keydown="onKeydown"></textarea>
+      </div>
     </div>
 
     <div v-if="attachments.length || uploadError" class="attachment-strip" aria-live="polite">
@@ -346,7 +398,7 @@ onUnmounted(() => {
 
         <div class="deck-menu-wrap branch-wrap">
           <button class="branch-trigger" type="button"
-                  :disabled="!currentWorkspace?.gitRepository"
+                  :disabled="!currentWorkspace?.gitRepository || busy || workspaceRunning"
                   aria-haspopup="listbox" :aria-expanded="openMenu === 'branch'"
                   :title="currentWorkspace?.gitRepository ? t('选择 Git 分支') : t('当前目录不是 Git 仓库')"
                   @pointerdown.stop @click="toggleMenu('branch')">
@@ -369,7 +421,7 @@ onUnmounted(() => {
             <p v-if="gitBranchError" class="branch-menu-error" role="status">{{ gitBranchError }}</p>
             <button v-for="branch in filteredBranches" :key="branch.name" class="branch-option"
                     type="button" role="option" :aria-selected="branch.current"
-                    :class="{ selected: branch.current }" :disabled="gitBranchLoading"
+                    :class="{ selected: branch.current }" :disabled="gitBranchLoading || busy || workspaceRunning"
                     @click="selectBranch(branch.name)">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M8 17c5 0 8-3 8-8"/></svg>
               <span>{{ branch.name }}</span>
@@ -380,6 +432,16 @@ onUnmounted(() => {
             </p>
           </div>
         </div>
+
+        <WorkspaceContextPicker
+          :available="workspaceAvailable"
+          :workspaces="workspaces"
+          :current-workspace="currentWorkspace"
+          :busy="workspaceBusy"
+          :error="workspaceError"
+          @select="$emit('select-workspace', $event)"
+          @pick="$emit('pick-workspace')"
+        />
       </div>
 
       <div class="deck-right-actions">
@@ -415,15 +477,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <WorkspaceContextPicker
-      :available="workspaceAvailable"
-      :workspaces="workspaces"
-      :current-workspace="currentWorkspace"
-      :busy="workspaceBusy"
-      :error="workspaceError"
-      @select="$emit('select-workspace', $event)"
-      @pick="$emit('pick-workspace')"
-    />
   </form>
 
 </template>

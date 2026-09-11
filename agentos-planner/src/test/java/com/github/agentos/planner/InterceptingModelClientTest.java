@@ -64,7 +64,7 @@ class InterceptingModelClientTest {
 
     private static PlanningRequest request() {
         return new PlanningRequest(
-                AgentRequest.of("session-1", "hello"), InvocationContext.of("main-agent"),
+                AgentRequest.of("session-1", "hello"), InvocationContext.of("plan-execute-agent"),
                 MemoryContext.empty(false), null, null, List.of(), 1);
     }
 

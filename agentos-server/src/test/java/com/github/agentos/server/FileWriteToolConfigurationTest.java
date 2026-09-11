@@ -23,6 +23,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 class FileWriteToolConfigurationTest {
 
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private com.github.agentos.planner.ChatClient chatClient;
+
     @Autowired
     private ToolRegistry toolRegistry;
 
@@ -52,33 +55,46 @@ class FileWriteToolConfigurationTest {
     }
 
     @Test
-    void registersSideEffectingSpecialistsWithApprovalRiskLevels() {
-        assertThat(toolRegistry.require("report-agent").riskLevel())
-                .isEqualTo(AgentTool.RiskLevel.HIGH);
+    void registersDelegationsSeparatelyFromActualOperationRisk() {
+        assertThat(toolRegistry.require("report-agent"))
+                .isInstanceOf(com.github.agentos.tool.api.AgentDelegationTool.class);
         assertThat(toolRegistry.require("search-agent").riskLevel())
                 .isEqualTo(AgentTool.RiskLevel.LOW);
     }
 
     @Test
     void requestApprovalStopsReportAgentBeforeItCanWriteAFile() {
+        org.mockito.Mockito.when(chatClient.chat(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn("# 审批测试报告\n\n报告正文。");
         ToolResult result = toolDispatcher.dispatch(
                 new ToolCall("report-agent", Map.of("objective", "生成并保存报告")),
                 tool -> new ToolContext(
                         new AgentRequest("approval-session", "生成并保存报告",
                                 Map.of("approvalMode", "REQUEST_APPROVAL")),
-                        InvocationContext.of("main-agent"),
+                        InvocationContext.of("plan-execute-agent"),
                         "approval-plan", "write-report",
                         AgentExecutionLimits.defaults(), Map.of(), tool));
 
         assertThat(result.actions().pendingAction()).isNotNull();
         assertThat(result.actions().pendingAction().payload())
-                .containsEntry("toolName", "report-agent")
+                .containsEntry("toolName", "file_write")
+                .containsEntry("delegationTool", "report-agent")
                 .containsEntry("riskLevel", AgentTool.RiskLevel.HIGH.name());
+        var arguments = (Map<?, ?>) result.actions().pendingAction().payload().get("arguments");
+        assertThat(String.valueOf(arguments.get("content")).strip()).isEqualTo("# 审批测试报告\n\n报告正文。");
+        toolDispatcher.discardPending(result.actions().pendingAction());
     }
 
     @Test
-    void doesNotRegisterGitCommitWhenHostProcessesAreDisabled() {
-        assertThat(toolRegistry.find("git_commit")).isEmpty();
+    void desktopToolsNeverEnableHostProcessesWithoutABinding() {
+        for (String name : java.util.List.of("git_commit", "run_command")) {
+            ToolResult result = toolDispatcher.dispatch(new ToolCall(name, Map.of()), tool -> new ToolContext(
+                    new AgentRequest("unbound-" + name, "test", Map.of("approvalMode", "FULL_ACCESS")),
+                    InvocationContext.of("workspace-agent"), "", "", AgentExecutionLimits.defaults(), Map.of(), tool));
+            assertThat(result.success()).isFalse();
+            assertThat(result.failureType()).isEqualTo(com.github.agentos.tool.api.ToolFailureType.PERMISSION_DENIED);
+            assertThat(result.error()).contains("服务端命令执行仍处于禁用状态");
+        }
     }
 
     @Test

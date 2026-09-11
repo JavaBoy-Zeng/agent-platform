@@ -50,7 +50,7 @@ class AgentControllerStreamTest {
                 new InMemoryCheckpointStore(), sessions);
         firstRunner.run(
                 AgentRequest.of("persisted-session", "hello"),
-                InvocationContext.of("main-agent"));
+                InvocationContext.of("plan-execute-agent"));
         AgentRunner restartedRunner = new AgentRunner(
                 loop, AgentEventPublisher.NOOP, new InMemoryAgentEventStore(),
                 new InMemoryCheckpointStore(), sessions);
@@ -71,7 +71,7 @@ class AgentControllerStreamTest {
     }
 
     @Test
-    void streamsRuntimeEventsAndFinalState() throws Exception {
+    void oldStreamingEndpointIsRemoved() throws Exception {
         AgentLoop loop = new AgentLoop() {
             @Override
             public AgentState run(
@@ -99,26 +99,13 @@ class AgentControllerStreamTest {
                     new AgentController(
                             new AgentRunner(loop), executor, new AgentRunTaskRegistry(),
                             historyService())).build();
-            MvcResult started = mockMvc.perform(post("/api/agents/runs/stream")
+            mockMvc.perform(post("/api/agents/runs/stream")
                             .contentType(MediaType.APPLICATION_JSON)
                             .accept(MediaType.TEXT_EVENT_STREAM)
                             .content("""
                                     {"sessionId":"stream-1","input":"hello"}
                                     """))
-                    .andExpect(request().asyncStarted())
-                    .andReturn();
-            started.getAsyncResult(2_000);
-
-            mockMvc.perform(asyncDispatch(started))
-                    .andExpect(status().isOk())
-                    .andExpect(header().string(
-                            "Cache-Control", "no-cache, no-transform"))
-                    .andExpect(header().string("X-Accel-Buffering", "no"))
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
-                    .andExpect(content().string(containsString("event:progress")))
-                    .andExpect(content().string(containsString("event:state")))
-                    .andExpect(content().string(containsString("\"status\":\"COMPLETED\"")))
-                    .andExpect(content().string(containsString("\"output\":\"done\"")));
+                    .andExpect(status().isNotFound());
         }
     }
 

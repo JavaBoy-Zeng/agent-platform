@@ -54,7 +54,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.createPlan(
                     AgentRequest.of("session-1", "hello"),
-                    InvocationContext.of("main-agent"));
+                    InvocationContext.of("plan-execute-agent"));
 
             assertThat(plan.steps()).singleElement().satisfies(step ->
                     assertThat(step.optional()).isFalse());
@@ -90,7 +90,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.createPlan(
                     AgentRequest.of("session-1", "write it"),
-                    InvocationContext.of("main-agent"));
+                    InvocationContext.of("plan-execute-agent"));
 
             assertThat(plan.type()).isEqualTo(PlanType.EXECUTION);
             assertThat(plan.steps()).singleElement().satisfies(step ->
@@ -101,7 +101,7 @@ class LlmAgentPlannerTest {
     @Test
     void recallsMemoryAndInjectsRuntimeOnlyPlanMetadata() {
         ToolRegistry toolRegistry = new ToolRegistry(List.of(new EchoTool()));
-        MemoryScope scope = MemoryScope.defaultScope("main-agent", "session-1");
+        MemoryScope scope = MemoryScope.defaultScope("plan-execute-agent", "session-1");
 
         try (MemoryService memoryService = MemoryService.inMemory()) {
             memoryService.capture(CompletedTurn.success(
@@ -133,7 +133,7 @@ class LlmAgentPlannerTest {
                     new PlanValidator(toolRegistry, 5),
                     new AgentExecutionLimits(3, 30, 30, 6));
             AgentRequest agentRequest = AgentRequest.of("session-1", "hello");
-            InvocationContext context = InvocationContext.of("main-agent");
+            InvocationContext context = InvocationContext.of("plan-execute-agent");
 
             AgentPlan plan = planner.createPlan(agentRequest, context);
 
@@ -203,7 +203,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan result = planner.replan(
                     AgentRequest.of("session-1", "finish"),
-                    InvocationContext.of("main-agent"),
+                    InvocationContext.of("plan-execute-agent"),
                     previousPlan,
                     snapshot);
 
@@ -229,7 +229,7 @@ class LlmAgentPlannerTest {
                     HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true,
                     HistoryProcessor.REQUIRES_FILE_EVIDENCE_ATTRIBUTE, true));
 
-            AgentPlan plan = planner.createPlan(request, InvocationContext.of("main-agent"));
+            AgentPlan plan = planner.createPlan(request, InvocationContext.of("plan-execute-agent"));
 
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.CONTINUE);
             assertThat(plan.steps()).singleElement().satisfies(step -> {
@@ -255,7 +255,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.createPlan(
                     AgentRequest.of("session-1", "列出上级目录中的文件"),
-                    InvocationContext.of("main-agent"));
+                    InvocationContext.of("plan-execute-agent"));
 
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
             assertThat(plan.steps()).isEmpty();
@@ -286,7 +286,7 @@ class LlmAgentPlannerTest {
                     AgentRequest.of(
                             "session-1",
                             "列出 /Users/whale_fall/agentos 的上级目录 /Users/whale_fall/"),
-                    InvocationContext.of("main-agent"));
+                    InvocationContext.of("plan-execute-agent"));
 
             assertThat(modelCalls).hasValue(0);
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
@@ -317,7 +317,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.replan(
                     AgentRequest.of("session-1", "完整读取 /tmp/resume.md"),
-                    InvocationContext.of("main-agent"), previousPlan, snapshot);
+                    InvocationContext.of("plan-execute-agent"), previousPlan, snapshot);
 
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.CONTINUE);
             assertThat(plan.steps()).singleElement().satisfies(step ->
@@ -350,7 +350,7 @@ class LlmAgentPlannerTest {
             AgentPlan plan = planner.replan(
                     new AgentRequest("session-1", "简历里有哪些公司", Map.of(
                             HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true)),
-                    InvocationContext.of("main-agent"), previousPlan,
+                    InvocationContext.of("plan-execute-agent"), previousPlan,
                     snapshot(currentStep, finalChunk));
 
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
@@ -395,7 +395,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.replan(
                     AgentRequest.of("session-1", "搜索当日新闻写成文档md格式"),
-                    InvocationContext.of("main-agent"), previousPlan, snapshot);
+                    InvocationContext.of("plan-execute-agent"), previousPlan, snapshot);
 
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);
             assertThat(plan.finalAnswer()).contains("文档已保存");
@@ -415,7 +415,7 @@ class LlmAgentPlannerTest {
                     new AgentRequest("session-1", "在文档中搜索预算", Map.of(
                             HistoryProcessor.CONVERSATION_HISTORY_ATTRIBUTE,
                             "用户：需要处理 /tmp/report.md\n助手：好的")),
-                    InvocationContext.of("main-agent"));
+                    InvocationContext.of("plan-execute-agent"));
 
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.CONTINUE);
             assertThat(plan.steps()).singleElement().satisfies(step ->
@@ -448,7 +448,7 @@ class LlmAgentPlannerTest {
             assertThatThrownBy(() -> planner.replan(
                     new AgentRequest("session-1", "简历里有哪些公司", Map.of(
                             HistoryProcessor.CONVERSATION_FILE_CONTEXT_ATTRIBUTE, true)),
-                    InvocationContext.of("main-agent"), previousPlan,
+                    InvocationContext.of("plan-execute-agent"), previousPlan,
                     snapshot(currentStep, result)))
                     .isInstanceOf(PlanValidationException.class)
                     .hasMessageContaining("上海联恩电子有限公司");
@@ -476,7 +476,7 @@ class LlmAgentPlannerTest {
 
             AgentPlan plan = planner.createPlan(
                     AgentRequest.of("session-1", "打开 https://example.com/docs"),
-                    InvocationContext.of("main-agent"));
+                    InvocationContext.of("plan-execute-agent"));
 
             assertThat(modelCalls).hasValue(1);
             assertThat(plan.outcome()).isEqualTo(PlanOutcome.COMPLETE);

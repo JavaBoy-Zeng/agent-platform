@@ -18,7 +18,7 @@ class FileCheckpointStoreTest {
     @Test
     void reloadsCheckpointFromAnotherStoreInstance() {
         AgentCheckpoint checkpoint = new AgentCheckpoint(
-                "session-1", "invocation-1", "main-agent", "task-1",
+                "session-1", "invocation-1", "plan-execute-agent", "task-1",
                 "default", "anonymous", "continue work", "plan-1", "step-2", 1,
                 List.of("step-1"), Map.of("observation", "done"),
                 new PendingAction("approval-1", PendingActionType.HUMAN_APPROVAL,

@@ -118,7 +118,7 @@ class ApprovalToolInterceptorTest {
     private static ToolContext context(AgentTool tool, Map<String, Object> attributes) {
         return new ToolContext(
                 new AgentRequest("session-1", "test", attributes),
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 "plan-1",
                 "step-1",
                 new AgentExecutionLimits(1, 1, 1, 1),

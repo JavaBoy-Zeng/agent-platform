@@ -51,7 +51,7 @@ class AgentPluginManagerTest {
         RecordingPlugin plugin = new RecordingPlugin("recorder");
         AgentPluginManager manager = AgentPluginManager.of(plugin);
         AgentRequest request = AgentRequest.of("s1", "objective");
-        InvocationContext context = InvocationContext.of("main-agent");
+        InvocationContext context = InvocationContext.of("plan-execute-agent");
         AgentState completed = AgentState.ready().complete("done");
 
         manager.beforeRun(request, context);
@@ -74,8 +74,8 @@ class AgentPluginManagerTest {
     /** 领域事件要求上下文绑定 Invocation；构造最小可用绑定上下文。 */
     private static InvocationContext boundContext() {
         AgentInvocation invocation = new AgentInvocation(
-                "invocation-1", "s1", "main-agent", "", Instant.now());
-        return InvocationContext.of("main-agent")
+                "invocation-1", "s1", "plan-execute-agent", "", Instant.now());
+        return InvocationContext.of("plan-execute-agent")
                 .withRuntime(invocation, AgentEventPublisher.NOOP);
     }
 

@@ -195,7 +195,7 @@ class ToolTrajectoryEvaluatorTest {
             AgentEventType type, String message, Map<String, Object> data) {
         Map<String, Object> payload = new LinkedHashMap<>(data);
         return new DefaultAgentEvent(
-                "event-" + Math.random(), "session-1", "inv-1", "main-agent",
+                "event-" + Math.random(), "session-1", "inv-1", "plan-execute-agent",
                 Instant.now(), type, message == null ? "" : message, payload);
     }
 }

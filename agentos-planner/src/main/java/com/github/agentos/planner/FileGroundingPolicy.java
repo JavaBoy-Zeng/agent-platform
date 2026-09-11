@@ -137,14 +137,14 @@ final class FileGroundingPolicy {
         }
         return snapshot.stepResults().stream()
                 .filter(result -> result.status() == StepStatus.COMPLETED)
-                .filter(result -> result.toolName().equals("file_read"))
+                .filter(result -> (result.toolName().equals("file_read") || result.toolName().equals("workspace-agent")))
                 .flatMap(result -> metadata(result.output()).stream())
                 .anyMatch(values -> !Boolean.parseBoolean(values.getOrDefault("hasMore", "false")));
     }
 
     private static boolean isCompletedFileEvidence(StepResult result) {
         return result.status() == StepStatus.COMPLETED
-                && (result.toolName().equals("file_read") || result.toolName().equals("file_search"));
+                && ((result.toolName().equals("file_read") || result.toolName().equals("workspace-agent") && !metadata(result.output()).isEmpty()) || result.toolName().equals("file_search"));
     }
 
     private static Optional<ModelPlan> initialReadPlan(
@@ -226,7 +226,7 @@ final class FileGroundingPolicy {
         }
         Map<String, ReadCursor> pending = new LinkedHashMap<>();
         for (StepResult result : snapshot.stepResults()) {
-            if (!result.toolName().equals("file_read")
+            if (!(result.toolName().equals("file_read") || result.toolName().equals("workspace-agent"))
                     || result.status() != StepStatus.COMPLETED
                     || result.failureType() != ToolFailureType.NONE) {
                 continue;

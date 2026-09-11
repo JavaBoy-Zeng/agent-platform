@@ -24,7 +24,7 @@ class CommandRiskPolicyTest {
 
     private boolean requiresApproval(AgentTool tool, String command) {
         return policy.requiresApproval(
-                InvocationContext.of("main-agent"),
+                InvocationContext.of("plan-execute-agent"),
                 tool,
                 new ToolCall(tool.name(),
                         command == null ? Map.of() : Map.of("command", command)));
@@ -87,7 +87,7 @@ class CommandRiskPolicyTest {
     void blankOrMissingCommandRequiresApproval() {
         assertThat(requiresApproval(runCommand, " ")).isTrue();
         assertThat(policy.requiresApproval(
-                InvocationContext.of("main-agent"), runCommand, new ToolCall("run_command", Map.of())))
+                InvocationContext.of("plan-execute-agent"), runCommand, new ToolCall("run_command", Map.of())))
                 .isTrue();
     }
 
